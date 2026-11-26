@@ -26,6 +26,7 @@ import {
   BLOOM_UP_FS,
   COMPOSITE_FS,
   FULLSCREEN_VS,
+  LIQUID_GL_FS,
   SCENE_FS,
   SCENE_VS,
   SHADOW_FS,
@@ -68,11 +69,18 @@ import {
   WorldInstances,
 } from './worlds';
 
+export interface IntroFrameState {
+  active: boolean;
+  progress: number;
+  elapsed: number;
+}
+
 export interface EngineHooks {
   onZoomFrame: (zoom: number, fps: number, motion: number, interacting: boolean) => void;
   onInspect: (hit: DieInspectHit | null) => void;
   onHover?: (hit: DieInspectHit | null, clientX: number, clientY: number) => void;
   onTourChange?: (active: boolean) => void;
+  onIntroFrame?: (state: IntroFrameState) => void;
 }
 
 interface StageDraw {
@@ -120,6 +128,15 @@ export const MIN_ZOOM = -2.4;
 export const MAX_ZOOM = 9.0;
 const STAGE_FLOOR_Y = [-0.598, -0.26, -0.14, -0.075, -0.35, -6.0, -6.0, -6.0, -6.0, -6.0];
 const WORLD0_GRID_STEP = WORLD1_PITCH / STAGE_RATIOS[0]; // 0.095 (exact World 1 grid pitch on World 0!)
+
+/** "First Light" Apple Keynote entrance choreography constants */
+const INTRO_DURATION = 4.0;
+const INTRO_START_ZOOM = -0.68;
+const INTRO_START_PITCH = 0.24;
+const INTRO_START_YAW = -0.78;
+const HERO_ZOOM = 0.0;
+const HERO_PITCH = 0.86;
+const HERO_YAW = -0.18;
 
 /** Keyframed Cinematic Dive choreography: [timeSec, zoom, pitch, yawOffset] */
 const TOUR_KEYS: readonly [number, number, number, number][] = [
@@ -173,6 +190,7 @@ export class SiliconEngine {
   private bloomDownProg: WebGLProgram;
   private bloomUpProg: WebGLProgram;
   private compositeProg: WebGLProgram;
+  private liquidGlProg: WebGLProgram;
 
   private boxMesh: MeshBuffers;
   private cylMesh: MeshBuffers;
@@ -214,11 +232,26 @@ export class SiliconEngine {
   private msaaDepthRb: WebGLRenderbuffer | null = null;
   private fallbackDepthRb: WebGLRenderbuffer | null = null;
   private hdrMain!: FboTarget;
+  private srgbA!: FboTarget;
+  private srgbB!: FboTarget;
   private bloomDown: FboTarget[] = [];
   private bloomUp: FboTarget[] = [];
 
   private canvasW = 1;
   private canvasH = 1;
+  private cssW = 1;
+  private cssH = 1;
+
+  // GPU liquidGL HUD regions (sRGB two-stage stacked refraction, zero CSS readback tax!)
+  private glassCount = 0;
+  private glassHasElevated = false;
+  private glassRects = new Float32Array(16 * 4);
+  private glassParams = new Float32Array(16 * 4);
+  private glassPointerX = 0;
+  private glassPointerY = 0;
+  private glassPointerVelX = 0;
+  private glassPointerVelY = 0;
+  private glassPointerActive = 0;
 
   // Cached uniform locations
   private uShadow: Record<string, WebGLUniformLocation | null> = {};
@@ -227,6 +260,7 @@ export class SiliconEngine {
   private uDown: Record<string, WebGLUniformLocation | null> = {};
   private uUp: Record<string, WebGLUniformLocation | null> = {};
   private uComp: Record<string, WebGLUniformLocation | null> = {};
+  private uLiquid: Record<string, WebGLUniformLocation | null> = {};
 
   // Reusable matrices (zero GC per frame)
   private projMat = new Float32Array(16);
@@ -267,16 +301,26 @@ export class SiliconEngine {
   private tourElapsed = 0;
   private tourBaseYaw = -0.14;
 
+  // "First Light" Apple Keynote entrance state
+  private introActive = false;
+  private introElapsed = 0;
+  private introLightSweep = 1.0;
+  private introKeyIntensity = 1.0;
+  private introRimBoost = 1.0;
+  private introWakePulse = 0.0;
+  private introExposure = 1.0;
+  private introDofBoost = 0.0;
+
   // Camera & snappy zoom state
-  public zoom = 0.0;
-  private targetZoom = 0.0;
+  public zoom = HERO_ZOOM;
+  private targetZoom = HERO_ZOOM;
   private zoomRate = 15.0;
   private smoothMotion = 0.0;
 
-  private yaw = -0.18;
-  private pitch = 0.86;
-  private targetYaw = -0.18;
-  private targetPitch = 0.86;
+  private yaw = HERO_YAW;
+  private pitch = HERO_PITCH;
+  private targetYaw = HERO_YAW;
+  private targetPitch = HERO_PITCH;
 
   // Live Mac telemetry
   private telemetry: LiveMacTelemetry = { ...DEFAULT_TELEMETRY };
@@ -334,6 +378,7 @@ export class SiliconEngine {
     this.bloomDownProg = this.createProgram(FULLSCREEN_VS, BLOOM_DOWN_FS);
     this.bloomUpProg = this.createProgram(FULLSCREEN_VS, BLOOM_UP_FS);
     this.compositeProg = this.createProgram(FULLSCREEN_VS, COMPOSITE_FS);
+    this.liquidGlProg = this.createProgram(FULLSCREEN_VS, LIQUID_GL_FS);
 
     this.cacheUniforms();
 
@@ -447,6 +492,17 @@ export class SiliconEngine {
     this.updateLightMatrix(0.0, 0.0, 8.8);
     this.resize();
     this.bindEvents();
+
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) {
+      this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
+    } else {
+      this.startIntro();
+    }
+
     this.loop();
   }
 
@@ -916,12 +972,32 @@ export class SiliconEngine {
       'uRegionKind',
       'uInspectBox',
       'uHoverBox',
+      'uIntroLight',
     ]);
 
     this.uPrefilter = grab(this.prefilterProg, ['uTex', 'uTexelSize']);
     this.uDown = grab(this.bloomDownProg, ['uTex', 'uHalfPixel']);
     this.uUp = grab(this.bloomUpProg, ['uTex', 'uHalfPixel']);
-    this.uComp = grab(this.compositeProg, ['uTex', 'uBloomTex', 'uResolution', 'uMotion', 'uTime', 'uVoidPlunge']);
+    this.uComp = grab(this.compositeProg, [
+      'uTex',
+      'uBloomTex',
+      'uResolution',
+      'uMotion',
+      'uTime',
+      'uVoidPlunge',
+      'uIntroExposure',
+    ]);
+    this.uLiquid = grab(this.liquidGlProg, [
+      'uTex',
+      'uResolution',
+      'uCssSize',
+      'uTime',
+      'uPassStage',
+      'uGlassCount',
+      'uGlassRect',
+      'uGlassParams',
+      'uPointerFluid',
+    ]);
   }
 
   private createArrayBuffer(data: Float32Array): WebGLBuffer {
@@ -1045,7 +1121,12 @@ export class SiliconEngine {
     };
   }
 
-  private createColorFbo(w: number, h: number, attachDepth: WebGLRenderbuffer | null = null): FboTarget {
+  private createColorFbo(
+    w: number,
+    h: number,
+    attachDepth: WebGLRenderbuffer | null = null,
+    forceLdr = false
+  ): FboTarget {
     const gl = this.gl;
     const width = Math.max(1, w);
     const height = Math.max(1, h);
@@ -1056,7 +1137,7 @@ export class SiliconEngine {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    if (this.useFloatHdr) {
+    if (this.useFloatHdr && !forceLdr) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, width, height, 0, gl.RGBA, gl.HALF_FLOAT, null);
     } else {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -1080,6 +1161,8 @@ export class SiliconEngine {
       gl.deleteTexture(t.tex);
     };
     drop(this.hdrMain);
+    drop(this.srgbA);
+    drop(this.srgbB);
     this.bloomDown.forEach(drop);
     this.bloomUp.forEach(drop);
     this.bloomDown = [];
@@ -1134,6 +1217,8 @@ export class SiliconEngine {
     }
 
     this.hdrMain = this.createColorFbo(w, h, msaaOk ? null : this.fallbackDepthRb);
+    this.srgbA = this.createColorFbo(w, h, null, true);
+    this.srgbB = this.createColorFbo(w, h, null, true);
 
     const w1 = Math.max(2, Math.floor(w / 2));
     const h1 = Math.max(2, Math.floor(h / 2));
@@ -1221,6 +1306,58 @@ export class SiliconEngine {
     return this.tourActive;
   }
 
+  public get isIntroActive(): boolean {
+    return this.introActive;
+  }
+
+  /** Play (or replay) the "First Light" Apple Keynote entrance animation */
+  public startIntro(): void {
+    this.stopTour();
+    this.clearInspect();
+    this.clearHover();
+    this.targetAnchor0[0] = 0;
+    this.targetAnchor0[1] = 0;
+    this.anchors[0][0] = 0;
+    this.anchors[0][2] = 0;
+    for (let k = 1; k < this.anchors.length; k++) {
+      this.anchors[k][0] = 0;
+      this.anchors[k][1] = 0;
+      this.anchors[k][2] = k === 4 ? WORLD4_GATE_Z : 0;
+    }
+    this.atomParity = 1;
+    this.smoothCamShiftX = 0;
+    this.smoothCamShiftY = 0;
+    this.smoothCamShiftZ = 0;
+    this.recomputeEffOffsets();
+
+    this.introActive = true;
+    this.introElapsed = 0;
+    this.zoom = INTRO_START_ZOOM;
+    this.targetZoom = INTRO_START_ZOOM;
+    this.pitch = INTRO_START_PITCH;
+    this.targetPitch = INTRO_START_PITCH;
+    this.yaw = INTRO_START_YAW;
+    this.targetYaw = INTRO_START_YAW;
+
+    this.introLightSweep = 0.0;
+    this.introKeyIntensity = 0.06;
+    this.introRimBoost = 2.4;
+    this.introWakePulse = 0.0;
+    this.introExposure = 0.0;
+    this.introDofBoost = 0.52;
+    this.hooks.onIntroFrame?.({ active: true, progress: 0, elapsed: 0 });
+  }
+
+  /** Seamlessly yield control to the user if they scroll, drag, or click during the intro */
+  public skipIntro(): void {
+    if (!this.introActive) return;
+    this.introActive = false;
+    this.targetZoom = this.zoom;
+    this.targetYaw = this.yaw;
+    this.targetPitch = this.pitch;
+    this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
+  }
+
   /** Pick the hottest live P-Core on the user's Mac as the hero dive target */
   private getBusiestPCoreXZ(): [number, number] {
     const pCount = Math.max(2, Math.min(12, this.dieSpec.pCores || 8));
@@ -1250,6 +1387,7 @@ export class SiliconEngine {
 
   public startTour(): void {
     if (this.tourActive) return;
+    this.skipIntro();
     this.clearInspect();
     this.clearHover();
     this.tourActive = true;
@@ -1338,6 +1476,7 @@ export class SiliconEngine {
   }
 
   public flyToZoom(z: number, dieTargetXZ?: [number, number]): void {
+    this.skipIntro();
     this.stopTour();
     this.targetZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
     this.zoomRate = 6.8;
@@ -1399,6 +1538,8 @@ export class SiliconEngine {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
     const dpr = Math.min(window.devicePixelRatio || 1, 2.0);
+    this.cssW = w;
+    this.cssH = h;
     this.canvasW = Math.max(1, Math.floor(w * dpr));
     this.canvasH = Math.max(1, Math.floor(h * dpr));
     this.canvas.width = this.canvasW;
@@ -1406,12 +1547,57 @@ export class SiliconEngine {
     this.allocRenderTargets(this.canvasW, this.canvasH);
   };
 
+  public setLiquidGlassRegions(
+    regions: readonly {
+      cx: number;
+      cy: number;
+      hw: number;
+      hh: number;
+      radius: number;
+      bevel: number;
+      frost: number;
+      style: 0 | 1 | 2;
+      alpha: number;
+    }[]
+  ): void {
+    const count = Math.min(16, regions.length);
+    this.glassCount = count;
+    let hasElev = false;
+    for (let i = 0; i < count; i++) {
+      const r = regions[i];
+      if (r.style === 2 && r.alpha > 0.005) hasElev = true;
+      const o = i * 4;
+      this.glassRects[o] = r.cx;
+      this.glassRects[o + 1] = r.cy;
+      this.glassRects[o + 2] = r.hw;
+      this.glassRects[o + 3] = r.hh;
+      this.glassParams[o] = r.radius;
+      this.glassParams[o + 1] = r.bevel;
+      this.glassParams[o + 2] = r.frost;
+      this.glassParams[o + 3] = r.style * 4.0 + clamp(r.alpha, 0.0, 1.0);
+    }
+    this.glassHasElevated = hasElev;
+  }
+
+  public setGlassPointer(xCss: number, yCss: number, active: boolean): void {
+    if (active && this.glassPointerActive > 0.5) {
+      const dx = clamp(xCss - this.glassPointerX, -32, 32);
+      const dy = clamp(yCss - this.glassPointerY, -32, 32);
+      this.glassPointerVelX = this.glassPointerVelX * 0.65 + dx * 0.35;
+      this.glassPointerVelY = this.glassPointerVelY * 0.65 + dy * 0.35;
+    }
+    this.glassPointerX = xCss;
+    this.glassPointerY = yCss;
+    this.glassPointerActive = active ? 1.0 : 0.0;
+  }
+
   /**
    * Steady center-reticle zoom on scroll/pinch (zero lateral cursor-drift).
    * Lateral targeting is handled deliberately via click-to-inspect ("Dive to...") or Shift/Right-drag pan.
    */
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
+    this.skipIntro();
     this.stopTour();
     const delta = -e.deltaY * (e.ctrlKey ? 0.010 : 0.0028);
     this.targetZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this.targetZoom + delta));
@@ -1423,6 +1609,7 @@ export class SiliconEngine {
   };
 
   private onPointerDown = (e: PointerEvent): void => {
+    this.skipIntro();
     this.stopTour();
     this.clearHover();
     this.dragging = true;
@@ -1438,7 +1625,7 @@ export class SiliconEngine {
 
   private onPointerMove = (e: PointerEvent): void => {
     if (!this.dragging) {
-      if (!this.tourActive && this.zoom < 0.85) {
+      if (!this.tourActive && !this.introActive && this.zoom < 0.85) {
         const pt = this.unprojectDiePoint(e.clientX, e.clientY);
         const hit = pt ? pickDieRegion(pt[0], pt[1], this.dieSpec) : null;
         this.canvas.style.cursor = hit ? 'pointer' : 'grab';
@@ -1582,6 +1769,11 @@ export class SiliconEngine {
   private smoothstep(edge0: number, edge1: number, x: number): number {
     const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
     return t * t * (3 - 2 * t);
+  }
+
+  private smootherstep(edge0: number, edge1: number, x: number): number {
+    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+    return t * t * t * (t * (t * 6 - 15) + 10);
   }
 
   private bindStageHoleUniforms(
@@ -1745,6 +1937,13 @@ export class SiliconEngine {
     gl.uniform1f(this.uScene.uThermal, this.thermal ? 1.0 : 0.0);
     gl.uniform1f(this.uScene.uTranslucent, 0.0);
     gl.uniform1f(this.uScene.uRegionKind, this.activeRegionKind);
+    gl.uniform4f(
+      this.uScene.uIntroLight,
+      this.introLightSweep,
+      this.introKeyIntensity,
+      this.introRimBoost,
+      this.introWakePulse
+    );
 
     for (let i = 0; i < activeStages.length; i++) {
       const { idx, scale } = activeStages[i];
@@ -1882,44 +2081,98 @@ export class SiliconEngine {
     this.smoothCamShiftY *= shiftDecay;
     this.smoothCamShiftZ *= shiftDecay;
 
-    // Cinematic Dive keyframed choreography (Scale -> Hottest P-Core -> BEOL -> FEOL -> Gate -> Lattice -> Atom -> Nucleus -> Quarks)
-    if (this.tourActive) {
-      this.tourElapsed += dt;
-      const totalDur = TOUR_KEYS[TOUR_KEYS.length - 1][0];
-      if (this.tourElapsed >= totalDur) {
-        this.stopTour();
+    // "First Light" Apple Keynote entrance choreography (Grazing Obsidian Edge -> Softbox Sweep -> Hero Crane-Up)
+    const prevZ = this.zoom;
+    if (this.introActive) {
+      this.introElapsed += dt;
+      const t = this.introElapsed;
+      const progress = clamp(t / INTRO_DURATION, 0, 1);
+
+      const uYaw = this.smootherstep(0.0, 3.75, t);
+      const uPitch = this.smootherstep(0.22, 3.85, t);
+      const uZoom = this.smootherstep(0.35, 3.95, t);
+
+      this.yaw = INTRO_START_YAW + (HERO_YAW - INTRO_START_YAW) * uYaw;
+      this.pitch = INTRO_START_PITCH + (HERO_PITCH - INTRO_START_PITCH) * uPitch;
+      this.zoom = INTRO_START_ZOOM + (HERO_ZOOM - INTRO_START_ZOOM) * uZoom;
+      this.targetYaw = this.yaw;
+      this.targetPitch = this.pitch;
+      this.targetZoom = this.zoom;
+
+      this.introExposure = this.smoothstep(0.0, 0.58, t);
+      this.introLightSweep = this.smootherstep(0.20, 2.85, t);
+      this.introKeyIntensity = 0.06 + 0.94 * this.smootherstep(0.40, 2.45, t);
+      this.introRimBoost = 2.40 - 1.40 * this.smootherstep(1.15, 3.15, t);
+      this.introWakePulse = t >= 0.90 && t <= 2.65 ? clamp((t - 0.90) / 1.75, 0, 1) : 0.0;
+      this.introDofBoost = 0.52 * (1.0 - this.smootherstep(1.25, 3.10, t));
+
+      if (t >= INTRO_DURATION) {
+        this.introActive = false;
+        this.zoom = this.targetZoom = HERO_ZOOM;
+        this.pitch = this.targetPitch = HERO_PITCH;
+        this.yaw = this.targetYaw = HERO_YAW;
+        this.introLightSweep = 1.0;
+        this.introKeyIntensity = 1.0;
+        this.introRimBoost = 1.0;
+        this.introWakePulse = 0.0;
+        this.introExposure = 1.0;
+        this.introDofBoost = 0.0;
+        this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
       } else {
-        let seg = 0;
-        while (seg < TOUR_KEYS.length - 2 && this.tourElapsed > TOUR_KEYS[seg + 1][0]) seg++;
-        const k0 = TOUR_KEYS[seg];
-        const k1 = TOUR_KEYS[seg + 1];
-        const u = clamp((this.tourElapsed - k0[0]) / Math.max(0.001, k1[0] - k0[0]), 0, 1);
-        const s = 0.5 - 0.5 * Math.cos(Math.PI * u);
-        this.targetZoom = k0[1] + (k1[1] - k0[1]) * s;
-        this.targetPitch = k0[2] + (k1[2] - k0[2]) * s;
-        this.targetYaw = this.tourBaseYaw + (k0[3] + (k1[3] - k0[3]) * s);
-        this.zoomRate = 4.6;
+        this.hooks.onIntroFrame?.({ active: true, progress, elapsed: t });
       }
+    } else {
+      // Smoothly settle any interrupted intro lighting back to steady state (zero harsh flash on skip!)
+      const settle = 1 - Math.exp(-7.5 * dt);
+      this.introLightSweep += (1.0 - this.introLightSweep) * settle;
+      this.introKeyIntensity += (1.0 - this.introKeyIntensity) * settle;
+      this.introRimBoost += (1.0 - this.introRimBoost) * settle;
+      this.introExposure += (1.0 - this.introExposure) * settle;
+      this.introDofBoost += (0.0 - this.introDofBoost) * settle;
+      if (this.introWakePulse > 0.001) {
+        this.introWakePulse = Math.min(1.0, this.introWakePulse + dt * 1.4);
+        if (this.introWakePulse >= 0.999) this.introWakePulse = 0.0;
+      }
+
+      // Cinematic Dive keyframed choreography (Scale -> Hottest P-Core -> BEOL -> FEOL -> Gate -> Lattice -> Atom -> Nucleus -> Quarks)
+      if (this.tourActive) {
+        this.tourElapsed += dt;
+        const totalDur = TOUR_KEYS[TOUR_KEYS.length - 1][0];
+        if (this.tourElapsed >= totalDur) {
+          this.stopTour();
+        } else {
+          let seg = 0;
+          while (seg < TOUR_KEYS.length - 2 && this.tourElapsed > TOUR_KEYS[seg + 1][0]) seg++;
+          const k0 = TOUR_KEYS[seg];
+          const k1 = TOUR_KEYS[seg + 1];
+          const u = clamp((this.tourElapsed - k0[0]) / Math.max(0.001, k1[0] - k0[0]), 0, 1);
+          const s = 0.5 - 0.5 * Math.cos(Math.PI * u);
+          this.targetZoom = k0[1] + (k1[1] - k0[1]) * s;
+          this.targetPitch = k0[2] + (k1[2] - k0[2]) * s;
+          this.targetYaw = this.tourBaseYaw + (k0[3] + (k1[3] - k0[3]) * s);
+          this.zoomRate = 4.6;
+        }
+      }
+
+      // Frame-rate-independent snappy zoom & optical motion tracking
+      const zFactor = 1 - Math.exp(-this.zoomRate * dt);
+      this.zoom += (this.targetZoom - this.zoom) * zFactor;
+      if (Math.abs(this.targetZoom - this.zoom) < 0.0002) {
+        this.zoom = this.targetZoom;
+      }
+
+      if (this.autoOrbit && !this.dragging && !this.tourActive) {
+        this.targetYaw += dt * 0.075;
+      }
+      const rotRate = this.dragging ? 14.0 : this.tourActive ? 3.8 : 6.0;
+      const rotFactor = 1 - Math.exp(-rotRate * dt);
+      this.yaw += (this.targetYaw - this.yaw) * rotFactor;
+      this.pitch += (this.targetPitch - this.pitch) * rotFactor;
     }
 
-    // Frame-rate-independent snappy zoom & optical motion tracking
-    const prevZ = this.zoom;
-    const zFactor = 1 - Math.exp(-this.zoomRate * dt);
-    this.zoom += (this.targetZoom - this.zoom) * zFactor;
-    if (Math.abs(this.targetZoom - this.zoom) < 0.0002) {
-      this.zoom = this.targetZoom;
-    }
-    const zoomVel = Math.abs(this.zoom - prevZ) / dt;
+    const zoomVel = this.introActive ? 0.0 : Math.abs(this.zoom - prevZ) / dt;
     const targetMotion = Math.min(1.0, zoomVel * 0.20);
     this.smoothMotion += (targetMotion - this.smoothMotion) * (1 - Math.exp(-14.0 * dt));
-
-    if (this.autoOrbit && !this.dragging && !this.tourActive) {
-      this.targetYaw += dt * 0.075;
-    }
-    const rotRate = this.dragging ? 14.0 : this.tourActive ? 3.8 : 6.0;
-    const rotFactor = 1 - Math.exp(-rotRate * dt);
-    this.yaw += (this.targetYaw - this.yaw) * rotFactor;
-    this.pitch += (this.targetPitch - this.pitch) * rotFactor;
 
     const fps = Math.round(1000 / Math.max(4, this.emaFrameMs));
     this.hooks.onZoomFrame(this.zoom, fps, this.smoothMotion, this.dragging || this.tourActive);
@@ -1993,11 +2246,15 @@ export class SiliconEngine {
       }
     }
 
-    // Optical microscope DOF aperture: tack-sharp across the chip plane on World 0, creamy bokeh at deep oblique angles
+    // Optical microscope DOF aperture: tack-sharp across the chip plane on World 0, creamy bokeh at deep oblique angles & intro silhouette
     const angleFactor = 1.0 - this.smoothstep(0.95, 1.48, this.pitch);
     const microDepth = this.smoothstep(0.25, 1.25, this.zoom);
     const scaleDof = 1.0 - 0.55 * this.smoothstep(5.8, 7.2, this.zoom);
-    const dofStrength = ((0.06 + 0.26 * angleFactor) + microDepth * (0.04 + 0.18 * angleFactor)) * scaleDof;
+    const dofStrength = clamp(
+      ((0.06 + 0.26 * angleFactor) + microDepth * (0.04 + 0.18 * angleFactor)) * scaleDof + this.introDofBoost,
+      0.0,
+      0.92
+    );
 
     // PASS 0 + 1: Unified Multi-Scale 3D Render (ZERO 2D fading!)
     this.renderUnifiedScene(
@@ -2068,8 +2325,9 @@ export class SiliconEngine {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
-    // PASS 3: Final Full-Retina Optical Composite -> Screen
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    // PASS 3A: Full-Retina ACES Optical Composite -> Screen (or srgbA when liquidGL HUD is active)
+    const runGlass = this.glassCount > 0 && this.srgbA && this.srgbB;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, runGlass ? this.srgbA.fbo : null);
     gl.viewport(0, 0, this.canvasW, this.canvasH);
     gl.useProgram(this.compositeProg);
     gl.activeTexture(gl.TEXTURE0);
@@ -2083,7 +2341,50 @@ export class SiliconEngine {
     gl.uniform1f(this.uComp.uTime, elapsedSec);
     const voidPlunge = Math.exp(-Math.pow((this.zoom - 7.52) / 0.28, 2));
     gl.uniform1f(this.uComp.uVoidPlunge, voidPlunge);
+    gl.uniform1f(this.uComp.uIntroExposure, this.introExposure);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // PASS 3B & 3C: True sRGB liquidGL Refraction + Stacked Droplet Lenses -> Screen
+    if (runGlass) {
+      // Smooth fluid viscosity decay for pointer surface interaction
+      this.glassPointerVelX *= 0.84;
+      this.glassPointerVelY *= 0.84;
+      if (Math.abs(this.glassPointerVelX) < 0.01) this.glassPointerVelX = 0;
+      if (Math.abs(this.glassPointerVelY) < 0.01) this.glassPointerVelY = 0;
+
+      gl.useProgram(this.liquidGlProg);
+      gl.uniform2f(this.uLiquid.uResolution, this.canvasW, this.canvasH);
+      gl.uniform2f(this.uLiquid.uCssSize, this.cssW, this.cssH);
+      gl.uniform1f(this.uLiquid.uTime, elapsedSec);
+      gl.uniform1i(this.uLiquid.uGlassCount, this.glassCount);
+      gl.uniform4fv(this.uLiquid.uGlassRect, this.glassRects);
+      gl.uniform4fv(this.uLiquid.uGlassParams, this.glassParams);
+      gl.uniform4f(
+        this.uLiquid.uPointerFluid,
+        this.glassPointerX,
+        this.glassPointerY,
+        this.glassPointerVelX * this.glassPointerActive,
+        this.glassPointerVelY * this.glassPointerActive
+      );
+
+      // Stage 0: Base capsules & sheets (refract live sRGB scene)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.glassHasElevated ? this.srgbB.fbo : null);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.srgbA.tex);
+      gl.uniform1i(this.uLiquid.uTex, 0);
+      gl.uniform1i(this.uLiquid.uPassStage, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      // Stage 1: Elevated stacked droplet lenses (refract Stage 0 glass + scene!)
+      if (this.glassHasElevated) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.srgbB.tex);
+        gl.uniform1i(this.uLiquid.uTex, 0);
+        gl.uniform1i(this.uLiquid.uPassStage, 1);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+    }
   };
 
   public dispose(): void {
@@ -2141,6 +2442,7 @@ export class SiliconEngine {
     gl.deleteProgram(this.bloomDownProg);
     gl.deleteProgram(this.bloomUpProg);
     gl.deleteProgram(this.compositeProg);
+    gl.deleteProgram(this.liquidGlProg);
 
     if (this.canvas.parentElement === this.container) {
       this.container.removeChild(this.canvas);

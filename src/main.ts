@@ -131,30 +131,37 @@ function mountApp(): void {
     <div class="apple-stage">
       <div id="gpu-mount" class="raymarch-mount"></div>
 
-      <div id="reticle-layer" class="reticle-layer" aria-hidden="true">
+      <div id="reticle-layer" class="reticle-layer intro-hidden" aria-hidden="true">
         ${buildReticleSvg()}
         <div id="nm-bracket" class="nm-bracket" style="opacity:0;pointer-events:none;display:none;">
           <div class="nm-line"></div>
-          <div id="nm-label" class="nm-label">12 nm Gate · 5 nm GAA Ribbon</div>
+          <div id="nm-label" class="nm-label liquid-glass">12 nm Gate · 5 nm GAA Ribbon</div>
           <div class="nm-line"></div>
         </div>
       </div>
 
+      <!-- "First Light" Hybrid Keynote Title Whisper (Auto-dissolves before crane settle) -->
+      <div id="intro-title" class="intro-title" aria-hidden="true">
+        <div class="intro-eyebrow">SILICON MICROSCOPE</div>
+        <div id="intro-chip-name" class="intro-chip-name">Apple Silicon</div>
+        <div class="intro-subline">10× TO 150T× · LIVE HARDWARE X-RAY</div>
+      </div>
+
       <!-- Whisper-Quiet Hover Preview Pill -->
-      <div id="hover-pill" class="hover-pill" aria-hidden="true">
+      <div id="hover-pill" class="hover-pill liquid-glass" aria-hidden="true">
         <span id="hover-title" class="hover-title"></span>
         <span class="hover-sep">·</span>
         <span id="hover-val" class="hover-val"></span>
       </div>
 
-      <button id="restore-hud-btn" class="restore-hud-btn obsidian-glass" title="Show Interface (H)" style="display:none;">
+      <button id="restore-hud-btn" class="restore-hud-btn liquid-glass" title="Show Interface (H)" style="display:none;">
         ${ICONS.eye}
         <span>Show UI</span>
       </button>
 
-      <div id="hud-chrome" class="hud-chrome">
+      <div id="hud-chrome" class="hud-chrome intro-staging">
         <div class="hud-top">
-          <div class="editorial-brand">
+          <div id="editorial-brand" class="editorial-brand liquid-glass" title="Replay Entrance (R)">
             <div class="editorial-title-row">
               <span id="live-pulse" class="live-pulse"></span>
               <span id="chip-name" class="editorial-name">Apple Silicon</span>
@@ -162,7 +169,7 @@ function mountApp(): void {
             <div id="editorial-meta" class="editorial-meta">Initializing silicon telemetry…</div>
           </div>
 
-          <div class="tool-capsule obsidian-glass">
+          <div class="tool-capsule liquid-glass">
             <button id="btn-tour" class="glass-btn" title="Cinematic Dive from US Quarter down to Quarks (Space)">
               <span id="btn-tour-icon">${ICONS.play}</span><span id="btn-tour-lbl">Dive</span>
             </button>
@@ -186,7 +193,7 @@ function mountApp(): void {
           </div>
         </div>
 
-        <div id="activity-sheet" class="activity-sheet obsidian-glass" style="display:none;">
+        <div id="activity-sheet" class="activity-sheet liquid-glass liquid-glass-sheet" style="display:none;">
           <div class="sheet-header">
             <span id="sheet-cores">8P + 2E CORES</span>
             <span id="sheet-fps">120 FPS · LIVE</span>
@@ -227,7 +234,7 @@ function mountApp(): void {
         </div>
 
         <!-- Interactive Die Block Inspector Card (Appears on Click) -->
-        <div id="inspect-card" class="inspect-card obsidian-glass" style="display:none;">
+        <div id="inspect-card" class="inspect-card liquid-glass liquid-glass-sheet" style="display:none;">
           <div class="inspect-head">
             <div>
               <div id="inspect-title" class="inspect-title">Performance Core P0</div>
@@ -241,7 +248,7 @@ function mountApp(): void {
         </div>
 
         <div class="hud-bottom">
-          <div class="scale-hud-row">
+          <div class="scale-hud-row liquid-glass">
             <div class="scale-bar-wrap" title="Calibrated physical optical scale bar">
               <div id="scale-bar-rule" class="scale-bar-rule"></div>
               <span id="scale-bar-label" class="scale-bar-label">5 mm</span>
@@ -249,7 +256,7 @@ function mountApp(): void {
             <div class="scale-sep"></div>
             <div id="scale-caption" class="floating-scale-caption">21 mm · 10×</div>
           </div>
-          <div id="zoom-rail" class="zoom-rail obsidian-glass">
+          <div id="zoom-rail" class="zoom-rail liquid-glass">
             <div id="rail-indicator" class="rail-indicator"></div>
             ${ZOOM_STOPS.map(
               (st, idx) =>
@@ -272,14 +279,21 @@ function mountApp(): void {
   const scaleBarRule = document.getElementById('scale-bar-rule')!;
   const scaleBarLabel = document.getElementById('scale-bar-label')!;
   const railIndicator = document.getElementById('rail-indicator')!;
+  const zoomRailEl = document.getElementById('zoom-rail')!;
   const railButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#zoom-rail .rail-stop'));
+  const toolCapsuleEl = document.querySelector<HTMLElement>('.tool-capsule')!;
+  const scaleHudRowEl = document.querySelector<HTMLElement>('.scale-hud-row')!;
+  const toolButtons = Array.from(toolCapsuleEl.querySelectorAll<HTMLButtonElement>('.glass-btn'));
 
   const hoverPill = document.getElementById('hover-pill')!;
   const hoverTitleEl = document.getElementById('hover-title')!;
   const hoverValEl = document.getElementById('hover-val')!;
 
   const livePulseEl = document.getElementById('live-pulse')!;
+  const editorialBrandEl = document.getElementById('editorial-brand')!;
   const chipNameEl = document.getElementById('chip-name')!;
+  const introTitleEl = document.getElementById('intro-title')!;
+  const introChipNameEl = document.getElementById('intro-chip-name')!;
   const editorialMetaEl = document.getElementById('editorial-meta')!;
   const hudChromeEl = document.getElementById('hud-chrome')!;
   const restoreHudBtn = document.getElementById('restore-hud-btn')!;
@@ -337,8 +351,30 @@ function mountApp(): void {
 
   // Cached button layout geometry for zero-reflow continuously gliding rail indicator
   let railMetrics: { x: number; w: number }[] = [];
+  let railViewportRect = { left: 0, top: 0 };
+  let railIndicatorBox = { cx: 0, cy: 0, hw: 0, hh: 18 };
+  let hoverPillBox = { cx: 0, cy: 0, hw: 0, hh: 0, visible: false };
+  let nmLabelBox = { cx: 0, cy: 0, hw: 0, hh: 0, opacity: 0 };
+
+  type GlassReg = {
+    cx: number;
+    cy: number;
+    hw: number;
+    hh: number;
+    radius: number;
+    bevel: number;
+    frost: number;
+    style: 0 | 1 | 2;
+    alpha: number;
+  };
+  let staticGlassBase: GlassReg[] = [];
+  let staticGlassElevated: GlassReg[] = [];
+  let pushGlassToEngine: () => void = () => {};
+
   const measureRail = () => {
     railMetrics = railButtons.map((btn) => ({ x: btn.offsetLeft, w: btn.offsetWidth }));
+    const rr = zoomRailEl.getBoundingClientRect();
+    railViewportRect = { left: rr.left, top: rr.top };
     updateRailIndicator(lastZoomRendered === -99 ? 0 : lastZoomRendered);
   };
 
@@ -354,13 +390,14 @@ function mountApp(): void {
     const w = m0.w + (m1.w - m0.w) * f;
     railIndicator.style.transform = `translate3d(${x.toFixed(1)}px, 0, 0)`;
     railIndicator.style.width = `${w.toFixed(1)}px`;
+    railIndicatorBox = {
+      cx: railViewportRect.left + x + w * 0.5,
+      cy: railViewportRect.top + 4 + 18,
+      hw: w * 0.5,
+      hh: 18,
+    };
+    pushGlassToEngine();
   };
-
-  window.addEventListener('resize', measureRail);
-  if (document.fonts && document.fonts.ready) {
-    void document.fonts.ready.then(measureRail);
-  }
-  measureRail();
 
   // Breathing reticle engagement controller (whisper-quiet at rest, crisp during zoom/drag/dive)
   let reticleEngaged = false;
@@ -389,6 +426,7 @@ function mountApp(): void {
   const renderInspectCard = () => {
     if (!activeInspect) {
       inspectCard.style.display = 'none';
+      syncGlassLayout();
       return;
     }
     inspectCard.style.display = 'flex';
@@ -398,20 +436,36 @@ function mountApp(): void {
     inspectDetail.textContent = activeInspect.detail(telemetry);
     const stopName = ZOOM_STOPS.find((s) => Math.abs(s.z - activeInspect!.diveZoom) < 0.01)?.label ?? 'Die';
     inspectDive.textContent = `Dive to ${stopName} →`;
+    syncGlassLayout();
   };
 
   const renderHoverPill = (hit: DieInspectHit | null, cx: number, cy: number) => {
     activeHover = hit;
     if (!hit || pureView || (activeInspect && activeInspect.id === hit.id)) {
       hoverPill.classList.remove('visible');
+      if (hoverPillBox.visible) {
+        hoverPillBox.visible = false;
+        pushGlassToEngine();
+      }
       return;
     }
-    hoverTitleEl.textContent = hit.title(telemetry);
-    hoverValEl.textContent = conciseHoverMetric(hit, telemetry);
+    const nextTitle = hit.title(telemetry);
+    const nextVal = conciseHoverMetric(hit, telemetry);
+    const textChanged = hoverTitleEl.textContent !== nextTitle || hoverValEl.textContent !== nextVal;
+    hoverTitleEl.textContent = nextTitle;
+    hoverValEl.textContent = nextVal;
     const clampedX = Math.max(16, Math.min(window.innerWidth - 220, cx + 16));
     const clampedY = Math.max(16, Math.min(window.innerHeight - 54, cy - 32));
     hoverPill.style.transform = `translate3d(${clampedX.toFixed(0)}px, ${clampedY.toFixed(0)}px, 0)`;
     hoverPill.classList.add('visible');
+    if (textChanged || !hoverPillBox.visible || hoverPillBox.hw < 1) {
+      hoverPillBox.hw = hoverPill.offsetWidth * 0.5;
+      hoverPillBox.hh = hoverPill.offsetHeight * 0.5;
+    }
+    hoverPillBox.cx = clampedX + hoverPillBox.hw;
+    hoverPillBox.cy = clampedY + hoverPillBox.hh;
+    hoverPillBox.visible = true;
+    pushGlassToEngine();
   };
 
   const telemetryModeBadge = () =>
@@ -423,7 +477,85 @@ function mountApp(): void {
           ? 'PRESSURE'
           : 'WEB SIM';
 
+  let introActive = false;
+  let introHudAlpha = 1.0;
+  let introPhase: 'idle' | 'hidden' | 'title' | 'dissolve' | 'lock' | 'hud' | 'settle' | 'done' = 'idle';
+
+  const syncIntroUi = (active: boolean, elapsed: number) => {
+    introActive = active;
+    if (!active) {
+      if (introPhase === 'done' && introHudAlpha >= 0.999) return;
+      const wasEarlySkip = introPhase === 'hidden' || introPhase === 'title' || introPhase === 'dissolve';
+      introPhase = 'done';
+      introHudAlpha = 1.0;
+      introTitleEl.classList.remove('visible');
+      introTitleEl.classList.add('exiting');
+      introTitleEl.classList.toggle('skipped', wasEarlySkip);
+      reticleLayer.classList.remove('intro-hidden', 'intro-lock');
+      hudChromeEl.classList.remove('intro-staging');
+      syncGlassLayout();
+      return;
+    }
+
+    const nextHudAlpha = elapsed < 2.72 ? 0.0 : Math.min(1.0, (elapsed - 2.72) / 0.75);
+    const alphaChanged = Math.abs(nextHudAlpha - introHudAlpha) > 0.008;
+    introHudAlpha = nextHudAlpha;
+
+    if (elapsed < 0.25) {
+      if (introPhase !== 'hidden') {
+        introPhase = 'hidden';
+        introTitleEl.classList.remove('visible', 'exiting', 'skipped');
+        reticleLayer.classList.remove('intro-lock', 'engaged');
+        reticleLayer.classList.add('intro-hidden');
+        hudChromeEl.classList.add('intro-staging');
+        nmBracket.style.display = 'none';
+        nmLabelBox.opacity = 0;
+        pushGlassToEngine();
+      }
+    } else if (elapsed < 2.2) {
+      if (introPhase !== 'title') {
+        introPhase = 'title';
+        introTitleEl.classList.remove('exiting', 'skipped');
+        introTitleEl.classList.add('visible');
+      }
+    } else if (elapsed < 2.45) {
+      if (introPhase !== 'dissolve') {
+        introPhase = 'dissolve';
+        introTitleEl.classList.remove('visible', 'skipped');
+        introTitleEl.classList.add('exiting');
+      }
+    } else if (elapsed < 2.72) {
+      if (introPhase !== 'lock') {
+        introPhase = 'lock';
+        introTitleEl.classList.remove('visible', 'skipped');
+        introTitleEl.classList.add('exiting');
+        reticleLayer.classList.remove('intro-hidden');
+        reticleLayer.classList.add('intro-lock');
+      }
+    } else if (elapsed < 3.55) {
+      if (introPhase !== 'hud') {
+        introPhase = 'hud';
+        reticleLayer.classList.remove('intro-hidden');
+        reticleLayer.classList.add('intro-lock');
+        hudChromeEl.classList.remove('intro-staging');
+        syncGlassLayout();
+      }
+    } else if (introPhase !== 'settle') {
+      introPhase = 'settle';
+      reticleLayer.classList.remove('intro-hidden', 'intro-lock');
+      hudChromeEl.classList.remove('intro-staging');
+      syncGlassLayout();
+    }
+
+    if (alphaChanged) {
+      pushGlassToEngine();
+    }
+  };
+
   const engine = new SiliconEngine(gpuMount, {
+    onIntroFrame: ({ active, elapsed }) => {
+      syncIntroUi(active, elapsed);
+    },
     onZoomFrame: (z, fps, motion, interacting) => {
       currentFps = fps;
       const now = performance.now();
@@ -432,7 +564,7 @@ function mountApp(): void {
         sheetFpsEl.textContent = `${currentFps} FPS · ${telemetryModeBadge()}`;
       }
 
-      if (interacting || motion > 0.03) {
+      if (!introActive && (interacting || motion > 0.03)) {
         engageReticle(interacting);
       }
 
@@ -445,14 +577,25 @@ function mountApp(): void {
       reticleArc.setAttribute('stroke-dasharray', `${(circ * frac).toFixed(1)} ${circ.toFixed(1)}`);
       reticleDial.setAttribute('transform', `rotate(${(-dialDeg * 0.55).toFixed(2)} 270 270)`);
 
-      if (bracketText && bracketOpacity > 0.01) {
+      if (!introActive && bracketText && bracketOpacity > 0.01) {
+        const wasHidden = nmBracket.style.display === 'none';
         nmBracket.style.display = 'flex';
         nmBracket.style.opacity = bracketOpacity.toFixed(3);
-        if (nmLabel.textContent !== bracketText) {
+        const textChanged = nmLabel.textContent !== bracketText;
+        if (textChanged) {
           nmLabel.textContent = bracketText;
         }
+        if (wasHidden || textChanged || nmLabelBox.hw < 1) {
+          const rNm = nmLabel.getBoundingClientRect();
+          nmLabelBox.cx = rNm.left + rNm.width * 0.5;
+          nmLabelBox.cy = rNm.top + rNm.height * 0.5;
+          nmLabelBox.hw = rNm.width * 0.5;
+          nmLabelBox.hh = rNm.height * 0.5;
+        }
+        nmLabelBox.opacity = bracketOpacity;
       } else if (nmBracket.style.display !== 'none') {
         nmBracket.style.display = 'none';
+        nmLabelBox.opacity = 0;
       }
 
       const cap = `${sizeText} · ${magText}`;
@@ -497,7 +640,166 @@ function mountApp(): void {
       if (!active && reticleEngaged) {
         engageReticle(false);
       }
+      syncGlassLayout();
     },
+  });
+
+  // Sync DOM Liquid Glass bounds to the WebGL2 HDR Refraction Shader (zero CSS backdrop-filter tax!)
+  const rectToGlass = (
+    el: HTMLElement,
+    radius: number,
+    bevel: number,
+    frost: number,
+    style: 0 | 1 | 2,
+    alpha = 1.0
+  ): GlassReg | null => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return null;
+    return {
+      cx: r.left + r.width * 0.5,
+      cy: r.top + r.height * 0.5,
+      hw: r.width * 0.5,
+      hh: r.height * 0.5,
+      radius: Math.min(radius, Math.min(r.width, r.height) * 0.5),
+      bevel,
+      frost,
+      style,
+      alpha,
+    };
+  };
+
+  pushGlassToEngine = () => {
+    const hudAlpha = pureView ? 1.0 : introHudAlpha;
+    if (hudAlpha < 0.005) {
+      engine.setLiquidGlassRegions([]);
+      return;
+    }
+    const out: GlassReg[] = [];
+    for (let i = 0; i < staticGlassBase.length; i++) {
+      const g = staticGlassBase[i];
+      out.push(hudAlpha < 0.999 ? { ...g, alpha: g.alpha * hudAlpha } : g);
+    }
+    if (hoverPillBox.visible && hoverPillBox.hw > 1) {
+      out.push({
+        cx: hoverPillBox.cx,
+        cy: hoverPillBox.cy,
+        hw: hoverPillBox.hw,
+        hh: hoverPillBox.hh,
+        radius: hoverPillBox.hh,
+        bevel: 0.24,
+        frost: 1.2,
+        style: 0,
+        alpha: hudAlpha,
+      });
+    }
+    if (nmLabelBox.opacity > 0.01 && nmLabelBox.hw > 1) {
+      out.push({
+        cx: nmLabelBox.cx,
+        cy: nmLabelBox.cy,
+        hw: nmLabelBox.hw,
+        hh: nmLabelBox.hh,
+        radius: nmLabelBox.hh,
+        bevel: 0.24,
+        frost: 1.1,
+        style: 0,
+        alpha: nmLabelBox.opacity * hudAlpha,
+      });
+    }
+    // Elevated crystal droplet lenses rendered in Stage 1 so they refract Stage 0 glass + scene!
+    if (!pureView && railIndicatorBox.hw > 1) {
+      out.push({
+        cx: railIndicatorBox.cx,
+        cy: railIndicatorBox.cy,
+        hw: railIndicatorBox.hw,
+        hh: railIndicatorBox.hh,
+        radius: 18,
+        bevel: 0.28,
+        frost: 0.0,
+        style: 2,
+        alpha: hudAlpha,
+      });
+    }
+    for (let i = 0; i < staticGlassElevated.length; i++) {
+      const g = staticGlassElevated[i];
+      out.push(hudAlpha < 0.999 ? { ...g, alpha: g.alpha * hudAlpha } : g);
+    }
+    engine.setLiquidGlassRegions(out);
+  };
+
+  const syncGlassLayout = () => {
+    const base: GlassReg[] = [];
+    const elevated: GlassReg[] = [];
+
+    if (pureView) {
+      const restore = rectToGlass(restoreHudBtn, 999, 0.24, 1.3, 0, 1.0);
+      if (restore) base.push(restore);
+    } else {
+      const brand = rectToGlass(editorialBrandEl, 22, 0.22, 1.5, 0, 1.0);
+      if (brand) base.push(brand);
+      const tools = rectToGlass(toolCapsuleEl, 999, 0.25, 1.3, 0, 1.0);
+      if (tools) base.push(tools);
+      const scaleRow = rectToGlass(scaleHudRowEl, 999, 0.26, 1.1, 0, 1.0);
+      if (scaleRow) base.push(scaleRow);
+      const rail = rectToGlass(zoomRailEl, 999, 0.25, 1.3, 0, 1.0);
+      if (rail) base.push(rail);
+
+      if (showActivity) {
+        const sheet = rectToGlass(activitySheet, 26, 0.14, 3.0, 1, 1.0);
+        if (sheet) base.push(sheet);
+      }
+      if (activeInspect) {
+        const card = rectToGlass(inspectCard, 26, 0.14, 3.0, 1, 1.0);
+        if (card) base.push(card);
+        const diveBtn = rectToGlass(inspectDive, 999, 0.28, 0.0, 2, 1.0);
+        if (diveBtn) elevated.push(diveBtn);
+      }
+      for (const btn of toolButtons) {
+        if (btn.classList.contains('active')) {
+          const activeLens = rectToGlass(btn, 999, 0.28, 0.0, 2, 1.0);
+          if (activeLens) elevated.push(activeLens);
+        }
+      }
+    }
+
+    staticGlassBase = base;
+    staticGlassElevated = elevated;
+    const rr = zoomRailEl.getBoundingClientRect();
+    railViewportRect = { left: rr.left, top: rr.top };
+    pushGlassToEngine();
+  };
+
+  // Re-sync automatically whenever text width or viewport changes
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => {
+      measureRail();
+      syncGlassLayout();
+    });
+    ro.observe(editorialBrandEl);
+    ro.observe(toolCapsuleEl);
+    ro.observe(scaleHudRowEl);
+    ro.observe(zoomRailEl);
+    ro.observe(activitySheet);
+    ro.observe(inspectCard);
+  }
+  window.addEventListener('resize', () => {
+    measureRail();
+    syncGlassLayout();
+  });
+  if (document.fonts && document.fonts.ready) {
+    void document.fonts.ready.then(() => {
+      measureRail();
+      syncGlassLayout();
+    });
+  }
+  measureRail();
+  syncGlassLayout();
+
+  // Global pointer tracking for dynamic specular rim highlights on curved Liquid Glass edges
+  window.addEventListener('pointermove', (ev) => {
+    engine.setGlassPointer(ev.clientX, ev.clientY, true);
+  });
+  window.addEventListener('pointerleave', () => {
+    engine.setGlassPointer(0, 0, false);
   });
 
   inspectClose.addEventListener('click', () => engine.clearInspect());
@@ -597,36 +899,65 @@ function mountApp(): void {
     btnActivity.classList.toggle('active', showActivity);
     activitySheet.style.display = showActivity ? 'flex' : 'none';
     if (showActivity) renderActivitySheet();
+    syncGlassLayout();
   });
 
   btnThermal.addEventListener('click', () => {
     engine.thermal = !engine.thermal;
     btnThermal.classList.toggle('active', engine.thermal);
+    syncGlassLayout();
   });
 
   btnOrbit.addEventListener('click', () => {
     engine.autoOrbit = !engine.autoOrbit;
     btnOrbit.classList.toggle('active', engine.autoOrbit);
+    syncGlassLayout();
   });
 
   const setPure = (next: boolean) => {
     pureView = next;
     hudChromeEl.classList.toggle('hidden', pureView);
     restoreHudBtn.style.display = pureView ? 'inline-flex' : 'none';
-    if (pureView) hoverPill.classList.remove('visible');
+    if (pureView) {
+      hoverPill.classList.remove('visible');
+      hoverPillBox.visible = false;
+    }
+    syncGlassLayout();
   };
 
   btnPure.addEventListener('click', () => setPure(true));
   restoreHudBtn.addEventListener('click', () => setPure(false));
 
+  editorialBrandEl.addEventListener('click', () => {
+    if (pureView) setPure(false);
+    if (showActivity) {
+      showActivity = false;
+      btnActivity.classList.remove('active');
+      activitySheet.style.display = 'none';
+    }
+    introPhase = 'idle';
+    engine.startIntro();
+  });
+
   window.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'h' || e.key === 'H') {
+      if (engine.isIntroActive) engine.skipIntro();
       setPure(!pureView);
+    } else if (e.key === 'r' || e.key === 'R') {
+      if (pureView) setPure(false);
+      if (showActivity) {
+        showActivity = false;
+        btnActivity.classList.remove('active');
+        activitySheet.style.display = 'none';
+      }
+      introPhase = 'idle';
+      engine.startIntro();
     } else if (e.code === 'Space' && !(e.target instanceof HTMLButtonElement)) {
       e.preventDefault();
       engine.toggleTour();
     } else if (e.key === 'Escape') {
+      if (engine.isIntroActive) engine.skipIntro();
       if (engine.isTourActive) engine.stopTour();
       if (activeInspect) engine.clearInspect();
     }
@@ -640,6 +971,7 @@ function mountApp(): void {
     browserTelemetry.setBurst(true);
     btnBurst.classList.add('active');
     btnBurstLbl.textContent = 'Bursting';
+    syncGlassLayout();
 
     const workerCode = `
       const end = Date.now() + 3400;
@@ -662,6 +994,7 @@ function mountApp(): void {
       browserTelemetry.setBurst(false);
       btnBurst.classList.remove('active');
       btnBurstLbl.textContent = 'Burst';
+      syncGlassLayout();
     }, 3600);
   });
 
@@ -676,6 +1009,7 @@ function mountApp(): void {
 
     livePulseEl.classList.toggle('sim', !data.live);
     chipNameEl.textContent = data.chipName;
+    introChipNameEl.textContent = data.chipName;
     const cpuPct = Math.round(data.cpuTotal * 100);
     const gpuPct = Math.round(data.gpuEst * 100);
     const tempPart = data.socTempC !== null ? `${data.socTempC.toFixed(0)}°C · ` : '';
