@@ -237,6 +237,7 @@ uniform float uFloorY;
 uniform float uThermal;
 uniform vec4 uMacLoads;
 uniform float uPulsePhase;
+uniform vec4 uInspectBox; // (cx, cz, hx, hz); hx <= 0 means inactive
 
 out vec4 fragColor;
 
@@ -468,6 +469,17 @@ void main() {
   vec3 ambient = baseCol * vec3(0.06, 0.08, 0.12) * ao;
 
   vec3 col = ambient + direct * ao + envReflection + semRim + emissive;
+
+  // Razor-sharp 3D silicon selection frame when user clicks a die block to inspect
+  if (uInspectBox.z > 0.001 && uZoom < 0.85) {
+    vec2 dBox = abs(p.xz - uInspectBox.xy) - uInspectBox.zw;
+    float edgeDist = abs(max(dBox.x, dBox.y));
+    float inside = step(max(dBox.x, dBox.y), 0.02);
+    float rim = smoothstep(0.036, 0.006, edgeDist) * (1.0 - smoothstep(0.0, 0.25, max(dBox.x, dBox.y)));
+    float pulse = 0.78 + 0.22 * sin(uTime * 5.0);
+    col += vec3(0.45, 0.88, 1.25) * rim * pulse * (1.0 - uZoom * 1.1);
+    col += vec3(0.04, 0.12, 0.22) * inside * 0.45 * (1.0 - uZoom * 1.1);
+  }
 
   // Smooth infinite studio fog matching our obsidian backdrop
   float fogDist = length(vScaledPos.xz);

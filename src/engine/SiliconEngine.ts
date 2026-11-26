@@ -1,6 +1,7 @@
 import { DEFAULT_TELEMETRY, LiveMacTelemetry } from '../sim/macTelemetry';
 import { createParametricBeveledBox, createParametricBeveledCylinder, MeshBuffers } from './geometry';
-import { mat4LookAt, mat4Multiply, mat4Ortho, mat4Perspective } from './math';
+import { DieInspectHit, pickDieRegion } from './inspect';
+import { mat4Invert, mat4LookAt, mat4Multiply, mat4Ortho, mat4Perspective } from './math';
 import {
   BLOOM_DOWN_FS,
   BLOOM_PREFILTER_FS,
@@ -16,6 +17,7 @@ import { buildWorld0, buildWorld1, buildWorld2, buildWorld3, buildWorld4, WorldI
 
 export interface EngineHooks {
   onZoomFrame: (zoom: number, fps: number) => void;
+  onInspect: (hit: DieInspectHit | null) => void;
 }
 
 interface StageDraw {
@@ -98,9 +100,17 @@ export class SiliconEngine {
   private projMat = new Float32Array(16);
   private viewMat = new Float32Array(16);
   private viewProjMat = new Float32Array(16);
+  private invViewProjMat = new Float32Array(16);
   private lightProjMat = new Float32Array(16);
   private lightViewMat = new Float32Array(16);
   private lightVPMat = new Float32Array(16);
+  private world0Scale = 1.0;
+
+  // Interactive click-to-inspect state
+  private inspectBox: [number, number, number, number] = [0, 0, 0, 0];
+  private hasInspect = false;
+  private downX = 0;
+  private downY = 0;
 
   // Camera & snappy zoom state
   public zoom = 0.0;
@@ -301,6 +311,7 @@ export class SiliconEngine {
       'uSemFactor',
       'uFloorY',
       'uThermal',
+      'uInspectBox',
     ]);
 
     this.uPrefilter = grab(this.prefilterProg, ['uTexA', 'uTexB', 'uBlend', 'uTexelSize']);
@@ -517,6 +528,44 @@ export class SiliconEngine {
     this.telemetry = t;
   }
 
+  public clearInspect(): void {
+    if (!this.hasInspect) return;
+    this.hasInspect = false;
+    this.inspectBox = [0, 0, 0, 0];
+    this.hooks.onInspect(null);
+  }
+
+  private unprojectDiePoint(clientX: number, clientY: number): [number, number] | null {
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    if (!mat4Invert(this.invViewProjMat, this.viewProjMat)) return null;
+
+    const nx = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = 1 - ((clientY - rect.top) / rect.height) * 2;
+    const m = this.invViewProjMat;
+
+    const unproj = (nz: number): [number, number, number] => {
+      const x = m[0] * nx + m[4] * ny + m[8] * nz + m[12];
+      const y = m[1] * nx + m[5] * ny + m[9] * nz + m[13];
+      const z = m[2] * nx + m[6] * ny + m[10] * nz + m[14];
+      const w = m[3] * nx + m[7] * ny + m[11] * nz + m[15] || 1;
+      return [x / w, y / w, z / w];
+    };
+
+    const nearP = unproj(-1);
+    const farP = unproj(1);
+    const dy = farP[1] - nearP[1];
+    if (Math.abs(dy) < 1e-6) return null;
+
+    const planeY = 0.185 * this.world0Scale;
+    const t = (planeY - nearP[1]) / dy;
+    if (t < 0) return null;
+
+    const sx = nearP[0] + (farP[0] - nearP[0]) * t;
+    const sz = nearP[2] + (farP[2] - nearP[2]) * t;
+    return [sx / this.world0Scale, sz / this.world0Scale];
+  }
+
   public flyToZoom(z: number): void {
     this.targetZoom = Math.max(0, Math.min(4, z));
     this.zoomRate = 8.5; // crisp Apple ease-out for rail button jumps
@@ -562,11 +611,22 @@ export class SiliconEngine {
     this.dragging = true;
     this.lastX = e.clientX;
     this.lastY = e.clientY;
+    this.downX = e.clientX;
+    this.downY = e.clientY;
     this.canvas.setPointerCapture(e.pointerId);
   };
 
   private onPointerMove = (e: PointerEvent): void => {
-    if (!this.dragging) return;
+    if (!this.dragging) {
+      if (this.zoom < 0.85) {
+        const pt = this.unprojectDiePoint(e.clientX, e.clientY);
+        const hit = pt ? pickDieRegion(pt[0], pt[1]) : null;
+        this.canvas.style.cursor = hit ? 'pointer' : 'grab';
+      } else {
+        this.canvas.style.cursor = 'grab';
+      }
+      return;
+    }
     const dx = e.clientX - this.lastX;
     const dy = e.clientY - this.lastY;
     this.lastX = e.clientX;
@@ -576,11 +636,24 @@ export class SiliconEngine {
   };
 
   private onPointerUp = (e: PointerEvent): void => {
+    const moved = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
     this.dragging = false;
     try {
       this.canvas.releasePointerCapture(e.pointerId);
     } catch {
       // ignore
+    }
+
+    if (moved < 5 && this.zoom < 0.85) {
+      const pt = this.unprojectDiePoint(e.clientX, e.clientY);
+      const hit = pt ? pickDieRegion(pt[0], pt[1]) : null;
+      if (hit) {
+        this.hasInspect = true;
+        this.inspectBox = hit.box;
+        this.hooks.onInspect(hit);
+      } else {
+        this.clearInspect();
+      }
     }
   };
 
@@ -692,6 +765,17 @@ export class SiliconEngine {
     gl.uniform1f(this.uScene.uSemFactor, semFactor);
     gl.uniform1f(this.uScene.uFloorY, stage.floorY);
     gl.uniform1f(this.uScene.uThermal, this.thermal ? 1.0 : 0.0);
+    if (stageIdx === 0 && this.hasInspect) {
+      gl.uniform4f(
+        this.uScene.uInspectBox,
+        this.inspectBox[0],
+        this.inspectBox[1],
+        this.inspectBox[2],
+        this.inspectBox[3]
+      );
+    } else {
+      gl.uniform4f(this.uScene.uInspectBox, 0, 0, 0, 0);
+    }
 
     this.drawStageGeometry(stage);
 
@@ -796,6 +880,10 @@ export class SiliconEngine {
     const opticalStep = 2.85;
     const s0 = Math.pow(opticalStep, f);
     const s1 = Math.pow(opticalStep, f - 1.0);
+    if (idx === 0) this.world0Scale = s0;
+    if (this.hasInspect && z > 0.85) {
+      this.clearInspect();
+    }
     const blend = z >= 4.0 ? 1.0 : this.smoothstep(0.22, 0.78, f);
 
     const gl = this.gl;

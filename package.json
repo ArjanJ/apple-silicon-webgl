@@ -1,24 +1,15 @@
 {
   "name": "apple-silicon-3d",
   "private": true,
-  "version": "1.0.0",
-  "type": "module",
+  "version": "2.0.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:native": "clang -O2 -fobjc-arc -framework Foundation -framework IOKit -framework CoreFoundation native/mac_telemetry.m -o native/mac_telemetry",
     "preview": "vite preview"
   },
-  "dependencies": {
-    "lucide-react": "^0.475.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "three": "^0.172.0"
-  },
   "devDependencies": {
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@types/three": "^0.172.0",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@types/node": "^22.0.0",
     "typescript": "^5.7.3",
     "vite": "^6.1.0"
   }

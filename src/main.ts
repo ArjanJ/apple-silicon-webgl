@@ -1,4 +1,5 @@
 import './styles.css';
+import { DieInspectHit } from './engine/inspect';
 import { SiliconEngine } from './engine/SiliconEngine';
 import { DEFAULT_TELEMETRY, LiveMacTelemetry } from './sim/macTelemetry';
 import { formatMagnification } from './sim/microJourney';
@@ -6,8 +7,8 @@ import { formatMagnification } from './sim/microJourney';
 /**
  * Zero-Overhead Vanilla DOM Controller for Apple Silicon 3D Microscope.
  *   - No React reconciliation or virtual DOM during 120 FPS zoom
- *   - Direct SVG & text node updates only when values actually change
- *   - Crisp obsidian-glass HUD with zero CSS backdrop-filter compositor overhead
+ *   - Live Native Mach/IOKit telemetry (real GPU %, VRAM, SoC Die Temp, per-core CPU)
+ *   - Interactive click-to-inspect on any silicon die block with 3D surface highlight
  */
 
 const ZOOM_STOPS = [
@@ -33,6 +34,7 @@ const ICONS = {
   orbit: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.466 7.5C15.643 4.237 13.952 2 12 2 9.239 2 7 6.477 7 12s2.239 10 5 10c.342 0 .677-.069 1-.2"/><path d="m15.194 13.707 3.814 1.86-1.86 3.814"/><path d="M19 15.57c-1.804.885-4.274 1.43-7 1.43-5.523 0-10-2.239-10-5s4.477-5 10-5c4.838 0 8.873 1.718 9.8 4"/></svg>`,
   eyeOff: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>`,
   eye: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`,
+  close: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
 };
 
 function buildReticleSvg(): string {
@@ -114,11 +116,11 @@ function mountApp(): void {
               <span class="live-pulse"></span>
               <span id="chip-name" class="editorial-name">Apple Silicon</span>
             </div>
-            <div id="editorial-meta" class="editorial-meta">17% CPU · 14.2/32 GB · 12 KB/s</div>
+            <div id="editorial-meta" class="editorial-meta">Connecting to Mac hardware…</div>
           </div>
 
           <div class="tool-capsule obsidian-glass">
-            <button id="btn-activity" class="glass-btn" title="Inspect live per-core activity and top processes">
+            <button id="btn-activity" class="glass-btn" title="Inspect live per-core CPU, GPU, and die thermal telemetry">
               ${ICONS.activity}<span>Activity</span>
             </button>
             <button id="btn-burst" class="glass-btn" title="Run a 3.5-second multi-core burst on your Mac">
@@ -140,10 +142,38 @@ function mountApp(): void {
         <div id="activity-sheet" class="activity-sheet obsidian-glass" style="display:none;">
           <div class="sheet-header">
             <span id="sheet-cores">8P + 2E CORES</span>
-            <span id="sheet-fps">60 FPS · LIVE</span>
+            <span id="sheet-fps">120 FPS · LIVE</span>
           </div>
           <div id="tick-meter" class="tick-meter" title="Live per-core CPU utilization"></div>
+          <div id="gpu-thermal-row" class="sheet-hw-row">
+            <div class="hw-metric">
+              <span class="hw-lbl" id="hw-gpu-lbl">GPU</span>
+              <span class="hw-val" id="hw-gpu-val">—</span>
+            </div>
+            <div class="hw-metric">
+              <span class="hw-lbl">VRAM</span>
+              <span class="hw-val" id="hw-vram-val">—</span>
+            </div>
+            <div class="hw-metric">
+              <span class="hw-lbl">DIE TEMP</span>
+              <span class="hw-val" id="hw-temp-val">—</span>
+            </div>
+          </div>
           <div id="proc-list" class="proc-list"></div>
+        </div>
+
+        <!-- Interactive Die Block Inspector Card (Appears on Click) -->
+        <div id="inspect-card" class="inspect-card obsidian-glass" style="display:none;">
+          <div class="inspect-head">
+            <div>
+              <div id="inspect-title" class="inspect-title">Performance Core P0</div>
+              <div id="inspect-sub" class="inspect-sub">Apple M1 Max</div>
+            </div>
+            <button id="inspect-close" class="inspect-close" title="Close (Esc)">${ICONS.close}</button>
+          </div>
+          <div id="inspect-metric" class="inspect-metric">—</div>
+          <p id="inspect-detail" class="inspect-detail"></p>
+          <button id="inspect-dive" class="inspect-dive-btn">Dive Inside →</button>
         </div>
 
         <div class="hud-bottom">
@@ -183,9 +213,22 @@ function mountApp(): void {
   const sheetCoresEl = document.getElementById('sheet-cores')!;
   const sheetFpsEl = document.getElementById('sheet-fps')!;
   const tickMeterEl = document.getElementById('tick-meter')!;
+  const hwGpuLbl = document.getElementById('hw-gpu-lbl')!;
+  const hwGpuVal = document.getElementById('hw-gpu-val')!;
+  const hwVramVal = document.getElementById('hw-vram-val')!;
+  const hwTempVal = document.getElementById('hw-temp-val')!;
   const procListEl = document.getElementById('proc-list')!;
 
+  const inspectCard = document.getElementById('inspect-card')!;
+  const inspectTitle = document.getElementById('inspect-title')!;
+  const inspectSub = document.getElementById('inspect-sub')!;
+  const inspectMetric = document.getElementById('inspect-metric')!;
+  const inspectDetail = document.getElementById('inspect-detail')!;
+  const inspectClose = document.getElementById('inspect-close')!;
+  const inspectDive = document.getElementById('inspect-dive')!;
+
   let telemetry: LiveMacTelemetry = { ...DEFAULT_TELEMETRY };
+  let activeInspect: DieInspectHit | null = null;
   let showActivity = false;
   let pureView = false;
   let bursting = false;
@@ -193,10 +236,24 @@ function mountApp(): void {
   let lastActiveStop = 0;
   let lastCaption = '';
   let lastFpsUpdate = 0;
-  let currentFps = 60;
+  let currentFps = 120;
 
   const r = 242;
   const circ = 2 * Math.PI * r;
+
+  const renderInspectCard = () => {
+    if (!activeInspect) {
+      inspectCard.style.display = 'none';
+      return;
+    }
+    inspectCard.style.display = 'flex';
+    inspectTitle.textContent = activeInspect.title(telemetry);
+    inspectSub.textContent = activeInspect.subtitle(telemetry);
+    inspectMetric.textContent = activeInspect.metric(telemetry);
+    inspectDetail.textContent = activeInspect.detail(telemetry);
+    const stopName = ZOOM_STOPS[Math.round(activeInspect.diveZoom)]?.label ?? '3 nm';
+    inspectDive.textContent = `Dive to ${stopName} →`;
+  };
 
   const engine = new SiliconEngine(gpuMount, {
     onZoomFrame: (z, fps) => {
@@ -204,7 +261,7 @@ function mountApp(): void {
       const now = performance.now();
       if (showActivity && now - lastFpsUpdate > 350) {
         lastFpsUpdate = now;
-        sheetFpsEl.textContent = `${currentFps} FPS · ${telemetry.live ? 'LIVE' : 'SIM'}`;
+        sheetFpsEl.textContent = `${currentFps} FPS · ${telemetry.nativeTelemetry ? 'IOKIT' : 'LIVE'}`;
       }
 
       if (Math.abs(z - lastZoomRendered) < 0.0005) return;
@@ -236,6 +293,18 @@ function mountApp(): void {
         lastActiveStop = stopIdx;
       }
     },
+    onInspect: (hit) => {
+      activeInspect = hit;
+      renderInspectCard();
+    },
+  });
+
+  inspectClose.addEventListener('click', () => engine.clearInspect());
+  inspectDive.addEventListener('click', () => {
+    if (!activeInspect) return;
+    const z = activeInspect.diveZoom;
+    engine.clearInspect();
+    engine.flyToZoom(z);
   });
 
   // Wire zoom rail clicks
@@ -246,12 +315,18 @@ function mountApp(): void {
     });
   }
 
-  // Render Activity Sheet bars & process list only when open
+  // Render Activity Sheet bars, real GPU/Thermal metrics & process list only when open
   let tickCols: { fill: HTMLDivElement; lbl: HTMLSpanElement }[] = [];
   const renderActivitySheet = () => {
     if (!showActivity) return;
     sheetCoresEl.textContent = `${telemetry.pCoreCount}P + ${telemetry.eCoreCount}E CORES`;
-    sheetFpsEl.textContent = `${currentFps} FPS · ${telemetry.live ? 'LIVE' : 'SIM'}`;
+    sheetFpsEl.textContent = `${currentFps} FPS · ${telemetry.nativeTelemetry ? 'IOKIT' : 'LIVE'}`;
+
+    hwGpuLbl.textContent = `${telemetry.gpuCores}C GPU`;
+    hwGpuVal.textContent = `${Math.round(telemetry.gpuEst * 100)}%`;
+    hwVramVal.textContent = `${telemetry.gpuMemGB.toFixed(2)} GB`;
+    hwTempVal.textContent =
+      telemetry.socTempC !== null ? `${telemetry.socTempC.toFixed(1)}°C` : telemetry.thermalState;
 
     const loads = telemetry.coreLoads.slice(0, 12);
     if (tickCols.length !== loads.length) {
@@ -321,6 +396,8 @@ function mountApp(): void {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'h' || e.key === 'H') {
       setPure(!pureView);
+    } else if (e.key === 'Escape' && activeInspect) {
+      engine.clearInspect();
     }
   });
 
@@ -353,7 +430,7 @@ function mountApp(): void {
     }, 3600);
   });
 
-  // Poll real live Mac hardware telemetry every 850ms
+  // Poll zero-latency in-memory native Mach/IOKit telemetry every 650ms
   const pollTelemetry = async () => {
     try {
       const res = await fetch('/api/telemetry', { cache: 'no-store' });
@@ -364,17 +441,18 @@ function mountApp(): void {
 
       chipNameEl.textContent = data.chipName;
       const cpuPct = Math.round(data.cpuTotal * 100);
-      const netLabel =
-        data.netKBps >= 1024 ? `${(data.netKBps / 1024).toFixed(1)} MB/s` : `${data.netKBps.toFixed(0)} KB/s`;
-      editorialMetaEl.textContent = `${cpuPct}% CPU · ${data.memUsedGB}/${data.memTotalGB} GB · ${netLabel}`;
+      const gpuPct = Math.round(data.gpuEst * 100);
+      const tempPart = data.socTempC !== null ? `${data.socTempC.toFixed(0)}°C · ` : '';
+      editorialMetaEl.textContent = `${tempPart}${cpuPct}% CPU · ${gpuPct}% GPU · ${data.memUsedGB}/${data.memTotalGB} GB`;
       renderActivitySheet();
+      if (activeInspect) renderInspectCard();
     } catch {
       // ignore in static preview
     }
   };
 
   pollTelemetry();
-  window.setInterval(pollTelemetry, 850);
+  window.setInterval(pollTelemetry, 650);
 }
 
 mountApp();
