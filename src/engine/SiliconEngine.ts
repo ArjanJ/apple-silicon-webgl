@@ -1730,8 +1730,8 @@ export class SiliconEngine {
       this.smoothCores[i] += (targetC - this.smoothCores[i]) * lr;
     }
 
-    const pulseSpeed = 0.25 + this.smoothP * 0.75 + this.smoothNet * 0.65;
-    this.pulsePhase = (this.pulsePhase + dt * pulseSpeed) % 1;
+    const pulseSpeed = 0.28 + this.smoothP * 0.72 + this.smoothNet * 0.55;
+    this.pulsePhase += dt * pulseSpeed;
 
     // Smooth continuous World 0 die anchor & smooth camera pan decay
     const a0Factor = 1 - Math.exp(-8.5 * dt);

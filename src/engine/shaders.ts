@@ -66,49 +66,35 @@ void evalInstance(
   } else if (ch == 8) {
     liveEnergy = uMacLoads.w;
   } else if (ch == 9) {
-    if (param < 0.5) {
-      center.z = mix(2.15, -1.75, uPulsePhase);
-      halfSize.z = 0.28 + uMacLoads.x * 0.42;
-      liveEnergy = 0.5 + 0.5 * max(uMacLoads.x, uNetLoad);
-    } else if (param < 1.5) {
-      center.x = mix(-2.7, 2.7, fract(uPulsePhase * 1.3 + 0.4));
-      halfSize.x = 0.24 + uMacLoads.w * 0.34;
-      liveEnergy = 0.5 + 0.5 * max(uMacLoads.x, uNetLoad);
-    } else if (param < 2.5) {
-      center.z = mix(-4.5, 4.5, uPulsePhase);
-      liveEnergy = 0.7 + uMacLoads.x * 0.4;
-    } else {
-      center.x = mix(-4.8, 4.8, uPulsePhase);
-      liveEnergy = 0.6 + uMacLoads.x * 0.5;
-    }
+    liveEnergy = 0.45 + 0.55 * max(uMacLoads.x, max(uMacLoads.z, uNetLoad));
   } else if (ch == 10) {
     float h = param;
     liveEnergy = (h < uMacLoads.x * 0.85 + 0.12) ? (uMacLoads.x * 0.65 * instC.z) : 0.0;
   } else if (ch == 11) {
-    float viaGlow = exp(-pow((0.5 - uPulsePhase) * 5.5, 2.0));
-    if (viaGlow > 0.22) {
-      matId = 6.0;
-      liveEnergy = 0.85 * viaGlow;
-      halfSize.xz += 0.018 * viaGlow;
-    }
+    liveEnergy = 0.45 + 0.55 * max(uMacLoads.x, max(uMacLoads.z, uNetLoad));
   } else if (ch == 12) {
-    float cellHash = hash12(instC.zw + floor(uTime * (2.5 + uMacLoads.x * 7.0)) * 0.13);
-    bool activeCell = cellHash < (0.10 + uMacLoads.x * 0.58 + uNetLoad * 0.2);
-    if (activeCell) {
-      matId = 6.0;
-      liveEnergy = (param > 2.5) ? 0.95 : 0.85;
-    } else {
-      matId = param;
-      liveEnergy = 0.0;
-    }
+    // Authentic complementary CMOS dynamic switching current (P = alpha * C * V^2 * f):
+    // PMOS (param < 2.25) conducts a brief capacitive pull-up transient on 0->1;
+    // NMOS (param >= 2.25) conducts a brief capacitive pull-down transient on 1->0!
+    float rate = 1.8 + uMacLoads.x * 4.2;
+    float tCell = uTime * rate + hash12(instC.zw * 1.73) * 10.0;
+    float tick0 = floor(tCell);
+    float f = fract(tCell);
+    float thresh = 0.22 + uMacLoads.x * 0.42 + uNetLoad * 0.14;
+    float a0 = step(hash12(instC.zw + tick0 * 0.17), thresh);
+    float a1 = step(hash12(instC.zw + (tick0 + 1.0) * 0.17), thresh);
+    bool isNmos = param >= 2.25;
+    float rising = max(0.0, a1 - a0);
+    float falling = max(0.0, a0 - a1);
+    float switched = isNmos ? falling : rising;
+    // Crisp RC charging/discharging current spike at the clock edge + tiny sub-threshold bias
+    float spike = switched * smoothstep(0.0, 0.06, f) * exp(-max(f - 0.06, 0.0) * 4.6);
+    float hold = (isNmos ? (1.0 - a1) : a1) * 0.06 * uMacLoads.x;
+    matId = 2.0;
+    liveEnergy = (spike * 0.95 + hold) * (0.55 + 0.45 * uMacLoads.x);
   } else if (ch == 13) {
-    float gateActive = clamp(0.25 + uMacLoads.x * 1.15, 0.0, 1.0);
-    if (param > 1.5) {
-      liveEnergy = gateActive;
-    } else if (param > 0.5) {
-      if (gateActive > 0.3) matId = 6.0;
-      liveEnergy = gateActive;
-    }
+    float gateActive = clamp(0.22 + uMacLoads.x * 0.95, 0.0, 1.0);
+    liveEnergy = (param > 1.5) ? gateActive : (param > 0.5 ? gateActive * 0.22 : 0.0);
   } else if (ch == 14) {
     float gateActive = clamp(0.25 + uMacLoads.x * 1.15, 0.0, 1.0);
     liveEnergy = (param > 0.5) ? gateActive : 0.0;
@@ -266,6 +252,10 @@ void main() {
   float bevelR, matId, liveEnergy;
   int ch = int(aInstC.x + 0.5);
   evalInstance(aInstA, aInstB, aInstC, center, halfSize, bevelR, matId, liveEnergy);
+  if (matId > 5.5 && matId < 6.5) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
   applyDynamicCutouts(ch, center, halfSize, bevelR);
 
   if (uYExtrude < 0.999) {
@@ -356,7 +346,9 @@ out vec3 vLocalAnchor;
 flat out float vMatId;
 flat out float vLiveEnergy;
 flat out float vChanType;
+flat out float vParam;
 flat out float vExtraA;
+flat out float vExtraB;
 
 ${COMMON_INSTANCE_GLSL}
 
@@ -408,7 +400,9 @@ void main() {
   vMatId = matId;
   vLiveEnergy = liveEnergy;
   vChanType = aInstC.x;
+  vParam = aInstC.y;
   vExtraA = aInstC.z;
+  vExtraB = aInstC.w;
 
   gl_Position = uViewProj * vec4(scaledPos, 1.0);
 }
@@ -426,7 +420,9 @@ in vec3 vLocalAnchor;
 flat in float vMatId;
 flat in float vLiveEnergy;
 flat in float vChanType;
+flat in float vParam;
 flat in float vExtraA;
+flat in float vExtraB;
 
 uniform sampler2DShadow uShadowMap;
 uniform sampler2D uCoinTex;
@@ -567,6 +563,52 @@ float sampleShadow(vec4 sc, float ndotl) {
   return mix(0.06, 1.0, s);
 }
 
+// RC-filtered 3-bit digital transaction burst along finite conductor [-1..+1] (soft endpoint fades)
+float evalBurstLocal(float s, float headPos, float dir, float bitSpacing, float bitWidth) {
+  float burst = 0.0;
+  for (int b = 0; b < 3; b++) {
+    float off = float(b) * bitSpacing;
+    float d = (headPos - s) * dir - off;
+    float ahead = exp(-pow(max(-d, 0.0) / (bitWidth * 0.48), 2.0));
+    float behind = exp(-max(d, 0.0) / bitWidth);
+    float bitAmp = (b == 0) ? 1.0 : ((b == 1) ? 0.58 : 0.84);
+    burst = max(burst, ((d < 0.0) ? ahead : behind) * bitAmp);
+  }
+  return burst * smoothstep(1.0, 0.80, abs(s));
+}
+
+// Seamless periodic RC-filtered 3-bit digital burst along long BEOL Manhattan signal buses
+float evalDigitalBurst(float coord, float wPos, float dir, float period, float bitSpacing, float bitWidth) {
+  float phase = fract((wPos - coord * dir) / period) * period;
+  float burst = 0.0;
+  for (int b = 0; b < 3; b++) {
+    float off = float(b) * bitSpacing;
+    float d = phase - off;
+    float dAhead = (d < 0.0) ? -d : max(0.0, period - d);
+    float dBehind = (d >= 0.0) ? d : 99.0;
+    float bitAmp = (b == 0) ? 1.0 : ((b == 1) ? 0.60 : 0.84);
+    float bitPkt = max(exp(-pow(dAhead / (bitWidth * 0.46), 2.0)), exp(-dBehind / bitWidth));
+    burst = max(burst, bitPkt * bitAmp);
+  }
+  return burst;
+}
+
+// Shared complementary CMOS gate voltage V_G in [0..1] for any of the 3 GAA gates in a World 4 cell
+float evalGaaGateVoltage(vec3 p, float cpuLoad) {
+  vec2 cellId = floor((p.xz + 2.56) / 5.12);
+  float localX = mod(p.x + 2.56, 5.12) - 2.56;
+  float gIdx = clamp(floor((localX + 1.56) / 1.04), 0.0, 2.0);
+  float ph = hash12(cellId * 3.17 + vec2(gIdx * 5.71, 2.31)) * 6.28318;
+  float spd = 1.15 + cpuLoad * 2.15 + fract(ph * 1.7) * 0.45;
+  return 0.5 + 0.5 * sin(uTime * spd + ph);
+}
+
+// Subtle Apple-keynote electric signal palette: sapphire tail -> cyan body -> razor-thin bright core
+vec3 keynoteSignalColor(float pkt) {
+  vec3 body = mix(vec3(0.05, 0.34, 0.94), vec3(0.24, 0.78, 1.12), pow(pkt, 1.25));
+  return body + vec3(0.32, 0.46, 0.58) * pow(pkt, 5.0);
+}
+
 void main() {
   vec3 p = vWorldPos;
 
@@ -621,15 +663,88 @@ void main() {
     liveEnergy = uMacLoads.w * smoothstep(3.75, 3.44, abs(p.x));
   }
 
-  // Per-pixel GAA Nanosheet sweeping cyan inversion-channel wave (Channel 14, tiled per 5.12 cell!)
-  if (ch == 14 && liveEnergy > 0.01) {
-    float localX = mod(p.x + 2.56, 5.12) - 2.56;
-    float waveX = mix(-1.85, 1.85, fract(uPulsePhase * 1.4 + vExtraA));
-    float hitWave = smoothstep(0.38, 0.08, abs(localX - waveX));
-    if (hitWave > 0.35) {
-      matId = 6.0;
-      liveEnergy = mix(liveEnergy, 1.15, hitWave);
+  // Per-pixel Conductor Signal, Clock Mesh & DC Power Delivery directly inside real metal rails (Channel 9)
+  vec3 railEmissive = vec3(0.0);
+  if (ch == 9) {
+    float dir = (vExtraB >= 0.0) ? 1.0 : -1.0;
+    float amp = abs(vExtraB);
+    if (vParam < 1.5) {
+      // World 0 Coherent Fabric Spines: clustered 3-bit cache-line transaction bursts inside silver spines
+      bool isX = vParam > 0.5;
+      float s = isX ? locUV.x : locUV.y;
+      float cCross = isX ? locUV.y : locUV.x;
+      float rate = 0.42 + fract(vExtraA * 3.7) * 0.12;
+      float cyc = fract(uPulsePhase * rate + vExtraA);
+      float head = mix(-1.25, 2.35, cyc) * dir;
+      float pkt = evalBurstLocal(s, head, dir, 0.15, 0.085);
+      float crossFocus = 0.48 + 0.52 * smoothstep(1.0, 0.0, abs(cCross));
+      float faceWeight = 0.42 + 0.58 * smoothstep(0.2, 0.9, n.y);
+      railEmissive = keynoteSignalColor(pkt) * pkt * crossFocus * faceWeight * amp * liveEnergy * 1.08;
+    } else if (vParam < 3.5) {
+      // World 2 BEOL Manhattan Signal Buses (M4-M9): RC-filtered 3-bit digital burst trains
+      bool isX = vParam > 2.5;
+      float coord = isX ? p.x : p.z;
+      float sLocal = isX ? locUV.x : locUV.y;
+      float cCross = isX ? locUV.y : locUV.x;
+      float period = 11.5;
+      float speed = 2.45 * (0.82 + fract(vExtraA * 5.3) * 0.36);
+      float wPos = uPulsePhase * speed + vExtraA * period;
+      float pkt = evalDigitalBurst(coord, wPos, dir, period, 0.46, 0.21);
+      float endFade = smoothstep(1.0, 0.90, abs(sLocal));
+      float crossFocus = 0.48 + 0.52 * smoothstep(1.0, 0.0, abs(cCross));
+      float faceWeight = 0.40 + 0.60 * smoothstep(0.2, 0.9, n.y);
+      railEmissive = keynoteSignalColor(pkt) * pkt * endFade * crossFocus * faceWeight * amp * liveEnergy * 0.98;
+    } else if (vParam < 5.5) {
+      // DC Power Delivery Rails (VDD/VSS on Worlds 1 & 3): calm ohmic DC sheen + broad IR-drop swell (no fake comets!)
+      bool isX = vParam > 4.5;
+      float coord = isX ? p.x : p.z;
+      float cCross = isX ? locUV.y : locUV.x;
+      float swell = 0.68 + 0.32 * sin(coord * 0.52 - uTime * 0.85 + vExtraA * 6.283);
+      float dcLevel = (0.14 + 0.28 * max(uMacLoads.x, uMacLoads.z)) * swell;
+      float crossFocus = 0.65 + 0.35 * smoothstep(1.0, 0.0, abs(cCross));
+      vec3 dcCol = (vExtraB >= 0.0) ? vec3(0.86, 0.44, 0.14) : vec3(0.14, 0.42, 0.78);
+      railEmissive = dcCol * dcLevel * crossFocus * amp;
+    } else {
+      // World 1 M15/M16 Global Synchronous Clock Mesh: symmetric resonant wavefront radiating from center!
+      bool isX = vParam > 6.5;
+      float coord = isX ? p.x : p.z;
+      float sLocal = isX ? locUV.x : locUV.y;
+      float cCross = isX ? locUV.y : locUV.x;
+      float period = 9.6;
+      float wPos = uPulsePhase * 2.25;
+      // Symmetric outward propagation from center (abs(coord)) -> authentic H-tree / resonant clock mesh!
+      float phase = fract((wPos - abs(coord)) / period) * period;
+      float dAhead = max(0.0, period - phase);
+      float clkPkt = max(exp(-pow(dAhead / 0.16, 2.0)), exp(-phase / 0.52));
+      float endFade = smoothstep(1.0, 0.88, abs(sLocal));
+      float crossFocus = 0.48 + 0.52 * smoothstep(1.0, 0.0, abs(cCross));
+      float faceWeight = 0.42 + 0.58 * smoothstep(0.2, 0.9, n.y);
+      railEmissive = keynoteSignalColor(clkPkt) * clkPkt * endFade * crossFocus * faceWeight * amp * liveEnergy * 0.88;
     }
+  }
+
+  // Per-pixel World 4 Complementary GAA-FET Physics:
+  // Shared gate voltage V_G inverts all 3 NMOS nanosheets when HIGH, and PMOS nanosheets when LOW!
+  float gaaWave = 0.0;
+  float gaaIsPmos = 0.0;
+  float gaaGateField = 0.0;
+  if (ch == 14 && liveEnergy > 0.01) {
+    float vGate = evalGaaGateVoltage(p, uMacLoads.x);
+    float localX = mod(p.x + 2.56, 5.12) - 2.56;
+    float gCenter = clamp(floor((localX + 1.56) / 1.04), 0.0, 2.0) * 1.04 - 1.04;
+    // Inversion layer is strongest right under the gate stack and tapers gently toward S/D spacers
+    float underGate = smoothstep(0.52, 0.14, abs(localX - gCenter));
+    bool isPmos = vParam > 1.5;
+    gaaIsPmos = isPmos ? 1.0 : 0.0;
+    float cond = isPmos ? smoothstep(0.54, 0.22, vGate) : smoothstep(0.46, 0.78, vGate);
+    // Continuous Source->Drain electron drift (NMOS) or Drain->Source hole drift (PMOS) while inverted!
+    float driftDir = isPmos ? -1.0 : 1.0;
+    float drift = 0.62 + 0.38 * sin(localX * 15.0 * driftDir - uTime * (6.0 + uMacLoads.x * 7.5));
+    gaaWave = cond * underGate * drift * liveEnergy;
+  } else if (ch == 13 && vParam > 1.5) {
+    float vGateSingle = 0.5 + 0.5 * sin(uTime * (1.25 + uMacLoads.x * 2.0));
+    float vG = (vParam > 2.5) ? vGateSingle : evalGaaGateVoltage(p, uMacLoads.x);
+    gaaGateField = vG * liveEnergy;
   }
 
   // Delocalized Bloch Electron Wavepacket Interference propagating through Silicon covalent bonds
@@ -741,6 +856,31 @@ void main() {
     rough = 0.44 - trace * 0.16;
     metal = 0.24 + trace * 0.48;
 
+    // Parallel 8-lane LPDDR5 memory bursts (fanX) & calm DC decoupling power sheen (fanZ)
+    if (trace > 0.04) {
+      if (fanX > 0.5) {
+        float lane = floor(p.z * 38.0 / PI);
+        float busGroup = floor(lane / 8.0);
+        float gh = hash12(vec2(busGroup, sign(p.x) * 7.3 + 1.9));
+        if (gh < 0.62) {
+          float sTrace = clamp(((abs(p.x) - 2.96) / 0.72) * 2.0 - 1.0, -1.0, 1.0);
+          float dir = (fract(gh * 17.3) > 0.5) ? 1.0 : -1.0;
+          float tBus = uPulsePhase * (0.68 + gh * 0.35) + gh * 3.1;
+          float epoch = floor(tBus);
+          float cyc = fract(tBus);
+          // Synchronized parallel byte-lane burst across 8 adjacent traces, with per-lane 0/1 data bits!
+          float bitMask = 0.28 + 0.72 * step(0.36, hash12(vec2(lane, epoch * 1.37 + gh * 9.1)));
+          float head = mix(-1.25, 2.25, cyc) * dir;
+          float pkt = evalBurstLocal(sTrace, head, dir, 0.26, 0.16);
+          emissive += keynoteSignalColor(pkt) * pkt * bitMask * trace * (0.24 + uMacLoads.w * 0.46);
+        }
+      } else if (fanZ > 0.5) {
+        // Real MLCC decoupling capacitors sit on the DC power plane: calm warm ohmic sheen, no racing comets
+        float dcSwell = 0.72 + 0.28 * sin(p.x * 1.4 - uTime * 1.1);
+        emissive += vec3(0.76, 0.38, 0.12) * trace * dcSwell * (0.08 + max(uMacLoads.x, uMacLoads.z) * 0.16);
+      }
+    }
+
     // Infinite Dark-Studio Plinth beneath package & US Quarter (p.y < -0.50)
     if (p.y < -0.50 && n.y > 0.8 && uZoom < 0.65) {
       float plinthMask = smoothstep(0.65, -0.05, uZoom);
@@ -798,6 +938,14 @@ void main() {
     baseCol = vec3(0.25, 0.29, 0.36) + brush;
     rough = clamp(0.19 + abs(brush) * 1.1, 0.12, 0.34);
     metal = 0.95;
+    if (ch == 9) {
+      emissive = railEmissive;
+    } else if (ch == 12 && liveEnergy > 0.01) {
+      emissive = keynoteSignalColor(liveEnergy) * pow(liveEnergy, 1.15) * 0.74;
+    } else if (gaaWave > 0.01) {
+      vec3 gaaCol = mix(keynoteSignalColor(gaaWave), vec3(0.22, 0.44, 1.15) * (0.7 + 0.5 * gaaWave), gaaIsPmos * 0.55);
+      emissive = gaaCol * gaaWave * 0.86;
+    }
   } else if (matId < 3.5) {
     // Copper Damascene (BEOL) / Bronze-Slate TiN Work-Function Metal / 28Si Neutrons
     float brush = (noise2D(vec2(p.x * 74.0, p.z * 18.0)) - 0.5) * 0.032;
@@ -808,7 +956,18 @@ void main() {
     baseCol = mix(vec3(0.50, 0.30, 0.12), vec3(0.38, 0.25, 0.12), uSemFactor * 0.32) + brush + serdes;
     rough = 0.20;
     metal = 0.95;
-    if (liveEnergy > 0.14) {
+    if (ch == 9) {
+      emissive = railEmissive;
+    } else if (ch == 11 && liveEnergy > 0.02) {
+      // Physically coupled to the M8/M9 X-bus directly overhead: burst descends vertically down the copper via!
+      float period = 11.5;
+      float speed = 2.45 * (0.82 + fract(vExtraA * 5.3) * 0.36);
+      float wPos = uPulsePhase * speed + vExtraA * period;
+      float dir = (vExtraB >= 0.0) ? 1.0 : -1.0;
+      float vertDelay = (1.0 - vLocalAnchor.y) * 0.32;
+      float vPkt = evalDigitalBurst(p.x, wPos - vertDelay, dir, period, 0.46, 0.24);
+      emissive = keynoteSignalColor(vPkt) * vPkt * liveEnergy * 1.12;
+    } else if (liveEnergy > 0.14) {
       float serdesBoost = (ch == 3) ? (0.45 + serdes * 6.0) : 1.0;
       emissive = vec3(0.92, 0.50, 0.14) * liveEnergy * 0.24 * serdesBoost;
     }
@@ -824,6 +983,10 @@ void main() {
     clearcoat = (dieLithoPattern > 0.01) ? (1.0 - uSemFactor) * 0.45 : 0.0;
     if (blochGlow > 0.02) {
       emissive = vec3(0.10, 0.62, 1.08) * blochGlow * 1.22;
+    } else if (gaaGateField > 0.02) {
+      // Restrained gate electric-field glow on active TiN/W GAA collars synchronized with channel inversion
+      float fieldRim = 0.35 + 0.65 * (bevelMask + pow(1.0 - ndotv, 2.2) * 0.5);
+      emissive = vec3(0.12, 0.50, 1.02) * gaaGateField * 0.34 * fieldRim;
     } else if (liveEnergy > 0.08 && ch < 15) {
       float tBoost = (dieTraceGlow > 0.001) ? mix(0.25, 1.25, clamp(dieTraceGlow, 0.0, 1.0)) : 1.0;
       emissive = vec3(0.18, 0.52, 0.96) * liveEnergy * 0.36 * tBoost;

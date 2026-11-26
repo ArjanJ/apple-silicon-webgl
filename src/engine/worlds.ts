@@ -353,15 +353,11 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
     b.addBox(cx, 0.182 + yOff, 1.86, 0.245, 0.024, 0.24, 0.012, 1, 7, 0);
   }
 
-  // Brushed Silver Global Power Distribution Spine Rails
-  b.addBox(-0.40, 0.205 + yOff, 0.0, 0.022, 0.014, 2.28, 0.006, 2);
-  b.addBox( 0.40, 0.205 + yOff, 0.0, 0.022, 0.014, 2.28, 0.006, 2);
-  b.addBox(-1.68, 0.205 + yOff, -0.04, 1.24, 0.014, 0.022, 0.006, 2);
-  b.addBox( 1.68, 0.205 + yOff,  0.38, 1.22, 0.014, 0.022, 0.006, 2);
-
-  // Live Animated Coherent Fabric Pulses
-  b.addBox(-0.40, 0.222 + yOff, 0.0, 0.026, 0.014, 0.32, 0.008, 6, 9, 0);
-  b.addBox(0.0,   0.222 + yOff, 0.42, 0.28, 0.014, 0.024, 0.008, 6, 9, 1);
+  // Brushed Silver Global Power & Coherent Fabric Spine Rails (shader-driven internal signal flow!)
+  b.addBox(-0.40, 0.205 + yOff, 0.0, 0.022, 0.014, 2.28, 0.006, 2, 9, 0, 0.08,  0.88);
+  b.addBox( 0.40, 0.205 + yOff, 0.0, 0.022, 0.014, 2.28, 0.006, 2, 9, 0, 0.58, -0.82);
+  b.addBox(-1.68, 0.205 + yOff, -0.04, 1.24, 0.014, 0.022, 0.006, 2, 9, 1, 0.31,  0.80);
+  b.addBox( 1.68, 0.205 + yOff,  0.38, 1.22, 0.014, 0.022, 0.006, 2, 9, 1, 0.77, -0.78);
 
   return b.finish();
 }
@@ -422,13 +418,41 @@ export function buildWorld1(): WorldInstances {
     }
   }
 
-  // Top-level M15/M16 Heavy Global Power Delivery Rails along EVERY cell border (±0.76 around every cell!)
+  // Top-level M15/M16 Heavy Global Power Delivery & Synchronous Clock Mesh along EVERY cell border (±0.76)
   for (let i = -R; i <= R + 1; i++) {
     const pos = (i - 0.5) * pitch;
     const isVddRail = (i & 1) === 0;
-    // M16 Wide Top Power Rail (X) + M15 Orthogonal Global Trunk (Z)
-    b.addBox(0, 0.145, pos, span - 0.04, 0.040, 0.058, 0.012, isVddRail ? 2 : 3);
-    b.addBox(pos, 0.132, 0, 0.052, 0.034, span - 0.04, 0.010, isVddRail ? 3 : 2);
+    const hRail = hash12(i * 3.17 + 4.3, 11.7);
+    // Silver rails (mat 2) carry synchronous global clock-mesh wavefronts (param 6/7);
+    // Copper rails (mat 3) carry calm DC VDD power delivery sheen (param 4/5) — no fake comets on DC power!
+    b.addBox(
+      0,
+      0.145,
+      pos,
+      span - 0.04,
+      0.040,
+      0.058,
+      0.012,
+      isVddRail ? 2 : 3,
+      9,
+      isVddRail ? 7 : 5,
+      hRail,
+      isVddRail ? 0.78 : 0.45
+    );
+    b.addBox(
+      pos,
+      0.132,
+      0,
+      0.052,
+      0.034,
+      span - 0.04,
+      0.010,
+      isVddRail ? 3 : 2,
+      9,
+      isVddRail ? 4 : 6,
+      (hRail + 0.37) % 1,
+      isVddRail ? 0.45 : 0.76
+    );
   }
 
   // Heavy circular power-delivery via arrays at M15/M16 rail intersections
@@ -440,9 +464,6 @@ export function buildWorld1(): WorldInstances {
       b.addCyl(vx, 0.188, vz, 0.042, 0.020, 0.006, 3);
     }
   }
-
-  // Live glowing clock/power surge sweeping along the global trunk x = -0.76
-  b.addBox(-0.76, 0.185, 0, 0.044, 0.026, 0.72, 0.010, 6, 9, 2);
 
   return b.finish();
 }
@@ -479,17 +500,23 @@ export function buildWorld2(): WorldInstances {
     const mod = Math.abs(((p + 0.92) % 1.84 + 1.84) % 1.84 - 0.92);
     if (mod < 0.24) continue;
     const isCopper = (i & 1) === 0;
-    b.addBox(p, 0.155, 0, 0.038, 0.034, span, 0.008, isCopper ? 3 : 2);
-    b.addBox(0, 0.195, p, span, 0.034, 0.038, 0.008, isCopper ? 2 : 3);
+    const hTrack = hash12(i * 7.13 + 1.7, 9.3);
+    const activeZ = hTrack < 0.36;
+    const activeX = ((hTrack * 3.7) % 1) < 0.36;
+    const dir = (i & 2) === 0 ? 1 : -1;
+    b.addBox(p, 0.155, 0, 0.038, 0.034, span, 0.008, isCopper ? 3 : 2, activeZ ? 9 : 0, activeZ ? 2 : 0, hTrack, dir * 0.38);
+    b.addBox(0, 0.195, p, span, 0.034, 0.038, 0.008, isCopper ? 2 : 3, activeX ? 9 : 0, activeX ? 3 : 0, (hTrack + 0.41) % 1, -dir * 0.38);
   }
 
   // Layer M6/M7: Mid Copper Damascene Signal Buses (y = +0.26, pitch = 1.84 half-offset!)
   const pitch = WORLD2_PITCH;
   for (let i = -3; i <= 2; i++) {
     const g = (i + 0.5) * pitch; // ±0.92, ±2.76, ±4.60
-    b.addBox(0, 0.26, g - 0.14, span, 0.044, 0.044, 0.012, 3);
-    b.addBox(0, 0.26, g + 0.14, span, 0.044, 0.044, 0.012, 3);
-    b.addBox(g, 0.26, 0,        0.072, 0.044, span, 0.014, 3);
+    const hBus = hash12(i * 4.71 + 2.3, 19.1);
+    const dir = (i & 1) === 0 ? 1 : -1;
+    b.addBox(0, 0.26, g - 0.14, span, 0.044, 0.044, 0.012, 3, 9, 3, hBus, dir * 0.50);
+    b.addBox(0, 0.26, g + 0.14, span, 0.044, 0.044, 0.012, 3, 9, 3, (hBus + 0.52) % 1, -dir * 0.46);
+    b.addBox(g, 0.26, 0,        0.072, 0.044, span, 0.014, 3, 9, 2, (hBus + 0.24) % 1, dir * 0.54);
   }
   for (let iz = -3; iz <= 2; iz++) {
     for (let ix = -3; ix <= 2; ix++) {
@@ -502,26 +529,27 @@ export function buildWorld2(): WorldInstances {
   // Layer M8/M9: Upper Semi-Global Brushed-Silver/Copper Damascene Canyons + Dual-Damascene Vias (y = +0.43)
   for (let i = -3; i <= 2; i++) {
     const pos = (i + 0.5) * pitch;
-    b.addBox(0, 0.43,  pos,        span, 0.062, 0.088, 0.018, 2);
+    const hTop = hash12(i * 5.93 + 8.1, 3.7);
+    const dir = (i & 1) === 0 ? 1 : -1;
+    b.addBox(0, 0.43,  pos,        span, 0.062, 0.088, 0.018, 2, 9, 3, hTop, dir * 0.85);
     b.addBox(0, 0.415, pos - 0.19, span, 0.048, 0.034, 0.012, 3);
     b.addBox(0, 0.415, pos + 0.19, span, 0.048, 0.034, 0.012, 3);
-    b.addBox(pos, 0.43, 0,         0.084, 0.062, span, 0.018, 2);
+    b.addBox(pos, 0.43, 0,         0.084, 0.062, span, 0.018, 2, 9, 2, (hTop + 0.43) % 1, -dir * 0.82);
   }
 
-  // Dual-Damascene Circular Vias & Vertical Copper Pillars at every M8/M9 junction
+  // Dual-Damascene Circular Vias & Vertical Copper Pillars coupled directly to the M8/M9 X-bus directly overhead!
   for (let iz = -3; iz <= 2; iz++) {
     for (let ix = -3; ix <= 2; ix++) {
       const cx = (ix + 0.5) * pitch;
       const cz = (iz + 0.5) * pitch;
       const isLiveVia = ((ix + iz) & 1) === 0;
+      const hOverhead = hash12(iz * 5.93 + 8.1, 3.7);
+      const dirOverhead = (iz & 1) === 0 ? 1 : -1;
       b.addCyl(cx, 0.435, cz, 0.185, 0.068, 0.018, 2);
       b.addCyl(cx, 0.485, cz, 0.088, 0.024, 0.008, 3);
-      b.addCyl(cx, 0.22, cz, isLiveVia ? 0.105 : 0.094, 0.23, 0.014, 3, isLiveVia ? 11 : 0, 0);
+      b.addCyl(cx, 0.22, cz, isLiveVia ? 0.105 : 0.094, 0.23, 0.014, 3, isLiveVia ? 11 : 0, 0, hOverhead, dirOverhead);
     }
   }
-
-  // Live glowing signal wave racing across top bus rail z = +0.92
-  b.addBox(0, 0.46, 0.92, 0.62, 0.052, 0.098, 0.018, 6, 9, 3);
 
   return b.finish();
 }
@@ -546,13 +574,14 @@ export function buildWorld3(): WorldInstances {
   // Shallow Trench Isolation (STI) granular SEM silicon wafer floor (top at y = -0.030, matches World 4 -0.24 / 8!)
   b.addBox(0, -0.075, 0, span, 0.045, span, 0.004, 5);
 
-  // Continuous horizontal M0/M1 VDD & VSS Power Rails along EVERY standard-cell row boundary!
+  // Continuous horizontal M0/M1 VDD & VSS DC Power Rails along EVERY standard-cell row boundary!
   // Row boundaries sit at (rz - 0.5) * 0.64 = ±0.32, ±0.96, ±1.60... (matches World 4's ±2.56 / 8 = ±0.32!)
   for (let rz = -R; rz <= R + 1; rz++) {
     const railZ = (rz - 0.5) * pitchZ;
     const isVdd = (rz & 1) === 0;
-    // Alternating Copper-Bronze VDD and Titanium-Silver VSS power rails
-    b.addBox(0, 0.024, railZ, span - 0.04, 0.022, 0.032, 0.006, isVdd ? 3 : 2);
+    const hRow = hash12(rz * 3.91 + 5.1, 13.7);
+    // Calm DC power sheen on VDD/VSS (param 5 = DC X-rail, positive = VDD warm, negative = VSS cool ground)
+    b.addBox(0, 0.024, railZ, span - 0.04, 0.022, 0.032, 0.006, isVdd ? 3 : 2, 9, 5, hRow, isVdd ? 0.34 : -0.18);
   }
 
   for (let iz = -R; iz <= R; iz++) {
@@ -564,10 +593,9 @@ export function buildWorld3(): WorldInstances {
       // Subtle vertical STI cell-boundary isolation notch (not a fortress wall!)
       b.addBox(cx - 0.31, -0.015, cz, 0.012, 0.014, 0.27, 0.003, 0);
 
-      // PMOS active nanosheet strip (upper half of row: cz - 0.13)
-      b.addBox(cx, 0.002, cz - 0.13, 0.26, 0.018, 0.058, 0.004, 2, 12, 2, ix, iz);
-      // NMOS active nanosheet strip (lower half of row: cz + 0.09)
-      b.addBox(cx, 0.002, cz + 0.09, 0.26, 0.018, 0.058, 0.004, 2, 12, 2, ix, iz);
+      // Complementary CMOS active strips: PMOS fires on 0->1 pull-up (param 2.0), NMOS fires on 1->0 pull-down (param 2.5)!
+      b.addBox(cx, 0.002, cz - 0.13, 0.26, 0.018, 0.058, 0.004, 2, 12, 2.0, ix, iz);
+      b.addBox(cx, 0.002, cz + 0.09, 0.26, 0.018, 0.058, 0.004, 2, 12, 2.5, ix, iz);
 
       // 3 Vertical TiN/W Gate Stripes (Contacted Poly Pitch = 0.13) spanning PMOS & NMOS!
       // Keep the metal gates dark gunmetal so active cyan nanosheet strips read cleanly underneath!
@@ -629,9 +657,10 @@ export function buildWorld4(): WorldInstances {
 
       // === UPPER HALF: PMOS GAA NANOSHEET TRANSISTOR BANK (z = cz - 1.04) ===
       // Wide flat silicon nanosheets + strained SiGe Source/Drain epi pads + 3 TiN/W GAA gates
+      // param = 2.0 marks PMOS (conducts holes when shared gate Vg is LOW, complementary to NMOS!)
       const pmosZ = cz - 1.04;
       for (const sy of sheetYs) {
-        b.addBox(cx, sy, pmosZ, 1.92, 0.026, 0.115, 0.008, 2, 14, 1, 0.55);
+        b.addBox(cx, sy, pmosZ, 1.92, 0.026, 0.115, 0.008, 2, 14, 2.0, 0.55);
       }
       // Faceted SiGe Epitaxial Source/Drain pads between gates (x = ±0.52, ±1.56)
       for (const sdx of [-1.56, -0.52, 0.52, 1.56]) {
@@ -655,6 +684,7 @@ export function buildWorld4(): WorldInstances {
       // === LOWER HALF: SELECTABLE NMOS HERO GAA NANOSHEET BANK (z = cz + WORLD4_GATE_Z = +0.72) ===
       // Wide unobstructed +Z trench between +0.72 and VSS rail (+2.56 => Δz = 1.84 => ×8 = +14.7 > dist 5.4!)
       // Split cleanly into 3 selectable gate segments (each ±0.48) so ANY of the 27 gates swaps cleanly for World 5!
+      // All 3 vertically stacked nanosheets invert together when Vg > Vth (param = 1.0 -> NMOS)!
       const nmosZ = cz + WORLD4_GATE_Z;
       for (const gx of WORLD4_GATE_XS) {
         // 3 wide flat stacked silicon nanosheets (wider in Z than thick in Y!)
@@ -670,7 +700,7 @@ export function buildWorld4(): WorldInstances {
             0.008,
             2,
             14,
-            isMid ? 1 : 0,
+            1.0,
             0.18
           );
         }
@@ -726,9 +756,10 @@ export function buildWorldGate3nm(): WorldInstances {
 
   // Cutaway C-Shaped Tungsten (W) Gate Fill + Thin TiN Work-Function Liner (NO banned gold!)
   // Back wall sits at z = -1.04 (-6.24 at 6x scale > camera dist 5.4!)
-  b.addBox(0,  0.76, -0.14, 1.32, 0.16, 0.96, 0.042, 4, 13, 2); // Top Tungsten (W) gate fill
-  b.addBox(0, -0.76, -0.14, 1.32, 0.16, 0.96, 0.042, 4, 13, 2); // Bottom Tungsten (W) gate fill
-  b.addBox(0,  0.0,  -1.04, 1.32, 0.76, 0.14, 0.040, 4, 13, 2); // Back Tungsten gate bridge
+  // param = 3 marks the single 12nm hero gate (uniform gate voltage, not World 4's 3-gate cell tiling)
+  b.addBox(0,  0.76, -0.14, 1.32, 0.16, 0.96, 0.042, 4, 13, 3); // Top Tungsten (W) gate fill
+  b.addBox(0, -0.76, -0.14, 1.32, 0.16, 0.96, 0.042, 4, 13, 3); // Bottom Tungsten (W) gate fill
+  b.addBox(0,  0.0,  -1.04, 1.32, 0.76, 0.14, 0.040, 4, 13, 3); // Back Tungsten gate bridge
   // Thin TiN (Titanium Nitride) bronze-slate work-function metal liner right inside the Tungsten fill
   b.addBox(0,  0.58, -0.10, 1.30, 0.042, 0.86, 0.014, 3);
   b.addBox(0, -0.58, -0.10, 1.30, 0.042, 0.86, 0.014, 3);
