@@ -27,6 +27,8 @@
  *   12 = QCD Green Up Quark (u)
  *   13 = QCD Blue Down Quark (d)
  *   14 = Translucent Interfacial SiO2 / Silicon Nitride (SiN) Dielectric Spacer
+ *   15 = Glossy Warm Tan MLCC Ceramic Decoupling Capacitor Body
+ *   16 = Bright Silver-Tin (Sn/Ni) Soldered SMD End Termination
  */
 
 export const STAGE_RATIOS = [16.0, 9.0, 9.0, 8.0, 8.0, 6.0, 5.0, 1800.0, 10.0] as const;
@@ -235,16 +237,16 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
   // 1:1 Physical Scale Reference: US Quarter Dollar (24.26 mm dia x 1.75 mm thick)
   b.addCyl(QUARTER_X, QUARTER_CENTER_Y, QUARTER_Z, QUARTER_RADIUS, QUARTER_HY, 0.020, 10);
 
-  // Dark organic interposer substrate & stepped rim
-  b.addBox(0, -0.21 + yOff, 0, 5.42, 0.13, 3.44, 0.055, 0);
-  b.addBox(0, -0.32 + yOff, 0, 5.52, 0.04, 3.54, 0.02, 0);
+  // Dark organic interposer substrate & stepped rim (crisp precision-milled chamfer)
+  b.addBox(0, -0.21 + yOff, 0, 5.42, 0.13, 3.44, 0.030, 0);
+  b.addBox(0, -0.32 + yOff, 0, 5.52, 0.04, 3.54, 0.015, 0);
 
   // Precision gold/copper Pin-1 corner orientation marker & 4 subtle optical alignment fiducials on interposer corners
-  b.addBox(-5.06, -0.072 + yOff, -3.08, 0.11, 0.008, 0.11, 0.003, 3);
+  b.addBox(-5.06, -0.072 + yOff, -3.08, 0.11, 0.008, 0.11, 0.002, 3);
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
       if (sx === -1 && sz === -1) continue;
-      b.addCyl(sx * 5.06, -0.072 + yOff, sz * 3.08, 0.068, 0.008, 0.003, 2);
+      b.addCyl(sx * 5.06, -0.072 + yOff, sz * 3.08, 0.068, 0.008, 0.002, 2);
     }
   }
   // Micro-via perimeter stitch along top/bottom organic substrate rails
@@ -257,32 +259,32 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
   // 4x Unified Memory (LPDDR5) Packages flanking the silicon die (2 stacked per side, authentic M-Max layout!)
   for (const side of [-1, 1]) {
     for (const row of [-1, 1]) {
-      b.addBox(side * 4.22, 0.03 + yOff, row * 1.28, 0.76, 0.165, 1.14, 0.045, 7, 8, 1.0);
+      b.addBox(side * 4.22, 0.03 + yOff, row * 1.28, 0.76, 0.165, 1.14, 0.024, 7, 8, 1.0);
     }
   }
 
-  // Dual-end SMD Ceramic + Copper/Gold Decoupling Capacitors around die perimeter
+  // Dual-end SMD MLCC Tan Ceramic + Bright Tin-Silver Soldered Decoupling Capacitors around die perimeter
   for (let i = -13; i <= 13; i++) {
     const x = i * 0.22;
     for (const side of [-1, 1]) {
       const z = side * 2.86;
-      b.addBox(x, -0.015 + yOff, z, 0.048, 0.044, 0.044, 0.008, 4);
-      b.addBox(x - 0.046, -0.015 + yOff, z, 0.024, 0.046, 0.046, 0.008, 3);
-      b.addBox(x + 0.046, -0.015 + yOff, z, 0.024, 0.046, 0.046, 0.008, 3);
+      b.addBox(x, -0.015 + yOff, z, 0.048, 0.044, 0.044, 0.006, 15);
+      b.addBox(x - 0.046, -0.015 + yOff, z, 0.024, 0.046, 0.046, 0.007, 16);
+      b.addBox(x + 0.046, -0.015 + yOff, z, 0.024, 0.046, 0.046, 0.007, 16);
     }
   }
   for (let i = -11; i <= 11; i++) {
     const z = i * 0.22;
     for (const side of [-1, 1]) {
       const x = side * 3.32;
-      b.addBox(x, -0.015 + yOff, z, 0.044, 0.044, 0.048, 0.008, 4);
-      b.addBox(x, -0.015 + yOff, z - 0.046, 0.046, 0.046, 0.024, 0.008, 3);
-      b.addBox(x, -0.015 + yOff, z + 0.046, 0.046, 0.046, 0.024, 0.008, 3);
+      b.addBox(x, -0.015 + yOff, z, 0.044, 0.044, 0.048, 0.006, 15);
+      b.addBox(x, -0.015 + yOff, z - 0.046, 0.046, 0.046, 0.024, 0.007, 16);
+      b.addBox(x, -0.015 + yOff, z + 0.046, 0.046, 0.046, 0.024, 0.007, 16);
     }
   }
 
-  // Main Mirror-Finished Iridescent Silicon Die Slab (~21.4 x 17.6 mm, 100% solid & unbroken)
-  b.addBox(0, 0.035 + yOff, 0, 3.06, 0.135, 2.48, 0.024, 1);
+  // Main Mirror-Finished Bare Silicon Die Slab (~21.4 x 17.6 mm, razor-diced silicon edge)
+  b.addBox(0, 0.035 + yOff, 0, 3.06, 0.135, 2.48, 0.011, 1);
 
   // 1) Top-Left: Performance Core Cluster (dynamically adapts to 4..12 P-Cores; M1 Max = 8P in 4x2!)
   const pCount = Math.max(2, Math.min(12, spec.pCores || 8));
@@ -297,7 +299,7 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
     for (let c = 0; c < pColsN && pIdx < pCount; c++) {
       const cx = -1.68 + (c - (pColsN - 1) * 0.5) * pStepX;
       const cz = -1.04 + (r - (pRowsN - 1) * 0.5) * pStepZ;
-      b.addBox(cx, 0.185 + yOff, cz, pStepX * 0.44, 0.028, pStepZ * 0.45, 0.014, 1, 1, pIdx % 8);
+      b.addBox(cx, 0.185 + yOff, cz, pStepX * 0.44, 0.028, pStepZ * 0.45, 0.008, 1, 1, pIdx % 8);
       pIdx++;
     }
   }
@@ -307,17 +309,17 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
   const eStepX = 2.48 / eCount;
   for (let c = 0; c < eCount; c++) {
     const cx = -1.68 + (c - (eCount - 1) * 0.5) * eStepX;
-    b.addBox(cx, 0.185 + yOff, 0.52, eStepX * 0.45, 0.026, 0.46, 0.014, 1, 2, 0);
+    b.addBox(cx, 0.185 + yOff, 0.52, eStepX * 0.45, 0.026, 0.46, 0.008, 1, 2, 0);
   }
 
   // 3) Bottom-Left: 5x Thunderbolt / USB4 / I/O PHY Strip
   for (let i = -2; i <= 2; i++) {
-    b.addBox(-1.68 + i * 0.44, 0.182 + yOff, 1.70, 0.185, 0.024, 0.40, 0.012, 3, 3, 0);
+    b.addBox(-1.68 + i * 0.44, 0.182 + yOff, 1.70, 0.185, 0.024, 0.40, 0.007, 3, 3, 0);
   }
 
   // 4) Center Spine: Segmented 48 MB System-Level Cache (SLC — 9 SRAM banks)
   for (let i = -4; i <= 4; i++) {
-    b.addBox(0.0, 0.188 + yOff, i * 0.47, 0.30, 0.028, 0.195, 0.012, 4, 4, 0);
+    b.addBox(0.0, 0.188 + yOff, i * 0.47, 0.30, 0.028, 0.195, 0.007, 4, 4, 0);
   }
 
   // 5) Top-Right: GPU Core Array (dynamically adapts to 8..40 GPU cores; M1 Max = 24C in 6x4 or 32C in 8x4!)
@@ -333,7 +335,7 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
     for (let c = 0; c < gColsN && gIdx < gpuCount; c++) {
       const cx = 1.68 + (c - (gColsN - 1) * 0.5) * gStepX;
       const cz = -0.78 + (r - (gRowsN - 1) * 0.5) * gStepZ;
-      b.addBox(cx, 0.185 + yOff, cz, gStepX * 0.43, 0.026, gStepZ * 0.43, 0.010, 1, 5, 0);
+      b.addBox(cx, 0.185 + yOff, cz, gStepX * 0.43, 0.026, gStepZ * 0.43, 0.006, 1, 5, 0);
       gIdx++;
     }
   }
@@ -343,14 +345,14 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
   const nRows = [-0.24, 0.24];
   for (let r = 0; r < 2; r++) {
     for (let c = 0; c < 8; c++) {
-      b.addBox(1.68 + nCols[c], 0.185 + yOff, 0.94 + nRows[r], 0.115, 0.026, 0.20, 0.010, 4, 6, 0);
+      b.addBox(1.68 + nCols[c], 0.185 + yOff, 0.94 + nRows[r], 0.115, 0.026, 0.20, 0.006, 4, 6, 0);
     }
   }
 
   // 7) Bottom-Right: Display & ProRes Media Engine (4 blocks)
   for (let c = 0; c < 4; c++) {
     const cx = 1.68 + (c - 1.5) * 0.58;
-    b.addBox(cx, 0.182 + yOff, 1.86, 0.245, 0.024, 0.24, 0.012, 1, 7, 0);
+    b.addBox(cx, 0.182 + yOff, 1.86, 0.245, 0.024, 0.24, 0.007, 1, 7, 0);
   }
 
   // Brushed Silver Global Power & Coherent Fabric Spine Rails (shader-driven internal signal flow!)

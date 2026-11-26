@@ -411,6 +411,7 @@ void main() {
 export const SCENE_FS = `#version 300 es
 precision highp float;
 precision highp sampler2DShadow;
+precision highp sampler2DArray;
 
 in vec3 vWorldPos;
 in vec3 vScaledPos;
@@ -427,6 +428,14 @@ flat in float vExtraB;
 uniform sampler2DShadow uShadowMap;
 uniform sampler2D uCoinTex;
 uniform sampler2D uCoinNormTex;
+uniform sampler2DArray uMatTex;
+uniform sampler2DArray uMatNormTex;
+uniform sampler2D uDieLithoTex;
+uniform sampler2D uDieNormTex;
+uniform sampler2D uAbfTex;
+uniform sampler2D uAbfNormTex;
+uniform sampler2D uRamDecalTex;
+uniform sampler2D uEnvTex;
 uniform vec4 uCoinSpec; // (cx, cz, radius, hy)
 uniform vec2 uFocusXZ;
 uniform float uFocusDist;
@@ -469,18 +478,6 @@ float noise2D(vec2 p) {
   );
 }
 
-float fbmGrain(vec2 p) {
-  float v = 0.0;
-  float a = 0.5;
-  mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
-  for (int i = 0; i < 3; i++) {
-    v += a * noise2D(p);
-    p = rot * p * 2.15;
-    a *= 0.5;
-  }
-  return v;
-}
-
 // Cook-Torrance GGX Microfacet BRDF helpers
 float D_GGX(float ndoth, float rough) {
   float a = max(rough * rough, 0.0025);
@@ -501,48 +498,68 @@ vec3 F_Schlick(float cosTheta, vec3 F0) {
   return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-// Roughness-aware Apple Dark-Studio / Dark-Field SEM Environment IBL
-vec3 sampleStudioEnv(vec3 dir, float rough, float semMix) {
-  float y = clamp(dir.y, -1.0, 1.0);
-  float sharp = mix(1.0, 0.18, clamp(rough * 1.15, 0.0, 1.0));
-  float widen = mix(0.0, 0.24, rough);
-
-  // Obsidian studio cyclorama gradient
-  vec3 horizonCol = mix(vec3(0.006, 0.009, 0.016), vec3(0.012, 0.017, 0.026), semMix);
-  vec3 zenithCol = mix(vec3(0.022, 0.032, 0.052), vec3(0.032, 0.044, 0.068), semMix);
-  vec3 env = mix(vec3(0.003, 0.004, 0.008), mix(horizonCol, zenithCol, smoothstep(0.0, 0.85, y)), smoothstep(-0.18, 0.45, y));
-
-  // Primary overhead studio softbox (crisp specular band on polished silicon, smooth fill on matte)
-  float dKey = dot(dir, normalize(vec3(0.28, 0.92, 0.26)));
-  float keyBox = smoothstep(0.84 - widen, 0.985, dKey) * (0.45 + 0.95 * sharp);
-  env += vec3(1.22, 1.18, 1.12) * keyBox;
-
-  // Dual elongated Apple-keynote architectural lightbars overhead
-  float barCoord1 = abs(dir.x * 0.62 - dir.z * 0.78 - 0.14);
-  float bar1 = smoothstep(0.095 + widen * 0.65, 0.012, barCoord1) * smoothstep(0.30, 0.78, y);
-  float barCoord2 = abs(dir.x * 0.62 - dir.z * 0.78 + 0.46);
-  float bar2 = smoothstep(0.065 + widen * 0.55, 0.010, barCoord2) * smoothstep(0.36, 0.82, y);
-  env += vec3(0.82, 0.90, 1.02) * bar1 * (0.28 + 0.58 * sharp);
-  env += vec3(0.46, 0.68, 0.98) * bar2 * (0.18 + 0.36 * sharp);
-
-  // Cool platinum-cyan architectural rim reflector (amplified subtly in dark-field SEM depths)
-  float dRim = dot(dir, normalize(vec3(-0.78, 0.44, -0.44)));
-  float rimBox = smoothstep(0.76 - widen, 0.965, dRim) * (0.45 + 0.65 * sharp);
-  env += vec3(0.34, 0.68, 1.24) * rimBox * mix(0.82, 1.18, semMix);
-
-  // Warm tungsten-copper counter-fill softbox
-  float dWarm = dot(dir, normalize(vec3(0.76, 0.34, -0.55)));
-  float warmBox = smoothstep(0.82 - widen, 0.975, dWarm) * (0.35 + 0.55 * sharp);
-  env += vec3(1.02, 0.64, 0.30) * warmBox * mix(0.54, 0.36, semMix);
-
-  return env;
+// Roughness-attenuated Fresnel for IBL so matte dielectrics never wash out at grazing angles
+vec3 F_SchlickRoughness(float cosTheta, vec3 F0, float rough) {
+  return F0 + (max(vec3(1.0 - rough), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-vec3 thinFilmSpectral(float ndotv, vec2 pos) {
-  float thickness = 2.15 + sin(pos.x * 0.58 - pos.y * 0.42) * 0.44 + hash12(floor(pos * 1.4)) * 0.28;
-  float phase = thickness * (0.64 + 0.56 * ndotv);
-  vec3 spectral = 0.5 + 0.5 * cos(6.28318 * (phase + vec3(0.00, 0.33, 0.67)));
-  return mix(vec3(0.022, 0.052, 0.115), spectral * vec3(0.36, 0.55, 0.82), 0.64);
+// Triplanar hardware-mipmapped PBR micro-material sampler (albedo+rough + world-space bump + cavity AO)
+void sampleTriplanarMat(
+  float layer, vec3 wp, vec3 wn, float scale,
+  out vec4 albRough, out vec3 bumpDelta, out float cavAO
+) {
+  vec3 bw = pow(abs(wn), vec3(4.0));
+  bw /= max(bw.x + bw.y + bw.z, 0.0001);
+
+  vec2 uvY = wp.xz * scale;
+  vec2 uvX = wp.zy * scale;
+  vec2 uvZ = wp.xy * scale;
+
+  vec4 aY = texture(uMatTex, vec3(uvY, layer));
+  vec4 aX = texture(uMatTex, vec3(uvX, layer));
+  vec4 aZ = texture(uMatTex, vec3(uvZ, layer));
+  albRough = aY * bw.y + aX * bw.x + aZ * bw.z;
+
+  vec4 rY = texture(uMatNormTex, vec3(uvY, layer));
+  vec4 rX = texture(uMatNormTex, vec3(uvX, layer));
+  vec4 rZ = texture(uMatNormTex, vec3(uvZ, layer));
+
+  vec2 tY = rY.rg * 2.0 - 1.0;
+  vec2 tX = rX.rg * 2.0 - 1.0;
+  vec2 tZ = rZ.rg * 2.0 - 1.0;
+
+  bumpDelta = vec3(tY.x, 0.0, tY.y) * bw.y
+            + vec3(0.0, tX.y, tX.x) * bw.x
+            + vec3(tZ.x, tZ.y, 0.0) * bw.z;
+  cavAO = rY.b * bw.y + rX.b * bw.x + rZ.b * bw.z;
+}
+
+// Prefiltered RGBM HDR Studio Softbox + Negative-Fill Environment IBL
+vec3 sampleStudioEnv(vec3 dir, float rough, float semMix) {
+  vec3 d = normalize(dir);
+  float phi = atan(d.z, d.x);
+  float theta = acos(clamp(d.y, -1.0, 1.0));
+  vec2 uv = vec2(phi / (2.0 * PI) + 0.5, clamp(theta / PI, 0.002, 0.998));
+  float mip = clamp(rough * 5.8, 0.0, 6.0);
+  vec4 rgbm = textureLod(uEnvTex, uv, mip);
+  vec3 env = rgbm.rgb * (rgbm.a * 8.0);
+  // Subtle cool platinum-cyan cleanroom shift in deep SEM scales
+  return mix(env, env * vec3(0.90, 0.99, 1.12), semMix * 0.48);
+}
+
+// Physically inspired anisotropic Bragg diffraction + thin-film SiO2 interference on bare silicon
+vec3 braggDiffraction(vec3 n, vec3 v, vec3 l, float pitchVal, float orientVal, vec2 pos) {
+  vec3 h = normalize(l + v);
+  float ndotv = max(dot(n, v), 0.0);
+  vec2 gAxis = (orientVal < 0.35) ? vec2(1.0, 0.0) : ((orientVal > 0.65) ? vec2(0.0, 1.0) : vec2(0.707, 0.707));
+  float gratingShift = abs(dot(h.xz, gAxis)) * 1.45;
+  float macroDrift = sin(pos.x * 0.42 - pos.y * 0.34) * 0.18;
+  float phase = 1.65 + pitchVal * 1.35 + gratingShift * (0.75 + pitchVal * 0.55) + ndotv * 0.55 + macroDrift;
+  vec3 spectral = 0.5 + 0.5 * cos(6.28318 * (phase + vec3(0.00, 0.31, 0.64)));
+  // Real bare silicon stays dark metallic charcoal-slate with crisp sapphire/steel/violet-amber diffraction!
+  vec3 bareSi = vec3(0.075, 0.088, 0.112);
+  vec3 diffTint = mix(vec3(0.09, 0.16, 0.28), spectral * vec3(0.28, 0.42, 0.62), 0.72);
+  return mix(bareSi, diffTint, 0.62);
 }
 
 float sampleShadow(vec4 sc, float ndotl) {
@@ -551,16 +568,16 @@ float sampleShadow(vec4 sc, float ndotl) {
   if (proj.x < 0.01 || proj.x > 0.99 || proj.y < 0.01 || proj.y > 0.99 || proj.z > 0.998) {
     return 1.0;
   }
-  float bias = max(0.0012 * (1.0 - ndotl), 0.00055);
+  float bias = max(0.0010 * (1.0 - ndotl), 0.00045);
   float z = proj.z - bias;
   float tx = 1.0 / 2048.0;
   float s = 0.0;
-  s += texture(uShadowMap, vec3(proj.xy, z)) * 0.28;
-  s += texture(uShadowMap, vec3(proj.xy + vec2( tx * 1.35,  tx * 0.75), z)) * 0.18;
-  s += texture(uShadowMap, vec3(proj.xy + vec2(-tx * 1.35, -tx * 0.75), z)) * 0.18;
-  s += texture(uShadowMap, vec3(proj.xy + vec2(-tx * 0.75,  tx * 1.35), z)) * 0.18;
-  s += texture(uShadowMap, vec3(proj.xy + vec2( tx * 0.75, -tx * 1.35), z)) * 0.18;
-  return mix(0.06, 1.0, s);
+  s += texture(uShadowMap, vec3(proj.xy, z)) * 0.36;
+  s += texture(uShadowMap, vec3(proj.xy + vec2( tx * 0.95,  tx * 0.52), z)) * 0.16;
+  s += texture(uShadowMap, vec3(proj.xy + vec2(-tx * 0.95, -tx * 0.52), z)) * 0.16;
+  s += texture(uShadowMap, vec3(proj.xy + vec2(-tx * 0.52,  tx * 0.95), z)) * 0.16;
+  s += texture(uShadowMap, vec3(proj.xy + vec2( tx * 0.52, -tx * 0.95), z)) * 0.16;
+  return mix(0.05, 1.0, s);
 }
 
 // RC-filtered 3-bit digital transaction burst along finite conductor [-1..+1] (soft endpoint fades)
@@ -757,82 +774,52 @@ void main() {
     blochGlow = env * (0.28 + uMacLoads.x * 0.95);
   }
 
-  // Analytical micro-relief normal perturbation (die lithography lines matching World 1's 0.095 grid)
-  float dieLithoPattern = 0.0;
-  float dieTraceGlow = 0.0;
-  if (uZoom < 0.95 && ((matId > 0.5 && matId < 1.5) || (matId > 3.5 && matId < 4.5)) && n.y > 0.85) {
-    vec2 tileCoord = p.xz / 0.095;
-    vec2 tileId = floor(tileCoord + 0.5);
-    vec2 tileF = fract(tileCoord + 0.5) - 0.5;
-    float th = hash12(tileId + vec2(19.3));
-    float horiz = step(0.45, fract(th * 7.3));
-    float ribAxis = mix(tileF.x, tileF.y, horiz);
-    float ribSlope = cos(ribAxis * 6.28318 * 13.0) * 0.085;
-    float railX = smoothstep(0.42, 0.49, abs(tileF.x)) * sign(tileF.x) * 0.14;
-    float railZ = smoothstep(0.42, 0.49, abs(tileF.y)) * sign(tileF.y) * 0.14;
-    n = normalize(n + vec3(mix(ribSlope, 0.0, horiz) + railX, 0.0, mix(0.0, ribSlope, horiz) + railZ));
+  // Vector-baked 2048x1024 Architectural Die Lithography Atlas sampling (World 0 top faces)
+  vec3 keyDir = normalize(vec3(0.52, 0.84, 0.40));
+  vec3 rimDir = normalize(vec3(-0.74, 0.46, -0.55));
+  vec3 fillDir = normalize(vec3(0.22, 0.52, -0.78));
 
-    // Architecture-specific procedural die-shot photolithography per functional block!
+  vec4 dieFeat = vec4(0.45, 0.50, 0.50, 0.0);
+  float dieCavAO = 1.0;
+  float dieRoughTex = 0.10;
+  float hasDieAtlas = 0.0;
+  float matCavAO = 1.0;
+  float anisoStrength = 0.0;
+  vec3 anisoDir = vec3(1.0, 0.0, 0.0);
+
+  if (
+    uZoom < 0.98 &&
+    n.y > 0.82 &&
+    ((matId > 0.5 && matId < 1.5) ||
+      (matId > 3.5 && matId < 4.5 && (ch == 4 || ch == 6)) ||
+      (matId > 2.5 && matId < 3.5 && ch == 3))
+  ) {
     float dieMask = clamp(1.0 - uSemFactor * 1.15, 0.0, 1.0);
-    if (dieMask > 0.01 && ch >= 1 && ch <= 7) {
-      float guardRail = smoothstep(0.87, 0.94, locBorder);
-      if (ch == 1) {
-        // P-Core: Split L1 SRAM bank striations (left) + out-of-order ALU/Decode execution sub-tiles (right)
-        float isCacheHalf = smoothstep(-0.08, 0.04, -locUV.x);
-        float sramCols = smoothstep(0.42, 0.92, abs(sin(locUV.y * 42.0))) * smoothstep(0.15, 0.85, abs(sin(locUV.x * 16.0)));
-        float aluGrid = max(
-          smoothstep(0.76, 0.96, abs(sin(locUV.x * 22.0))),
-          smoothstep(0.76, 0.96, abs(sin(locUV.y * 18.0)))
-        );
-        float splitSeam = smoothstep(0.06, 0.01, abs(locUV.x + 0.04));
-        dieLithoPattern = (mix(aluGrid * 0.72, sramCols * 1.05, isCacheHalf) - splitSeam * 0.35) * dieMask;
-        // Restrained live telemetry: glow travels along core perimeter ring + active internal bus lanes
-        float coreBus = max(guardRail * 0.85, splitSeam * 0.65 + (1.0 - isCacheHalf) * aluGrid * 0.38);
-        dieTraceGlow = coreBus * dieMask;
-      } else if (ch == 2) {
-        // E-Core: Ultra-dense compact execution sub-cells
-        float eCells = smoothstep(0.55, 0.95, abs(sin(locUV.x * 28.0))) * 0.55 +
-                       smoothstep(0.65, 0.96, abs(sin(locUV.y * 24.0))) * 0.45;
-        dieLithoPattern = eCells * dieMask;
-        dieTraceGlow = (guardRail * 0.75 + eCells * 0.25) * dieMask;
-      } else if (ch == 4) {
-        // System-Level Cache (SLC): Iconic dense parallel 6T SRAM macro bank columns + central wordline
-        float bitCols = smoothstep(0.35, 0.92, abs(sin(locUV.x * 36.0)));
-        float subBanks = smoothstep(0.10, 0.02, abs(locUV.y));
-        float bankRows = smoothstep(0.65, 0.96, abs(sin(locUV.y * 28.0)));
-        dieLithoPattern = (bitCols * 0.88 + bankRows * 0.32 - subBanks * 0.40) * dieMask;
-        dieTraceGlow = (guardRail * 0.6 + subBanks * 0.7) * dieMask;
-      } else if (ch == 5) {
-        // GPU Core Array: Symmetric 4-quad TBDR shader execution tiles
-        float quadCross = max(smoothstep(0.07, 0.015, abs(locUV.x)), smoothstep(0.07, 0.015, abs(locUV.y)));
-        float simdLines = smoothstep(0.50, 0.94, abs(sin(locUV.x * 26.0))) * 0.5 +
-                          smoothstep(0.50, 0.94, abs(sin(locUV.y * 26.0))) * 0.5;
-        dieLithoPattern = (simdLines * 0.82 - quadCross * 0.35) * dieMask;
-        dieTraceGlow = (guardRail * 0.78 + quadCross * 0.45) * dieMask;
-      } else if (ch == 6) {
-        // 16-Core Neural Engine: Crisp geometric systolic-array matrix dots
-        vec2 mac = abs(fract(locUV * 4.5 + 0.5) - 0.5);
-        float macTile = 1.0 - smoothstep(0.30, 0.42, max(mac.x, mac.y));
-        dieLithoPattern = macTile * 0.85 * dieMask;
-        dieTraceGlow = (guardRail * 0.55 + macTile * 0.35) * dieMask;
-      } else if (ch == 7) {
-        // Display & ProRes Media Engine: Dual structured video codec pipes
-        float pipeSplit = smoothstep(0.07, 0.015, abs(locUV.y));
-        float codecGrid = smoothstep(0.55, 0.94, abs(sin(locUV.x * 30.0)));
-        dieLithoPattern = (codecGrid * 0.70 - pipeSplit * 0.3) * dieMask;
-        dieTraceGlow = (guardRail * 0.65 + pipeSplit * 0.45) * dieMask;
-      }
+    if (dieMask > 0.01) {
+      vec2 tileIdx = vec2(3.0, 1.0); // Base die slab: seal ring + CMP dummy fill
+      if (ch == 1) tileIdx = vec2(0.0, 0.0);
+      else if (ch == 2) tileIdx = vec2(1.0, 0.0);
+      else if (ch == 4) tileIdx = vec2(2.0, 0.0);
+      else if (ch == 5) tileIdx = vec2(3.0, 0.0);
+      else if (ch == 6) tileIdx = vec2(0.0, 1.0);
+      else if (ch == 7) tileIdx = vec2(1.0, 1.0);
+      else if (ch == 3) tileIdx = vec2(2.0, 1.0);
+
+      vec2 tileUv = clamp(locUV * 0.5 + 0.5, vec2(0.008), vec2(0.992));
+      vec2 atlasUv = (tileIdx + tileUv) * vec2(0.25, 0.50);
+      dieFeat = texture(uDieLithoTex, atlasUv);
+      vec4 dieN = texture(uDieNormTex, atlasUv);
+      vec2 dn = (dieN.rg * 2.0 - 1.0) * 0.58 * dieMask;
+      n = normalize(n + vec3(dn.x, 0.0, dn.y));
+      dieCavAO = mix(1.0, dieN.b, dieMask);
+      dieRoughTex = dieN.a;
+      hasDieAtlas = dieMask;
     }
-  } else if (matId > 4.5 && matId < 5.5) {
-    float g0 = fbmGrain(p.xz * 12.0);
-    float gx = fbmGrain((p.xz + vec2(0.03, 0.0)) * 12.0);
-    float gz = fbmGrain((p.xz + vec2(0.0, 0.03)) * 12.0);
-    n = normalize(n + vec3((g0 - gx) * 2.2, 0.0, (g0 - gz) * 2.2));
   }
 
   ndotv = max(dot(n, v), 0.0);
 
-  // Material Evaluation (Physically Calibrated Linear-Space Apple Dark-Studio PBR Palette)
+  // Material Evaluation (Physically Calibrated Hybrid Photographic + Vector-Baked PBR Palette)
   vec3 baseCol = vec3(0.018, 0.022, 0.030);
   float rough = 0.38;
   float metal = 0.45;
@@ -841,50 +828,76 @@ void main() {
   float studioContactAO = 1.0;
 
   if (matId < 0.5) {
-    // Organic Interposer Substrate + Infinite Anodized Obsidian Studio Plinth
+    // Mat 0: ABF Organic Package Substrate (dielectric green-slate solder mask + 45° copper traces + ENIG vias)
+    //        & Infinite Anodized Obsidian Studio Plinth
     float isInterposerTop = step(-0.42, p.y) * step(0.8, n.y);
-    // Fine copper micro-via fan-out escape traces from die perimeter -> LPDDR5 memory packages
-    float fanX = step(2.96, abs(p.x)) * step(abs(p.x), 3.68) * step(abs(p.z), 2.38);
-    float fanZ = step(2.42, abs(p.z)) * step(abs(p.z), 2.98) * step(abs(p.x), 3.15);
-    float traceX = smoothstep(0.70, 0.94, abs(sin(p.z * 38.0))) * fanX;
-    float traceZ = smoothstep(0.70, 0.94, abs(sin(p.x * 38.0))) * fanZ;
-    float trace = max(traceX, traceZ) * isInterposerTop * (1.0 - uSemFactor);
+    float interposerMask = isInterposerTop * (1.0 - uSemFactor) * step(uZoom, 1.05);
 
-    // Subtle organic BGA solder-mask micro-weave on interposer
-    float weave = (noise2D(p.xz * 65.0) - 0.5) * 0.008 * isInterposerTop * (1.0 - uSemFactor);
-    baseCol = vec3(0.011, 0.016, 0.021) + weave + vec3(0.046, 0.068, 0.052) * trace;
-    rough = 0.44 - trace * 0.16;
-    metal = 0.24 + trace * 0.48;
+    if (interposerMask > 0.01 && abs(p.x) < 5.44 && abs(p.z) < 3.46) {
+      vec2 abfUv = clamp((p.xz / vec2(5.42, 3.44)) * 0.5 + 0.5, vec2(0.002), vec2(0.998));
+      vec4 abf = texture(uAbfTex, abfUv);
+      vec4 abfN = texture(uAbfNormTex, abfUv);
+      vec2 an = (abfN.rg * 2.0 - 1.0) * 0.62 * interposerMask;
+      n = normalize(n + vec3(an.x, 0.0, an.y));
+      ndotv = max(dot(n, v), 0.0);
+      matCavAO = mix(1.0, abfN.b, interposerMask * 0.85);
 
-    // Parallel 8-lane LPDDR5 memory bursts (fanX) & calm DC decoupling power sheen (fanZ)
-    if (trace > 0.04) {
-      if (fanX > 0.5) {
-        float lane = floor(p.z * 38.0 / PI);
-        float busGroup = floor(lane / 8.0);
-        float gh = hash12(vec2(busGroup, sign(p.x) * 7.3 + 1.9));
-        if (gh < 0.62) {
-          float sTrace = clamp(((abs(p.x) - 2.96) / 0.72) * 2.0 - 1.0, -1.0, 1.0);
-          float dir = (fract(gh * 17.3) > 0.5) ? 1.0 : -1.0;
-          float tBus = uPulsePhase * (0.68 + gh * 0.35) + gh * 3.1;
-          float epoch = floor(tBus);
-          float cyc = fract(tBus);
-          // Synchronized parallel byte-lane burst across 8 adjacent traces, with per-lane 0/1 data bits!
-          float bitMask = 0.28 + 0.72 * step(0.36, hash12(vec2(lane, epoch * 1.37 + gh * 9.1)));
-          float head = mix(-1.25, 2.25, cyc) * dir;
-          float pkt = evalBurstLocal(sTrace, head, dir, 0.26, 0.16);
-          emissive += keynoteSignalColor(pkt) * pkt * bitMask * trace * (0.24 + uMacLoads.w * 0.46);
+      float trace = abf.r;
+      float enig = abf.g;
+      float weave = abf.b;
+      float busMask = abf.a;
+
+      // Deep dark emerald-slate ABF solder mask (dielectric!) with raised translucent copper traces + gold ENIG rings
+      vec3 solderMaskCol = vec3(0.008, 0.021, 0.019) * (0.82 + weave * 0.36);
+      vec3 coveredCopper = vec3(0.024, 0.062, 0.044);
+      vec3 enigGold = vec3(0.76, 0.56, 0.22);
+
+      baseCol = mix(solderMaskCol, coveredCopper, trace * 0.85);
+      baseCol = mix(baseCol, enigGold, enig);
+      rough = mix(0.28 - trace * 0.06, 0.16, enig);
+      metal = mix(0.02, 0.94, enig);
+      clearcoat = (1.0 - enig) * 0.52 * interposerMask;
+
+      // Subtle contact AO hugging the die perimeter, 4x LPDDR5 packages & SMD capacitors on the substrate
+      vec2 dDie = max(abs(p.xz) - vec2(3.08, 2.50), vec2(0.0));
+      float dieContact = smoothstep(0.0, 0.18, length(dDie));
+      vec2 dRam = max(abs(vec2(abs(p.x) - 4.22, abs(p.z) - 1.28)) - vec2(0.78, 1.16), vec2(0.0));
+      float ramContact = smoothstep(0.0, 0.18, length(dRam));
+      studioContactAO = mix(1.0, 0.38 + 0.62 * min(dieContact, ramContact), interposerMask);
+
+      // Parallel 8-lane LPDDR5 memory bursts along real 45° escape traces & calm DC sheen to SMD caps
+      if (busMask > 0.08) {
+        if (abs(p.x) > 2.94 && abs(p.z) < 2.42) {
+          float lane = floor(p.z * 34.0 / PI);
+          float busGroup = floor(lane / 8.0);
+          float gh = hash12(vec2(busGroup, sign(p.x) * 7.3 + 1.9));
+          if (gh < 0.65) {
+            float sTrace = clamp(((abs(p.x) - 2.96) / 0.78) * 2.0 - 1.0, -1.0, 1.0);
+            float dir = (fract(gh * 17.3) > 0.5) ? 1.0 : -1.0;
+            float tBus = uPulsePhase * (0.68 + gh * 0.35) + gh * 3.1;
+            float epoch = floor(tBus);
+            float cyc = fract(tBus);
+            float bitMask = 0.28 + 0.72 * step(0.36, hash12(vec2(lane, epoch * 1.37 + gh * 9.1)));
+            float head = mix(-1.25, 2.25, cyc) * dir;
+            float pkt = evalBurstLocal(sTrace, head, dir, 0.26, 0.16);
+            emissive += keynoteSignalColor(pkt) * pkt * bitMask * busMask * (0.24 + uMacLoads.w * 0.44);
+          }
+        } else if (abs(p.z) > 2.40) {
+          float dcSwell = 0.72 + 0.28 * sin(p.x * 1.4 - uTime * 1.1);
+          emissive += vec3(0.76, 0.38, 0.12) * busMask * dcSwell * (0.08 + max(uMacLoads.x, uMacLoads.z) * 0.16);
         }
-      } else if (fanZ > 0.5) {
-        // Real MLCC decoupling capacitors sit on the DC power plane: calm warm ohmic sheen, no racing comets
-        float dcSwell = 0.72 + 0.28 * sin(p.x * 1.4 - uTime * 1.1);
-        emissive += vec3(0.76, 0.38, 0.12) * trace * dcSwell * (0.08 + max(uMacLoads.x, uMacLoads.z) * 0.16);
       }
+    } else {
+      // Interposer bevels/sidewalls & deep dielectric wells
+      baseCol = vec3(0.010, 0.015, 0.018);
+      rough = 0.42;
+      metal = 0.04;
+      clearcoat = 0.16 * (1.0 - uSemFactor);
     }
 
     // Infinite Dark-Studio Plinth beneath package & US Quarter (p.y < -0.50)
     if (p.y < -0.50 && n.y > 0.8 && uZoom < 0.65) {
       float plinthMask = smoothstep(0.65, -0.05, uZoom);
-      // Soft analytical contact ambient occlusion beneath the package and US Quarter
       vec2 dPkg = max(abs(p.xz) - vec2(5.48, 3.50), vec2(0.0));
       float pkgDist = length(dPkg);
       float pkgAO = smoothstep(0.0, 1.35, pkgDist);
@@ -892,22 +905,24 @@ void main() {
       float coinDist = max(0.0, length(p.xz - uCoinSpec.xy) - uCoinSpec.z);
       float coinAO = smoothstep(0.0, 0.95, coinDist);
 
-      studioContactAO = mix(1.0, 0.24 + 0.76 * (pkgAO * coinAO), plinthMask);
+      studioContactAO = mix(1.0, 0.22 + 0.78 * (pkgAO * coinAO), plinthMask);
 
       // Subtle anodized slate micro-texture & sleek dark-mirror sheen around hero objects
-      float slateGrain = (noise2D(p.xz * 22.0) - 0.5) * 0.004;
-      float heroGlow = exp(-0.022 * dot(p.xz, p.xz)) * 0.009 + exp(-0.045 * dot(p.xz - uCoinSpec.xy, p.xz - uCoinSpec.xy)) * 0.007;
-      baseCol = vec3(0.009, 0.012, 0.017) + slateGrain + vec3(0.012, 0.018, 0.026) * heroGlow * plinthMask;
-      rough = mix(0.42, 0.25, plinthMask * (0.45 + 0.55 * exp(-0.018 * dot(p.xz, p.xz))));
-      metal = mix(0.24, 0.42, plinthMask);
+      vec4 plTex = texture(uMatTex, vec3(p.xz * 0.18, 0.0));
+      float slateGrain = (plTex.r - 0.18) * 0.012;
+      float heroGlow = exp(-0.022 * dot(p.xz, p.xz)) * 0.008 + exp(-0.045 * dot(p.xz - uCoinSpec.xy, p.xz - uCoinSpec.xy)) * 0.006;
+      baseCol = vec3(0.008, 0.011, 0.015) + slateGrain + vec3(0.011, 0.016, 0.024) * heroGlow * plinthMask;
+      rough = mix(0.42, 0.24, plinthMask * (0.45 + 0.55 * exp(-0.018 * dot(p.xz, p.xz))));
+      metal = mix(0.18, 0.34, plinthMask);
+      clearcoat = 0.0;
 
       // Ultra-subtle architectural 10 mm / 50 mm studio scale mat hairlines when zoomed out past Die
       if (uZoom < -0.15) {
         float macroVis = smoothstep(-0.15, -0.95, uZoom);
         vec2 g10 = abs(fract(p.xz / 2.85714 + 0.5) - 0.5) * 2.85714;
-        float line10 = 1.0 - smoothstep(0.010, 0.042, min(g10.x, g10.y));
+        float line10 = 1.0 - smoothstep(0.010, 0.038, min(g10.x, g10.y));
         vec2 g50 = abs(fract(p.xz / 14.2857 + 0.5) - 0.5) * 14.2857;
-        float line50 = 1.0 - smoothstep(0.016, 0.058, min(g50.x, g50.y));
+        float line50 = 1.0 - smoothstep(0.015, 0.052, min(g50.x, g50.y));
         float matFade = exp(-0.00055 * dot(p.xz - uFocusXZ, p.xz - uFocusXZ));
         float grid = (line10 * 0.30 + line50 * 0.72) * macroVis * matFade * pkgAO * coinAO;
         baseCol += vec3(0.026, 0.034, 0.046) * grid;
@@ -915,29 +930,41 @@ void main() {
       }
     }
   } else if (matId < 1.5) {
-    // Iridescent Mirror-Polished Thin-Film Silicon Die + Optical SiO2 Clearcoat
-    vec3 irid = thinFilmSpectral(ndotv, p.xz + vec2(dieLithoPattern * 0.16, -dieLithoPattern * 0.11));
-    float fineGrid = smoothstep(0.6, 0.95, abs(sin(p.x * 58.0))) * 0.12 + smoothstep(0.6, 0.95, abs(sin(p.z * 58.0))) * 0.08;
-    float sramBank = step(0.5, fract(p.x * 3.1)) * smoothstep(0.3, 0.8, sin(p.z * 96.0)) * 0.10;
-    float lithoBoost = 0.72 + fineGrid + sramBank + dieLithoPattern * 0.34;
-    vec3 macroCol = irid * lithoBoost;
-    baseCol = mix(macroCol, vec3(0.11, 0.14, 0.19) * (0.85 + fineGrid), uSemFactor);
-    rough = clamp(mix(0.12, 0.23, uSemFactor) + fineGrid * 0.07 + abs(dieLithoPattern) * 0.05, 0.08, 0.42);
-    metal = 0.93;
-    clearcoat = (1.0 - uSemFactor) * 0.82;
+    // Mat 1: Mirror-Polished Bare Silicon Die + Anisotropic Bragg Diffraction + Optical SiO2 Clearcoat
+    vec3 diffCol = braggDiffraction(n, v, keyDir, dieFeat.r, dieFeat.g, p.xz);
+    float metalDens = mix(0.82, 0.58 + dieFeat.b * 0.76, hasDieAtlas);
+    vec3 macroCol = diffCol * metalDens;
+    // Razor-crisp metallic perimeter seal ring on main die slab (ch == 0)
+    if (ch == 0 && hasDieAtlas > 0.01 && locBorder > 0.955) {
+      macroCol = mix(macroCol, vec3(0.42, 0.46, 0.52), smoothstep(0.955, 0.975, locBorder) * hasDieAtlas);
+    }
+    baseCol = mix(macroCol, vec3(0.11, 0.14, 0.19) * metalDens, uSemFactor);
+    rough = clamp(mix(mix(0.09, dieRoughTex, hasDieAtlas), 0.22, uSemFactor), 0.045, 0.36);
+    metal = 0.94;
+    clearcoat = (1.0 - uSemFactor) * 0.86;
+    matCavAO = dieCavAO;
 
     if (liveEnergy > 0.05) {
       vec3 glowHue = mix(vec3(0.09, 0.62, 1.02), vec3(0.98, 0.54, 0.16), smoothstep(0.38, 0.88, liveEnergy));
-      // Restrained editorial telemetry: concentrate glow into architectural bus traces & subtle core warmth
-      float traceFactor = (dieTraceGlow > 0.001) ? mix(0.24, 1.28, clamp(dieTraceGlow, 0.0, 1.0)) : 0.88;
-      emissive = glowHue * pow(liveEnergy, 1.38) * 0.76 * traceFactor;
+      float traceFactor = (hasDieAtlas > 0.01) ? mix(0.18, 1.32, dieFeat.a) : 0.82;
+      emissive = glowHue * pow(liveEnergy, 1.42) * 0.72 * traceFactor;
     }
   } else if (matId < 2.5) {
-    // Brushed Titanium / Silicon Crystal / Tungsten-Silver Metal
-    float brush = (noise2D(vec2(p.x * 92.0, p.z * 14.0)) - 0.5) * 0.036;
-    baseCol = vec3(0.25, 0.29, 0.36) + brush;
-    rough = clamp(0.19 + abs(brush) * 1.1, 0.12, 0.34);
-    metal = 0.95;
+    // Mat 2: Precision Brushed Titanium / Silicon Crystal / Tungsten-Silver Metal (Layer 2 Macro PBR)
+    vec4 tAlb;
+    vec3 tBump;
+    float tCav;
+    sampleTriplanarMat(2.0, p, n, 1.45, tAlb, tBump, tCav);
+    n = normalize(n + tBump * 0.44);
+    ndotv = max(dot(n, v), 0.0);
+    matCavAO = tCav;
+
+    baseCol = vec3(0.34, 0.38, 0.44) * tAlb.rgb;
+    rough = clamp(tAlb.a * 0.92, 0.11, 0.34);
+    metal = 0.96;
+    anisoStrength = 0.55;
+    anisoDir = abs(n.y) > 0.5 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+
     if (ch == 9) {
       emissive = railEmissive;
     } else if (ch == 12 && liveEnergy > 0.01) {
@@ -947,19 +974,40 @@ void main() {
       emissive = gaaCol * gaaWave * 0.86;
     }
   } else if (matId < 3.5) {
-    // Copper Damascene (BEOL) / Bronze-Slate TiN Work-Function Metal / 28Si Neutrons
-    float brush = (noise2D(vec2(p.x * 74.0, p.z * 18.0)) - 0.5) * 0.032;
-    // SerDes serpentine copper micro-traces on World 0 I/O PHY strip (ch == 3)
-    float serdes = (ch == 3 && uZoom < 0.95 && n.y > 0.8)
-      ? smoothstep(0.48, 0.92, abs(sin(locUV.x * 26.0 + sin(locUV.y * 8.0) * 0.8))) * 0.12
-      : 0.0;
-    baseCol = mix(vec3(0.50, 0.30, 0.12), vec3(0.38, 0.25, 0.12), uSemFactor * 0.32) + brush + serdes;
-    rough = 0.20;
-    metal = 0.95;
+    // Mat 3: Electroplated Polycrystalline Copper Damascene (Layer 1 Macro PBR) / TiN / I/O PHY
+    if (ch == 3 && hasDieAtlas > 0.01) {
+      // World 0 I/O PHY: planar octagonal spiral inductors & SerDes lanes
+      vec3 cuSerdes = mix(vec3(0.46, 0.28, 0.15), vec3(0.76, 0.48, 0.26), dieFeat.b);
+      baseCol = cuSerdes;
+      rough = clamp(dieRoughTex * 1.15, 0.09, 0.28);
+      metal = 0.95;
+      clearcoat = 0.45 * hasDieAtlas;
+      matCavAO = dieCavAO;
+    } else {
+      vec4 cAlb;
+      vec3 cBump;
+      float cCav;
+      sampleTriplanarMat(1.0, p, n, 1.35, cAlb, cBump, cCav);
+      // Subtle CMP dishing across top of wide damascene copper rails
+      vec3 dishBump = (n.y > 0.85 && uZoom > 0.5) ? vec3(-locUV.x * 0.06, 0.0, -locUV.y * 0.06) : vec3(0.0);
+      n = normalize(n + cBump * 0.42 + dishBump);
+      ndotv = max(dot(n, v), 0.0);
+      matCavAO = cCav;
+
+      // Physically calibrated linear rose-copper F0 modulated by real polycrystalline grain texture
+      vec3 cuBase = mix(vec3(0.92, 0.54, 0.34), vec3(0.72, 0.44, 0.26), uSemFactor * 0.25);
+      // Darker TaN/TiN diffusion barrier liner along metal trench edges
+      float linerEdge = smoothstep(0.86, 0.98, locBorder) * smoothstep(0.6, 1.4, uZoom);
+      baseCol = mix(cuBase * cAlb.rgb, vec3(0.24, 0.22, 0.24), linerEdge * 0.42);
+      rough = clamp(cAlb.a * 0.84 + linerEdge * 0.08, 0.09, 0.34);
+      metal = 0.96;
+      anisoStrength = 0.35;
+      anisoDir = abs(n.y) > 0.5 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+    }
+
     if (ch == 9) {
       emissive = railEmissive;
     } else if (ch == 11 && liveEnergy > 0.02) {
-      // Physically coupled to the M8/M9 X-bus directly overhead: burst descends vertically down the copper via!
       float period = 11.5;
       float speed = 2.45 * (0.82 + fract(vExtraA * 5.3) * 0.36);
       float wPos = uPulsePhase * speed + vExtraA * period;
@@ -968,53 +1016,105 @@ void main() {
       float vPkt = evalDigitalBurst(p.x, wPos - vertDelay, dir, period, 0.46, 0.24);
       emissive = keynoteSignalColor(vPkt) * vPkt * liveEnergy * 1.12;
     } else if (liveEnergy > 0.14) {
-      float serdesBoost = (ch == 3) ? (0.45 + serdes * 6.0) : 1.0;
+      float serdesBoost = (ch == 3 && hasDieAtlas > 0.01) ? mix(0.28, 1.35, dieFeat.a) : 1.0;
       emissive = vec3(0.92, 0.50, 0.14) * liveEnergy * 0.24 * serdesBoost;
     }
   } else if (matId < 4.5) {
-    // Dark Gunmetal Tungsten (W) / SLC SRAM Spine / Neural Engine / Covalent Bonds
-    float stripe = smoothstep(0.2, 0.85, sin(p.z * 110.0)) * 0.028;
+    // Mat 4: Sputtered Gunmetal Tungsten (W) / SLC SRAM Spine / Neural Engine / Covalent Bonds
     vec3 regionTint = uRegionKind > 1.5
       ? vec3(0.012, 0.018, 0.032)
       : (uRegionKind > 0.5 ? vec3(0.008, 0.022, 0.024) : vec3(0.0));
-    baseCol = vec3(0.048, 0.062, 0.088) + regionTint + (stripe + dieLithoPattern * 0.055) * (1.0 - uSemFactor);
-    rough = clamp(0.26 - dieLithoPattern * 0.06, 0.16, 0.36);
-    metal = 0.89;
-    clearcoat = (dieLithoPattern > 0.01) ? (1.0 - uSemFactor) * 0.45 : 0.0;
+
+    if (hasDieAtlas > 0.01) {
+      // World 0 SLC 6T SRAM & Neural Engine systolic arrays with crisp Sobel relief & dark Bragg tint
+      vec3 darkDiff = braggDiffraction(n, v, keyDir, dieFeat.r, dieFeat.g, p.xz) * 0.62;
+      baseCol = mix(vec3(0.055, 0.070, 0.095), darkDiff + vec3(0.05, 0.068, 0.092), 0.72) * (0.58 + dieFeat.b * 0.72) + regionTint;
+      rough = clamp(dieRoughTex * 1.15, 0.08, 0.30);
+      metal = 0.91;
+      clearcoat = 0.68 * hasDieAtlas;
+      matCavAO = dieCavAO;
+    } else {
+      // BEOL/FEOL sputtered tungsten metal fill & GAA gates (Layer 2 micro-grain)
+      vec4 wAlb;
+      vec3 wBump;
+      float wCav;
+      sampleTriplanarMat(2.0, p, n, 1.85, wAlb, wBump, wCav);
+      n = normalize(n + wBump * 0.38);
+      ndotv = max(dot(n, v), 0.0);
+      matCavAO = wCav;
+
+      baseCol = (vec3(0.095, 0.112, 0.142) + regionTint) * wAlb.rgb;
+      rough = clamp(wAlb.a * 1.12, 0.16, 0.38);
+      metal = 0.90;
+      anisoStrength = 0.30;
+    }
+
     if (blochGlow > 0.02) {
       emissive = vec3(0.10, 0.62, 1.08) * blochGlow * 1.22;
     } else if (gaaGateField > 0.02) {
-      // Restrained gate electric-field glow on active TiN/W GAA collars synchronized with channel inversion
       float fieldRim = 0.35 + 0.65 * (bevelMask + pow(1.0 - ndotv, 2.2) * 0.5);
       emissive = vec3(0.12, 0.50, 1.02) * gaaGateField * 0.34 * fieldRim;
     } else if (liveEnergy > 0.08 && ch < 15) {
-      float tBoost = (dieTraceGlow > 0.001) ? mix(0.25, 1.25, clamp(dieTraceGlow, 0.0, 1.0)) : 1.0;
-      emissive = vec3(0.18, 0.52, 0.96) * liveEnergy * 0.36 * tBoost;
+      float tBoost = (hasDieAtlas > 0.01) ? mix(0.20, 1.25, dieFeat.a) : 1.0;
+      emissive = vec3(0.18, 0.52, 0.96) * liveEnergy * 0.34 * tBoost;
     }
   } else if (matId < 5.5) {
-    // Crystalline Granular SEM Silicon Wafer Substrate
-    float g = fbmGrain(p.xz * 12.0);
-    float sparkle = pow(noise2D(p.xz * 56.0), 6.0) * 0.24;
-    baseCol = vec3(0.085, 0.105, 0.135) * (0.55 + g * 0.85) + vec3(0.25, 0.31, 0.40) * sparkle;
-    rough = 0.54;
-    metal = 0.38;
+    // Mat 5: Cleanroom SEM Etched Crystalline Silicon Wafer Substrate (Dual-Scale Layer 3 Macro PBR)
+    vec4 sAlbA, sAlbB;
+    vec3 sBumpA, sBumpB;
+    float sCavA, sCavB;
+    sampleTriplanarMat(3.0, p, n, 0.72, sAlbA, sBumpA, sCavA);
+    sampleTriplanarMat(3.0, p, n, 3.10, sAlbB, sBumpB, sCavB);
+    n = normalize(n + sBumpA * 0.52 + sBumpB * 0.38);
+    ndotv = max(dot(n, v), 0.0);
+    matCavAO = mix(sCavA, sCavB, 0.45);
+
+    vec3 semAl = mix(sAlbA.rgb, sAlbB.rgb, 0.42);
+    float glint = pow(clamp(semAl.r * 1.15, 0.0, 1.0), 5.0) * 0.14;
+    baseCol = vec3(0.105, 0.125, 0.155) * semAl + vec3(0.24, 0.29, 0.38) * glint;
+    rough = clamp(mix(sAlbA.a, sAlbB.a, 0.45), 0.30, 0.68);
+    metal = 0.36;
   } else if (matId < 6.5) {
-    // Emissive Electric-Cyan Signal / Inversion Wave / QCD Gluon Flux
+    // Mat 6: Emissive Electric-Cyan Signal / Inversion Wave / QCD Gluon Flux
     baseCol = vec3(0.14, 0.54, 0.76);
     rough = 0.15;
     metal = 0.35;
     emissive = vec3(0.09, 0.66, 1.04) * (0.72 + liveEnergy * 0.62 + 0.12 * sin(uTime * 8.0));
   } else if (matId < 7.5) {
-    // Matte Satin-Charcoal Unified Memory (LPDDR5) Package with Precision Laser Border & Fiducial
-    float epoxyGrain = (noise2D(p.xz * 82.0) - 0.5) * 0.010;
-    float laserRim = (n.y > 0.85) ? smoothstep(0.86, 0.895, locBorder) * (1.0 - smoothstep(0.915, 0.945, locBorder)) : 0.0;
-    float pin1Dot = (n.y > 0.85) ? (1.0 - smoothstep(0.05, 0.09, length(locUV - vec2(-0.76, -0.78)))) : 0.0;
-    float microRows = (n.y > 0.85) ? smoothstep(0.7, 0.96, abs(sin(locUV.y * 24.0))) * 0.008 : 0.0;
-    baseCol = vec3(0.026, 0.032, 0.044) + epoxyGrain + microRows + vec3(0.045, 0.056, 0.072) * (laserRim * 0.55 + pin1Dot * 0.95);
-    rough = clamp(0.32 - laserRim * 0.10 + abs(epoxyGrain) * 2.0, 0.18, 0.42);
-    metal = 0.68 + laserRim * 0.22;
+    // Mat 7: Silica-Filled Matte-Black LPDDR5 Epoxy Mold Compound (Dielectric! Layer 0 Macro PBR + Laser-Etch Decal)
+    vec4 eAlb;
+    vec3 eBump;
+    float eCav;
+    sampleTriplanarMat(0.0, p, n, 1.65, eAlb, eBump, eCav);
+    vec3 epBump = eBump * 0.68;
+
+    float laserMask = 0.0;
+    float dimpleMask = 0.0;
+    if (n.y > 0.82 && uZoom < 1.05) {
+      vec2 ramUv = clamp(locUV * 0.5 + 0.5, vec2(0.004), vec2(0.996));
+      vec4 dec = texture(uRamDecalTex, ramUv);
+      laserMask = dec.r;
+      dimpleMask = dec.g;
+      vec2 dn = (dec.ba * 2.0 - 1.0) * 0.82;
+      epBump += vec3(dn.x, 0.0, dn.y);
+    }
+
+    n = normalize(n + epBump);
+    ndotv = max(dot(n, v), 0.0);
+    matCavAO = eCav * (1.0 - dimpleMask * 0.35);
+
+    // Authentic gritty silica-filled dark charcoal epoxy polymer (metal ~ 0.03, NOT metallic steel!)
+    vec3 epoxyCol = vec3(0.016, 0.018, 0.022) + eAlb.rgb * vec3(0.052, 0.056, 0.064);
+    // Subtle laser-ablated pale slate-grey IC markings (slightly rougher matte groove!)
+    vec3 laserCol = vec3(0.115, 0.124, 0.138);
+    baseCol = mix(epoxyCol, laserCol, laserMask * 0.72);
+    rough = clamp(mix(eAlb.a, 0.76, laserMask * 0.65), 0.32, 0.82);
+    metal = 0.03;
+
     if (liveEnergy > 0.05) {
-      emissive = vec3(0.12, 0.48, 0.98) * liveEnergy * (0.65 + laserRim * 0.45);
+      // Whisper-subtle under-package bus reflection along the bottom inner fillet only (keeps epoxy body 100% physical!)
+      float baseFillet = smoothstep(-0.18, -0.35, p.y);
+      emissive = vec3(0.10, 0.44, 0.94) * liveEnergy * (0.04 + 0.34 * baseFillet);
     }
   } else if (matId < 8.5) {
     float qWave = 0.5 + 0.5 * sin(length(p) * 8.5 - uTime * 3.8 + vExtraA * 6.28);
@@ -1025,7 +1125,7 @@ void main() {
     vec3 cloudHue = mix(vec3(0.06, 0.45, 0.96), vec3(0.32, 0.88, 1.05), rim * 0.75 + qWave * 0.25);
     emissive = cloudHue * (0.16 + rim * 1.05 + qWave * 0.16) * (0.65 + liveEnergy * 0.45);
   } else if (matId < 9.5) {
-    // Sapphire-Blue High-k HfO2 / 28Si Protons / Bridging Oxygen
+    // Mat 9: Sapphire-Blue High-k HfO2 / 28Si Protons / Bridging Oxygen
     float quark = 0.5 + 0.5 * sin(p.x * 14.0 + uTime * 4.5) * cos(p.y * 14.0 - uTime * 3.7) * sin(p.z * 14.0 + uTime * 4.1);
     float rim = pow(1.0 - ndotv, 2.2);
     baseCol = vec3(0.06, 0.24, 0.54) + vec3(0.08, 0.22, 0.34) * quark;
@@ -1096,17 +1196,42 @@ void main() {
     rough = 0.14;
     metal = 0.30;
     emissive = vec3(0.28, 0.46, 1.28) * (0.55 + rim * 0.88) * max(0.4, liveEnergy);
-  } else {
+  } else if (matId < 14.5) {
     // Mat 14: Silicon Nitride (SiN) Dielectric Inner Spacer / Interfacial SiO2 Glassy Liner
     float sheen = pow(1.0 - ndotv, 2.6);
-    baseCol = vec3(0.055, 0.088, 0.115) + vec3(0.055, 0.095, 0.13) * sheen;
-    rough = 0.20;
-    metal = 0.18;
-    clearcoat = 0.65;
+    baseCol = vec3(0.048, 0.082, 0.112) + vec3(0.052, 0.092, 0.128) * sheen;
+    rough = 0.18;
+    metal = 0.04;
+    clearcoat = 0.72;
+  } else if (matId < 15.5) {
+    // Mat 15: Glossy Warm Tan Barium-Titanate MLCC Ceramic Capacitor Body
+    vec4 cerAlb;
+    vec3 cerBump;
+    float cerCav;
+    sampleTriplanarMat(0.0, p, n, 4.5, cerAlb, cerBump, cerCav);
+    n = normalize(n + cerBump * 0.18);
+    ndotv = max(dot(n, v), 0.0);
+    matCavAO = mix(1.0, cerCav, 0.4);
+    baseCol = vec3(0.32, 0.19, 0.085) * (0.86 + cerAlb.r * 0.42);
+    rough = 0.19;
+    metal = 0.0;
+    clearcoat = 0.74;
+  } else {
+    // Mat 16: Bright Silver-Tin (Sn/Ni) Soldered SMD End Termination
+    vec4 snAlb;
+    vec3 snBump;
+    float snCav;
+    sampleTriplanarMat(2.0, p, n, 3.2, snAlb, snBump, snCav);
+    n = normalize(n + snBump * 0.22);
+    ndotv = max(dot(n, v), 0.0);
+    matCavAO = mix(1.0, snCav, 0.45);
+    baseCol = vec3(0.76, 0.78, 0.81) * (0.78 + snAlb.r * 0.28);
+    rough = 0.13;
+    metal = 0.96;
   }
 
-  // Machined micro-chamfer edge polish: slightly crisper specular & subtle metallic gleam on bevels!
-  rough = mix(rough, max(0.08, rough * 0.58), bevelMask * 0.72);
+  // Machined micro-chamfer edge polish: crisper specular gleam specifically along machined bevels!
+  rough = mix(rough, max(0.06, rough * 0.52), bevelMask * 0.76);
 
   if (uThermal > 0.5) {
     float heat = clamp(
@@ -1122,35 +1247,37 @@ void main() {
     clearcoat *= 0.25;
   }
 
-  // Analytical Height, Crevice & Plinth Contact Ambient Occlusion
+  // Analytical Height, Crevice, Micro-Cavity & Plinth Contact Ambient Occlusion
   float hAboveFloor = p.y - uFloorY;
-  float floorAO = mix(mix(0.28, 0.18, uSemFactor), 1.0, smoothstep(-0.04, 0.42, hAboveFloor));
-  float wallAO = mix(mix(0.68, 0.56, uSemFactor), 1.0, clamp(n.y * 0.5 + 0.5, 0.0, 1.0));
-  float ao = clamp(floorAO * wallAO * studioContactAO, 0.14, 1.0);
+  float floorAO = mix(mix(0.26, 0.18, uSemFactor), 1.0, smoothstep(-0.04, 0.40, hAboveFloor));
+  float wallAO = mix(mix(0.66, 0.54, uSemFactor), 1.0, clamp(n.y * 0.5 + 0.5, 0.0, 1.0));
+  float ao = clamp(floorAO * wallAO * studioContactAO * matCavAO, 0.12, 1.0);
 
-  // Studio 3-Point Key / Rim / Fill Lighting + 5-Tap Hardware PCF Soft Shadows
-  vec3 keyDir = normalize(vec3(0.52, 0.84, 0.40));
-  vec3 rimDir = normalize(vec3(-0.74, 0.46, -0.55));
-  vec3 fillDir = normalize(vec3(0.22, 0.52, -0.78));
-
+  // Studio 3-Point Key / Rim / Fill Lighting + Tight 5-Tap Hardware PCF Soft Shadows
   float ndotlK = max(dot(n, keyDir), 0.0);
   float sh = sampleShadow(vShadowCoord, ndotlK);
 
   vec3 F0 = mix(vec3(0.04), baseCol, metal);
   vec3 diffAlbedo = baseCol * (1.0 - metal) / PI;
 
-  // Key light (Cook-Torrance GGX)
+  // Key light (Cook-Torrance GGX + subtle anisotropic stretch on brushed metals)
   vec3 hK = normalize(keyDir + v);
   float ndothK = max(dot(n, hK), 0.0);
   float vdothK = max(dot(v, hK), 0.0);
   vec3 Fk = F_Schlick(vdothK, F0);
-  float Dk = D_GGX(ndothK, rough);
-  float Gk = G_SchlickGGX(ndotv, ndotlK, rough);
+  float effRoughK = rough;
+  if (anisoStrength > 0.01) {
+    vec3 tA = normalize(anisoDir - n * dot(anisoDir, n) + vec3(0.0001));
+    float hdotT = dot(hK, tA);
+    effRoughK = clamp(rough * mix(1.0, 0.72 + 0.56 * abs(hdotT), anisoStrength), 0.06, 0.5);
+  }
+  float Dk = D_GGX(ndothK, effRoughK);
+  float Gk = G_SchlickGGX(ndotv, ndotlK, effRoughK);
   vec3 specK = (Dk * Gk * Fk) / max(4.0 * ndotv * ndotlK, 0.001);
   vec3 kDk = (vec3(1.0) - Fk);
 
-  // Optional Optical SiO2 Clearcoat Lobe on key light
-  float ccSpecK = clearcoat > 0.01 ? (D_GGX(ndothK, 0.09) * 0.25 * F_Schlick(vdothK, vec3(0.04)).r * clearcoat) : 0.0;
+  // Optional Optical SiO2 / ABF / MLCC Clearcoat Lobe on key light
+  float ccSpecK = clearcoat > 0.01 ? (D_GGX(ndothK, 0.07) * 0.28 * F_Schlick(vdothK, vec3(0.04)).r * clearcoat) : 0.0;
 
   // Rim light (Cook-Torrance GGX — crisp dark-field metallic edge separation!)
   float ndotlR = max(dot(n, rimDir), 0.0);
@@ -1158,37 +1285,38 @@ void main() {
   float ndothR = max(dot(n, hR), 0.0);
   float vdothR = max(dot(v, hR), 0.0);
   vec3 Fr = F_Schlick(vdothR, F0);
-  float Dr = D_GGX(ndothR, max(rough * 0.92, 0.08));
+  float Dr = D_GGX(ndothR, max(rough * 0.90, 0.06));
   float Gr = G_SchlickGGX(ndotv, ndotlR, rough);
   vec3 specR = (Dr * Gr * Fr) / max(4.0 * ndotv * ndotlR, 0.001);
 
   float ndotlF = max(dot(n, fillDir), 0.0);
 
-  vec3 keyTint = mix(vec3(1.05, 1.01, 0.95), vec3(0.96, 1.00, 1.06), uSemFactor * 0.5);
+  vec3 keyTint = mix(vec3(1.05, 1.01, 0.96), vec3(0.96, 1.00, 1.06), uSemFactor * 0.5);
   vec3 rimTint = mix(vec3(0.42, 0.72, 1.18), vec3(0.56, 0.82, 1.24), uSemFactor);
 
   vec3 direct = vec3(0.0);
-  direct += (kDk * diffAlbedo + specK + vec3(ccSpecK)) * keyTint * (ndotlK * 2.85) * sh;
-  direct += ((vec3(1.0) - Fr) * diffAlbedo * 0.65 + specR * 0.88) * rimTint * (ndotlR * mix(1.45, 2.05, uSemFactor));
-  direct += diffAlbedo * ndotlF * vec3(0.24, 0.30, 0.42) * 1.15;
+  direct += (kDk * diffAlbedo + specK + vec3(ccSpecK)) * keyTint * (ndotlK * 2.65) * sh;
+  direct += ((vec3(1.0) - Fr) * diffAlbedo * 0.60 + specR * 0.82) * rimTint * (ndotlR * mix(1.38, 1.95, uSemFactor));
+  direct += diffAlbedo * ndotlF * vec3(0.24, 0.30, 0.42) * 1.10;
 
-  // Roughness-modulated Studio Environment Reflection + Clearcoat Reflection
+  // Prefiltered HDR Studio Softbox + Negative-Fill Environment Reflection + Clearcoat Reflection
   vec3 reflDir = reflect(-v, n);
   vec3 reflCol = sampleStudioEnv(reflDir, rough, uSemFactor);
-  vec3 Fenv = F_Schlick(ndotv, F0);
-  vec3 envReflection = reflCol * Fenv * mix(1.0, 0.28, rough * rough) * (0.58 + 0.42 * metal) * ao;
+  vec3 Fenv = F_SchlickRoughness(ndotv, F0, rough);
+  vec3 envReflection = reflCol * Fenv * mix(0.82, 0.32, rough * rough) * (0.48 + 0.52 * metal) * ao;
   if (clearcoat > 0.01) {
-    vec3 ccEnv = sampleStudioEnv(reflDir, 0.07, uSemFactor);
+    vec3 ccEnv = sampleStudioEnv(reflDir, 0.04, uSemFactor);
     float ccF = 0.04 + 0.96 * pow(1.0 - ndotv, 5.0);
-    envReflection += ccEnv * ccF * clearcoat * 0.85 * ao;
+    envReflection += ccEnv * ccF * clearcoat * 0.68 * ao;
   }
 
-  // Subtle machined chamfer glint catching the overhead softbox
-  vec3 bevelGlint = vec3(0.76, 0.86, 1.02) * bevelMask * pow(1.0 - ndotv, 2.0) * (0.08 + 0.22 * metal) * (0.45 + 0.55 * sh) * ao;
+  // Subtle machined chamfer glint catching the overhead studio lightbars
+  vec3 bevelGlint = vec3(0.80, 0.89, 1.04) * bevelMask * pow(1.0 - ndotv, 1.85) * (0.06 + 0.24 * metal) * (0.42 + 0.58 * sh) * ao;
 
   // Dark-Field / SEM Grazing Rim Light
-  vec3 semRim = vec3(0.46, 0.68, 0.96) * pow(1.0 - ndotv, 3.4) * (0.06 + 0.34 * uSemFactor) * ao;
-  vec3 ambient = baseCol * vec3(0.055, 0.075, 0.115) * ao;
+  vec3 semRim = vec3(0.46, 0.68, 0.96) * pow(1.0 - ndotv, 3.4) * (0.04 + 0.32 * uSemFactor) * ao;
+  vec3 envDiff = sampleStudioEnv(n, 0.95, uSemFactor);
+  vec3 ambient = baseCol * (vec3(0.042, 0.056, 0.084) + envDiff * (1.0 - metal) * 0.16) * ao;
 
   vec3 col = ambient + direct * ao + envReflection + bevelGlint + semRim + emissive;
 
@@ -1232,8 +1360,8 @@ void main() {
   col = mix(col, vec3(0.003, 0.005, 0.009), clamp(fog, 0.0, 1.0));
 
   // Pack analytical optical microscope Circle-of-Confusion (CoC) into alpha for zero-overhead DOF!
-  float focalDelta = abs(camDist - uFocusDist) / max(uFocusDist * 0.56, 0.5);
-  float coc = clamp(smoothstep(0.18, 1.15, focalDelta) * uDofStrength, 0.0, 1.0);
+  float focalDelta = abs(camDist - uFocusDist) / max(uFocusDist * 0.62, 0.5);
+  float coc = clamp(smoothstep(0.32, 1.32, focalDelta) * uDofStrength, 0.0, 1.0);
 
   fragColor = vec4(max(col, 0.0), coc);
 }
@@ -1268,7 +1396,7 @@ void main() {
     texture(uTex, vUv + vec2( o.x,  o.y)).rgb
   ) * 0.25;
   float lum = max(c.r, max(c.g, c.b));
-  float soft = smoothstep(0.76, 1.52, lum);
+  float soft = smoothstep(1.12, 2.15, lum);
   fragColor = vec4(c * soft, 1.0);
 }
 `;
@@ -1364,8 +1492,8 @@ void main() {
   float rDist = length(centered);
   vec2 dir = normalize(centered + vec2(0.0001));
 
-  // Subtle microscope edge chromatic dispersion
-  float ca = smoothstep(0.42, 1.02, rDist) * (0.0010 + uMotion * 0.0018);
+  // Subtle microscope edge chromatic dispersion (kept razor-clean across center 55%)
+  float ca = smoothstep(0.52, 1.08, rDist) * (0.0007 + uMotion * 0.0015);
   vec4 centerTex = texture(uTex, vUv);
   vec3 base;
   base.r = texture(uTex, vUv + dir * ca).r;
@@ -1375,7 +1503,7 @@ void main() {
   // Depth-aware Leica / Zeiss macro optical Depth-of-Field (zero cost on sharp center pixels!)
   float coc = centerTex.a;
   if (coc > 0.04) {
-    float radiusPx = coc * 4.4;
+    float radiusPx = coc * 3.8;
     vec3 dofAcc = base;
     float wSum = 1.0;
     for (int i = 0; i < 8; i++) {
@@ -1400,8 +1528,22 @@ void main() {
     base = acc;
   }
 
+  // 5-Tap Contrast-Adaptive Sharpening (CAS) on in-focus pixels for razor-crisp lithography & metallic micro-grain!
+  float casAmt = (1.0 - smoothstep(0.04, 0.28, coc)) * (1.0 - smoothstep(0.04, 0.25, uMotion)) * 0.42;
+  if (casAmt > 0.01) {
+    vec3 nN = texture(uTex, clamp(vUv + vec2(0.0, invRes.y), vec2(0.001), vec2(0.999))).rgb;
+    vec3 nS = texture(uTex, clamp(vUv - vec2(0.0, invRes.y), vec2(0.001), vec2(0.999))).rgb;
+    vec3 nE = texture(uTex, clamp(vUv + vec2(invRes.x, 0.0), vec2(0.001), vec2(0.999))).rgb;
+    vec3 nW = texture(uTex, clamp(vUv - vec2(invRes.x, 0.0), vec2(0.001), vec2(0.999))).rgb;
+    vec3 minC = min(base, min(min(nN, nS), min(nE, nW)));
+    vec3 maxC = max(base, max(max(nN, nS), max(nE, nW)));
+    vec3 amp = clamp(min(minC, 2.0 - maxC) / max(maxC, vec3(0.001)), 0.0, 1.0);
+    vec3 wCas = -sqrt(amp) * (0.125 * casAmt);
+    base = max((base + (nN + nS + nE + nW) * wCas) / (1.0 + 4.0 * wCas), vec3(0.0));
+  }
+
   vec3 bloom = texture(uBloomTex, vUv).rgb;
-  vec3 col = base + bloom * 0.40;
+  vec3 col = base + bloom * 0.24;
 
   // Subtle luminous optical halation around the central nuclear pinpoint during the 1,800x empty-space plunge
   if (uVoidPlunge > 0.01) {
@@ -1411,15 +1553,15 @@ void main() {
   }
 
   // Studio optical lens vignette
-  float vig = smoothstep(1.24, 0.32, rDist);
-  col *= (0.46 + 0.54 * vig);
+  float vig = smoothstep(1.26, 0.34, rDist);
+  col *= (0.50 + 0.50 * vig);
 
   // ACES Filmic Tone Map & Gamma
-  col = acesToneMap(col * 0.98);
+  col = acesToneMap(col * 1.02);
   col = pow(col, vec3(1.0 / 2.2));
 
-  // Subtle SEM micro-grain (eliminates dark banding)
-  float grain = (hash12(gl_FragCoord.xy + fract(uTime) * 100.0) - 0.5) * 0.011;
+  // Fine SEM micro-grain (eliminates dark banding without muddying crisp micro-detail)
+  float grain = (hash12(gl_FragCoord.xy + fract(uTime) * 100.0) - 0.5) * 0.0065;
   col = clamp(col + grain, 0.0, 1.0);
 
   fragColor = vec4(col, 1.0);

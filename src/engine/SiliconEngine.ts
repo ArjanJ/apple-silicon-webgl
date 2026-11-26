@@ -1,5 +1,12 @@
 import { DEFAULT_TELEMETRY, LiveMacTelemetry } from '../sim/macTelemetry';
 import {
+  createChipTexturePack,
+  loadMacroMaterialLayers,
+  MAT_ARRAY_LAYERS,
+  MAT_ARRAY_SIZE,
+  TextureBuffer,
+} from './chipTextures';
+import {
   createPlaceholderQuarterTextures,
   loadQuarterPbrTextures,
   QuarterTextureBuffer,
@@ -186,11 +193,19 @@ export class SiliconEngine {
   private latticeAtoms: LatticeAtomSite[] = [];
   private emptyVao: WebGLVertexArrayObject;
 
-  // Render targets & US Quarter PBR textures
+  // Render targets, US Quarter PBR textures & Hybrid Chip PBR textures
   private shadowFbo: WebGLFramebuffer;
   private shadowTex: WebGLTexture;
   private coinTex: WebGLTexture;
   private coinNormTex: WebGLTexture;
+  private matTex: WebGLTexture;
+  private matNormTex: WebGLTexture;
+  private dieLithoTex: WebGLTexture;
+  private dieNormTex: WebGLTexture;
+  private abfTex: WebGLTexture;
+  private abfNormTex: WebGLTexture;
+  private ramDecalTex: WebGLTexture;
+  private envTex: WebGLTexture;
   private lastLightLookX = Number.NaN;
   private lastLightLookZ = Number.NaN;
   private lastLightHalf = Number.NaN;
@@ -352,6 +367,31 @@ export class SiliconEngine {
       this.uploadQuarterTexture(this.coinTex, pbr.albedo);
       this.uploadQuarterTexture(this.coinNormTex, pbr.relief);
     });
+
+    // Build & upload Hybrid Chip PBR Texture Pack (4-layer TEXTURE_2D_ARRAY + die atlas + ABF + LPDDR5 decal + HDR studio IBL)
+    const chipPack = createChipTexturePack();
+    this.matTex = gl.createTexture()!;
+    this.matNormTex = gl.createTexture()!;
+    this.initMaterialArrayTexture(this.matTex, chipPack.matAlbedoInit);
+    this.initMaterialArrayTexture(this.matNormTex, chipPack.matReliefInit);
+    loadMacroMaterialLayers((upd) => {
+      if (this.disposed) return;
+      this.updateMaterialArrayLayer(this.matTex, upd.layer, upd.albedo.data);
+      this.updateMaterialArrayLayer(this.matNormTex, upd.layer, upd.relief.data);
+    });
+
+    this.dieLithoTex = gl.createTexture()!;
+    this.dieNormTex = gl.createTexture()!;
+    this.abfTex = gl.createTexture()!;
+    this.abfNormTex = gl.createTexture()!;
+    this.ramDecalTex = gl.createTexture()!;
+    this.envTex = gl.createTexture()!;
+    this.upload2dPbrTexture(this.dieLithoTex, chipPack.dieLitho, gl.CLAMP_TO_EDGE);
+    this.upload2dPbrTexture(this.dieNormTex, chipPack.dieNorm, gl.CLAMP_TO_EDGE);
+    this.upload2dPbrTexture(this.abfTex, chipPack.abfMap, gl.CLAMP_TO_EDGE);
+    this.upload2dPbrTexture(this.abfNormTex, chipPack.abfNorm, gl.CLAMP_TO_EDGE);
+    this.upload2dPbrTexture(this.ramDecalTex, chipPack.ramDecal, gl.CLAMP_TO_EDGE);
+    this.uploadStudioEnvTexture(this.envTex, chipPack.envMips);
 
     // Build all 10 physically nested instanced worlds (Die -> BEOL Power -> Routing -> FEOL Rows -> GAA Cell -> 12nm Gate -> Crystal -> Atom -> Nucleus -> Quarks!)
     const latticeWorld = buildWorldLattice();
@@ -669,21 +709,87 @@ export class SiliconEngine {
   }
 
   private uploadQuarterTexture(tex: WebGLTexture, buf: QuarterTextureBuffer): void {
+    this.upload2dPbrTexture(tex, buf, this.gl.CLAMP_TO_EDGE);
+  }
+
+  private applyAnisotropy(target: number): void {
+    const gl = this.gl;
+    const anisoExt =
+      gl.getExtension('EXT_texture_filter_anisotropic') ||
+      gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic');
+    if (anisoExt) {
+      const maxAniso = gl.getParameter(anisoExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT) as number;
+      gl.texParameterf(target, anisoExt.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, maxAniso || 1));
+    }
+  }
+
+  private upload2dPbrTexture(tex: WebGLTexture, buf: TextureBuffer, wrapMode: number): void {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, buf.width, buf.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, buf.data);
     gl.generateMipmap(gl.TEXTURE_2D);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    const anisoExt =
-      gl.getExtension('EXT_texture_filter_anisotropic') ||
-      gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic');
-    if (anisoExt) {
-      const maxAniso = gl.getParameter(anisoExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT) as number;
-      gl.texParameterf(gl.TEXTURE_2D, anisoExt.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, maxAniso || 1));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrapMode);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrapMode);
+    this.applyAnisotropy(gl.TEXTURE_2D);
+  }
+
+  private initMaterialArrayTexture(tex: WebGLTexture, data: Uint8Array): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+    gl.texImage3D(
+      gl.TEXTURE_2D_ARRAY,
+      0,
+      gl.RGBA8,
+      MAT_ARRAY_SIZE,
+      MAT_ARRAY_SIZE,
+      MAT_ARRAY_LAYERS,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      data
+    );
+    gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    this.applyAnisotropy(gl.TEXTURE_2D_ARRAY);
+  }
+
+  private updateMaterialArrayLayer(tex: WebGLTexture, layer: number, data: Uint8Array): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+    gl.texSubImage3D(
+      gl.TEXTURE_2D_ARRAY,
+      0,
+      0,
+      0,
+      layer,
+      MAT_ARRAY_SIZE,
+      MAT_ARRAY_SIZE,
+      1,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      data
+    );
+    gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+  }
+
+  private uploadStudioEnvTexture(tex: WebGLTexture, mips: TextureBuffer[]): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    for (let level = 0; level < mips.length; level++) {
+      const m = mips[level];
+      gl.texImage2D(gl.TEXTURE_2D, level, gl.RGBA8, m.width, m.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, m.data);
     }
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, 0);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, mips.length - 1);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
   private updateLightMatrix(lookX: number, lookZ: number, halfExtent: number): void {
@@ -789,6 +895,14 @@ export class SiliconEngine {
       'uShadowMap',
       'uCoinTex',
       'uCoinNormTex',
+      'uMatTex',
+      'uMatNormTex',
+      'uDieLithoTex',
+      'uDieNormTex',
+      'uAbfTex',
+      'uAbfNormTex',
+      'uRamDecalTex',
+      'uEnvTex',
       'uCoinSpec',
       'uFocusXZ',
       'uFocusDist',
@@ -1596,6 +1710,30 @@ export class SiliconEngine {
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.coinNormTex);
     gl.uniform1i(this.uScene.uCoinNormTex, 2);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.matTex);
+    gl.uniform1i(this.uScene.uMatTex, 3);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.matNormTex);
+    gl.uniform1i(this.uScene.uMatNormTex, 4);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.dieLithoTex);
+    gl.uniform1i(this.uScene.uDieLithoTex, 5);
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, this.dieNormTex);
+    gl.uniform1i(this.uScene.uDieNormTex, 6);
+    gl.activeTexture(gl.TEXTURE7);
+    gl.bindTexture(gl.TEXTURE_2D, this.abfTex);
+    gl.uniform1i(this.uScene.uAbfTex, 7);
+    gl.activeTexture(gl.TEXTURE8);
+    gl.bindTexture(gl.TEXTURE_2D, this.abfNormTex);
+    gl.uniform1i(this.uScene.uAbfNormTex, 8);
+    gl.activeTexture(gl.TEXTURE9);
+    gl.bindTexture(gl.TEXTURE_2D, this.ramDecalTex);
+    gl.uniform1i(this.uScene.uRamDecalTex, 9);
+    gl.activeTexture(gl.TEXTURE10);
+    gl.bindTexture(gl.TEXTURE_2D, this.envTex);
+    gl.uniform1i(this.uScene.uEnvTex, 10);
     gl.uniform4f(this.uScene.uCoinSpec, QUARTER_X, QUARTER_Z, QUARTER_RADIUS, QUARTER_HY);
     gl.uniform2f(this.uScene.uFocusXZ, focusX, focusZ);
     gl.uniform1f(this.uScene.uFocusDist, focusDist);
@@ -1840,7 +1978,7 @@ export class SiliconEngine {
     mat4LookAt(this.viewMat, camX, camY, camZ, lookX, lookY, lookZ, 0, 1, 0);
     mat4Multiply(this.viewProjMat, this.projMat, this.viewMat);
 
-    this.updateLightMatrix(lookX, lookZ, 8.8 + macroOut * 7.8);
+    this.updateLightMatrix(lookX, lookZ, 7.2 + macroOut * 8.6);
     const fogDensity = 0.0082 * Math.pow(0.10, outT);
 
     // Collect all physically visible nested scales (allow deeper visibility for World 8 during the 1800x empty-space plunge!)
@@ -1855,10 +1993,11 @@ export class SiliconEngine {
       }
     }
 
-    // Optical microscope DOF aperture: tack-sharp when looking top-down, creamy macro bokeh at oblique 3/4 angles
+    // Optical microscope DOF aperture: tack-sharp across the chip plane on World 0, creamy bokeh at deep oblique angles
     const angleFactor = 1.0 - this.smoothstep(0.95, 1.48, this.pitch);
+    const microDepth = this.smoothstep(0.25, 1.25, this.zoom);
     const scaleDof = 1.0 - 0.55 * this.smoothstep(5.8, 7.2, this.zoom);
-    const dofStrength = (0.12 + 0.62 * angleFactor) * scaleDof;
+    const dofStrength = ((0.06 + 0.26 * angleFactor) + microDepth * (0.04 + 0.18 * angleFactor)) * scaleDof;
 
     // PASS 0 + 1: Unified Multi-Scale 3D Render (ZERO 2D fading!)
     this.renderUnifiedScene(
@@ -1965,6 +2104,14 @@ export class SiliconEngine {
     gl.deleteTexture(this.shadowTex);
     gl.deleteTexture(this.coinTex);
     gl.deleteTexture(this.coinNormTex);
+    gl.deleteTexture(this.matTex);
+    gl.deleteTexture(this.matNormTex);
+    gl.deleteTexture(this.dieLithoTex);
+    gl.deleteTexture(this.dieNormTex);
+    gl.deleteTexture(this.abfTex);
+    gl.deleteTexture(this.abfNormTex);
+    gl.deleteTexture(this.ramDecalTex);
+    gl.deleteTexture(this.envTex);
     gl.deleteBuffer(this.boxVbo);
     gl.deleteBuffer(this.boxIbo);
     gl.deleteBuffer(this.cylVbo);
