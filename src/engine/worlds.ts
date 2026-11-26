@@ -229,8 +229,8 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
   const b = new InstanceBuilder();
   const yOff = -0.228;
 
-  // Infinite dark studio ground plane beneath package & US Quarter (top at y = -0.598)
-  b.addBox(4.5, -0.52 + yOff, 0, 180.0, 0.15, 180.0, 0.005, 0);
+  // Infinite dark studio ground plane centered beneath package & US Quarter (top at y = -0.598)
+  b.addBox(0, -0.52 + yOff, 0, 180.0, 0.15, 180.0, 0.005, 0);
 
   // 1:1 Physical Scale Reference: US Quarter Dollar (24.26 mm dia x 1.75 mm thick)
   b.addCyl(QUARTER_X, QUARTER_CENTER_Y, QUARTER_Z, QUARTER_RADIUS, QUARTER_HY, 0.020, 10);

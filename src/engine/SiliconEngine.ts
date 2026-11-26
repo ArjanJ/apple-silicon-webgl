@@ -1698,25 +1698,25 @@ export class SiliconEngine {
     }
 
     // Smooth camera framing:
-    //   - At Die (z = 0) and Scale (z < 0), frames the whole package (+ US Quarter when zoomed out)
+    //   - At Die (z = 0) and Scale (z < 0), stays centered on the chip package (with the US Quarter off to the side)
     //   - As you zoom into ANY spot on the die (z: 0.02 -> 0.68), smoothly glides right onto anchor[0]!
     //   - At deeper scales (z >= 0.7), locks onto the nested floating origin (0,0,0) + smooth pan glide!
     const aspect = this.canvasW / Math.max(1, this.canvasH);
     const outT = Math.max(0.0, -this.zoom);
-    const macroPan = this.smoothstep(0.0, -0.85, this.zoom);
+    const macroOut = this.smoothstep(0.0, -0.85, this.zoom);
     const diveFocus = this.smoothstep(0.02, 0.68, this.zoom);
 
-    const pkgOriginX = -this.effOffsets[0][0] * this.world0Scale + macroPan * 4.45;
+    const pkgOriginX = -this.effOffsets[0][0] * this.world0Scale;
     const pkgOriginZ = -this.effOffsets[0][2] * this.world0Scale;
     const lookX = pkgOriginX * (1.0 - diveFocus) + this.smoothCamShiftX;
     const lookY = this.smoothCamShiftY;
     const lookZ = pkgOriginZ * (1.0 - diveFocus) + this.smoothCamShiftZ;
 
-    const aspectBoost = Math.max(1.0, 1.52 / Math.max(0.85, aspect));
+    const aspectBoost = Math.max(1.0, 1.62 / Math.max(0.85, aspect));
     const subatomicBackoff = this.smoothstep(7.6, 8.2, this.zoom);
     const dist =
       this.zoom < 0
-        ? 10.2 * Math.pow(2.55, outT) * (1.0 + (aspectBoost - 1.0) * Math.min(1.0, outT))
+        ? 10.2 * Math.pow(2.55, outT) * (1.0 + 0.25 * macroOut) * (1.0 + (aspectBoost - 1.0) * Math.min(1.0, outT))
         : (10.2 + (5.4 - 10.2) * this.smoothstep(0.0, 0.95, this.zoom) + subatomicBackoff * 1.15) *
           (1.0 + (aspectBoost - 1.0) * subatomicBackoff * 0.35);
     const cp = Math.cos(this.pitch);
@@ -1731,8 +1731,8 @@ export class SiliconEngine {
     mat4LookAt(this.viewMat, camX, camY, camZ, lookX, lookY, lookZ, 0, 1, 0);
     mat4Multiply(this.viewProjMat, this.projMat, this.viewMat);
 
-    this.updateLightMatrix(lookX, lookZ, 8.8 + macroPan * 6.5);
-    const fogDensity = 0.0082 * Math.pow(0.14, outT);
+    this.updateLightMatrix(lookX, lookZ, 8.8 + macroOut * 7.8);
+    const fogDensity = 0.0082 * Math.pow(0.10, outT);
 
     // Collect all physically visible nested scales (allow deeper visibility for World 8 during the 1800x empty-space plunge!)
     const distLogAdj = Math.log(5.4 / Math.max(5.4, dist));
