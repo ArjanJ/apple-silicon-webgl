@@ -1,5 +1,11 @@
 import { DEFAULT_TELEMETRY, LiveMacTelemetry } from '../sim/macTelemetry';
-import { createParametricBeveledBox, createParametricBeveledCylinder, MeshBuffers } from './geometry';
+import {
+  createParametricBeveledBox,
+  createParametricBeveledCylinder,
+  createUnitBondCylinder,
+  createUnitSphere,
+  MeshBuffers,
+} from './geometry';
 import { DieInspectHit, pickDieRegion } from './inspect';
 import { mat4Invert, mat4LookAt, mat4Multiply, mat4Ortho, mat4Perspective } from './math';
 import {
@@ -13,7 +19,17 @@ import {
   SHADOW_FS,
   SHADOW_VS,
 } from './shaders';
-import { buildWorld0, buildWorld1, buildWorld2, buildWorld3, buildWorld4, WorldInstances } from './worlds';
+import {
+  buildWorld0,
+  buildWorld1,
+  buildWorld2,
+  buildWorld3,
+  buildWorld4,
+  buildWorld5,
+  buildWorld6,
+  buildWorld7,
+  WorldInstances,
+} from './worlds';
 
 export interface EngineHooks {
   onZoomFrame: (zoom: number, fps: number) => void;
@@ -25,9 +41,15 @@ interface StageDraw {
   boxCount: number;
   cylVao: WebGLVertexArrayObject | null;
   cylCount: number;
+  sphereVao: WebGLVertexArrayObject | null;
+  sphereCount: number;
+  bondVao: WebGLVertexArrayObject | null;
+  bondCount: number;
   floorY: number;
   boxBuf: WebGLBuffer | null;
   cylBuf: WebGLBuffer | null;
+  sphereBuf: WebGLBuffer | null;
+  bondBuf: WebGLBuffer | null;
 }
 
 interface FboTarget {
@@ -38,7 +60,8 @@ interface FboTarget {
 }
 
 const SHADOW_SIZE = 2048;
-const STAGE_FLOOR_Y = [-0.37, -0.22, -0.54, -0.21, -0.24];
+export const MAX_ZOOM = 7.0;
+const STAGE_FLOOR_Y = [-0.37, -0.22, -0.54, -0.21, -0.24, -6.0, -6.0, -6.0];
 
 /**
  * High-Speed Hardware-Instanced WebGL2 PBR Engine.
@@ -66,10 +89,16 @@ export class SiliconEngine {
 
   private boxMesh: MeshBuffers;
   private cylMesh: MeshBuffers;
+  private sphereMesh: MeshBuffers;
+  private bondMesh: MeshBuffers;
   private boxVbo: WebGLBuffer;
   private boxIbo: WebGLBuffer;
   private cylVbo: WebGLBuffer;
   private cylIbo: WebGLBuffer;
+  private sphereVbo: WebGLBuffer;
+  private sphereIbo: WebGLBuffer;
+  private bondVbo: WebGLBuffer;
+  private bondIbo: WebGLBuffer;
   private stages: StageDraw[] = [];
   private emptyVao: WebGLVertexArrayObject;
 
@@ -130,6 +159,7 @@ export class SiliconEngine {
   private smoothGpu = 0.2;
   private smoothMem = 0.44;
   private smoothNet = 0.15;
+  private smoothTemp = 0.45; // normalized die temp 0..1 driving lattice thermal phonons
   private smoothCores = new Float32Array(8).fill(0.15);
   private pulsePhase = 0;
 
@@ -180,23 +210,32 @@ export class SiliconEngine {
 
     this.cacheUniforms();
 
-    // Create shared procedural beveled box & cylinder meshes
+    // Create shared procedural beveled box, cylinder, unit sphere & oriented bond meshes
     this.boxMesh = createParametricBeveledBox();
     this.cylMesh = createParametricBeveledCylinder(20);
+    this.sphereMesh = createUnitSphere(26, 36);
+    this.bondMesh = createUnitBondCylinder(12);
 
     this.boxVbo = this.createArrayBuffer(this.boxMesh.vertices);
     this.boxIbo = this.createIndexBuffer(this.boxMesh.indices);
     this.cylVbo = this.createArrayBuffer(this.cylMesh.vertices);
     this.cylIbo = this.createIndexBuffer(this.cylMesh.indices);
+    this.sphereVbo = this.createArrayBuffer(this.sphereMesh.vertices);
+    this.sphereIbo = this.createIndexBuffer(this.sphereMesh.indices);
+    this.bondVbo = this.createArrayBuffer(this.bondMesh.vertices);
+    this.bondIbo = this.createIndexBuffer(this.bondMesh.indices);
     this.emptyVao = gl.createVertexArray()!;
 
-    // Build all 5 instanced worlds once at startup (~2 MB total GPU memory!)
+    // Build all 8 instanced worlds (12mm Die -> 3nm GAA -> 0.54nm Lattice -> 111pm Atom -> 3.1fm Nucleus!)
     const worlds: WorldInstances[] = [
       buildWorld0(),
       buildWorld1(),
       buildWorld2(),
       buildWorld3(),
       buildWorld4(),
+      buildWorld5(),
+      buildWorld6(),
+      buildWorld7(),
     ];
     for (let i = 0; i < worlds.length; i++) {
       this.stages.push(this.uploadStage(worlds[i], STAGE_FLOOR_Y[i]));
@@ -293,6 +332,7 @@ export class SiliconEngine {
       'uCoreB',
       'uNetLoad',
       'uPulsePhase',
+      'uSocTemp',
     ]);
 
     this.uScene = grab(this.sceneProg, [
@@ -305,6 +345,7 @@ export class SiliconEngine {
       'uCoreB',
       'uNetLoad',
       'uPulsePhase',
+      'uSocTemp',
       'uShadowMap',
       'uCamPos',
       'uZoom',
@@ -401,14 +442,36 @@ export class SiliconEngine {
       cylBuf = built.instBuf;
     }
 
+    let sphereVao: WebGLVertexArrayObject | null = null;
+    let sphereBuf: WebGLBuffer | null = null;
+    if (w.sphereCount > 0) {
+      const built = this.buildInstancedVao(this.sphereVbo, this.sphereIbo, w.spheres);
+      sphereVao = built.vao;
+      sphereBuf = built.instBuf;
+    }
+
+    let bondVao: WebGLVertexArrayObject | null = null;
+    let bondBuf: WebGLBuffer | null = null;
+    if (w.bondCount > 0) {
+      const built = this.buildInstancedVao(this.bondVbo, this.bondIbo, w.bonds);
+      bondVao = built.vao;
+      bondBuf = built.instBuf;
+    }
+
     return {
       boxVao,
       boxCount: w.boxCount,
       cylVao,
       cylCount: w.cylinderCount,
+      sphereVao,
+      sphereCount: w.sphereCount,
+      bondVao,
+      bondCount: w.bondCount,
       floorY,
       boxBuf,
       cylBuf,
+      sphereBuf,
+      bondBuf,
     };
   }
 
@@ -567,7 +630,7 @@ export class SiliconEngine {
   }
 
   public flyToZoom(z: number): void {
-    this.targetZoom = Math.max(0, Math.min(4, z));
+    this.targetZoom = Math.max(0, Math.min(MAX_ZOOM, z));
     this.zoomRate = 8.5; // crisp Apple ease-out for rail button jumps
     if (z < 0.5) {
       this.targetPitch = 0.86;
@@ -581,9 +644,18 @@ export class SiliconEngine {
     } else if (z < 3.5) {
       this.targetPitch = 0.9;
       this.targetYaw = 0.16;
-    } else {
+    } else if (z < 4.5) {
       this.targetPitch = 0.62;
       this.targetYaw = 0.34;
+    } else if (z < 5.5) {
+      this.targetPitch = 0.36;
+      this.targetYaw = 0.58;
+    } else if (z < 6.5) {
+      this.targetPitch = 0.28;
+      this.targetYaw = 0.72;
+    } else {
+      this.targetPitch = 0.22;
+      this.targetYaw = 0.48;
     }
   }
 
@@ -602,8 +674,8 @@ export class SiliconEngine {
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
     // Natural macOS pinch-to-zoom (ctrlKey === true, negative deltaY on pinch-out) + responsive two-finger scroll
-    const delta = -e.deltaY * (e.ctrlKey ? 0.0115 : 0.0031);
-    this.targetZoom = Math.max(0, Math.min(4, this.targetZoom + delta));
+    const delta = -e.deltaY * (e.ctrlKey ? 0.012 : 0.0034);
+    this.targetZoom = Math.max(0, Math.min(MAX_ZOOM, this.targetZoom + delta));
     this.zoomRate = 16.5; // glued-to-fingers responsiveness on direct scroll/pinch
   };
 
@@ -632,7 +704,8 @@ export class SiliconEngine {
     this.lastX = e.clientX;
     this.lastY = e.clientY;
     this.targetYaw -= dx * 0.0065;
-    this.targetPitch = Math.max(0.28, Math.min(1.52, this.targetPitch + dy * 0.0055));
+    const minPitch = this.zoom > 4.2 ? -0.55 : 0.28;
+    this.targetPitch = Math.max(minPitch, Math.min(1.52, this.targetPitch + dy * 0.0055));
   };
 
   private onPointerUp = (e: PointerEvent): void => {
@@ -674,6 +747,14 @@ export class SiliconEngine {
     if (stage.cylVao && stage.cylCount > 0) {
       gl.bindVertexArray(stage.cylVao);
       gl.drawElementsInstanced(gl.TRIANGLES, this.cylMesh.indexCount, gl.UNSIGNED_SHORT, 0, stage.cylCount);
+    }
+    if (stage.sphereVao && stage.sphereCount > 0) {
+      gl.bindVertexArray(stage.sphereVao);
+      gl.drawElementsInstanced(gl.TRIANGLES, this.sphereMesh.indexCount, gl.UNSIGNED_SHORT, 0, stage.sphereCount);
+    }
+    if (stage.bondVao && stage.bondCount > 0) {
+      gl.bindVertexArray(stage.bondVao);
+      gl.drawElementsInstanced(gl.TRIANGLES, this.bondMesh.indexCount, gl.UNSIGNED_SHORT, 0, stage.bondCount);
     }
   }
 
@@ -723,6 +804,7 @@ export class SiliconEngine {
     );
     gl.uniform1f(this.uShadow.uNetLoad, this.smoothNet);
     gl.uniform1f(this.uShadow.uPulsePhase, this.pulsePhase);
+    gl.uniform1f(this.uShadow.uSocTemp, this.smoothTemp);
     this.drawStageGeometry(stage);
 
     gl.disable(gl.POLYGON_OFFSET_FILL);
@@ -756,6 +838,7 @@ export class SiliconEngine {
     );
     gl.uniform1f(this.uScene.uNetLoad, this.smoothNet);
     gl.uniform1f(this.uScene.uPulsePhase, this.pulsePhase);
+    gl.uniform1f(this.uScene.uSocTemp, this.smoothTemp);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
@@ -827,6 +910,9 @@ export class SiliconEngine {
     this.smoothMem += (this.telemetry.memRatio - this.smoothMem) * lr;
     const targetNet = Math.min(1, Math.log1p(this.telemetry.netKBps) / 7.5);
     this.smoothNet += (targetNet - this.smoothNet) * lr;
+    const rawTemp = this.telemetry.socTempC !== null ? (this.telemetry.socTempC - 25) / 60 : 0.45;
+    const targetTemp = Math.max(0.05, Math.min(1.2, rawTemp));
+    this.smoothTemp += (targetTemp - this.smoothTemp) * lr;
 
     const eOff = Math.min(this.telemetry.eCoreCount, Math.max(0, this.telemetry.coreLoads.length - 8));
     for (let i = 0; i < 8; i++) {
@@ -860,7 +946,10 @@ export class SiliconEngine {
 
     // Camera matrices (matching telephoto Apple studio macro lens: fovY = 33.1 deg)
     const distBase = 10.2 + (5.1 - 10.2) * this.smoothstep(0.0, 1.15, this.zoom);
-    const dist = distBase + (4.7 - distBase) * this.smoothstep(1.8, 4.0, this.zoom);
+    const distMid = distBase + (4.7 - distBase) * this.smoothstep(1.8, 4.0, this.zoom);
+    const distLat = distMid + (6.8 - distMid) * this.smoothstep(4.2, 5.1, this.zoom);
+    const distAtom = distLat + (8.4 - distLat) * this.smoothstep(5.3, 6.0, this.zoom);
+    const dist = distAtom + (6.9 - distAtom) * this.smoothstep(6.2, 7.0, this.zoom);
     const cp = Math.cos(this.pitch);
     const camX = Math.sin(this.yaw) * cp * dist;
     const camY = Math.sin(this.pitch) * dist;
@@ -872,9 +961,9 @@ export class SiliconEngine {
     mat4Multiply(this.viewProjMat, this.projMat, this.viewMat);
 
     // Determine active scale stage(s) — only draws 2 stages inside the brief cross-dissolve window!
-    const z = Math.max(0, Math.min(4, this.zoom));
-    const idx = Math.min(3, Math.floor(z));
-    const f = z >= 4.0 ? 1.0 : z - idx;
+    const z = Math.max(0, Math.min(MAX_ZOOM, this.zoom));
+    const idx = Math.min(6, Math.floor(z));
+    const f = z >= MAX_ZOOM ? 1.0 : z - idx;
     const semFactor = this.smoothstep(0.9, 2.1, z);
 
     const opticalStep = 2.85;
@@ -884,7 +973,7 @@ export class SiliconEngine {
     if (this.hasInspect && z > 0.85) {
       this.clearInspect();
     }
-    const blend = z >= 4.0 ? 1.0 : this.smoothstep(0.22, 0.78, f);
+    const blend = z >= MAX_ZOOM ? 1.0 : this.smoothstep(0.22, 0.78, f);
 
     const gl = this.gl;
 
@@ -993,12 +1082,20 @@ export class SiliconEngine {
     gl.deleteBuffer(this.boxIbo);
     gl.deleteBuffer(this.cylVbo);
     gl.deleteBuffer(this.cylIbo);
+    gl.deleteBuffer(this.sphereVbo);
+    gl.deleteBuffer(this.sphereIbo);
+    gl.deleteBuffer(this.bondVbo);
+    gl.deleteBuffer(this.bondIbo);
     gl.deleteVertexArray(this.emptyVao);
     for (const s of this.stages) {
       if (s.boxVao) gl.deleteVertexArray(s.boxVao);
       if (s.cylVao) gl.deleteVertexArray(s.cylVao);
+      if (s.sphereVao) gl.deleteVertexArray(s.sphereVao);
+      if (s.bondVao) gl.deleteVertexArray(s.bondVao);
       if (s.boxBuf) gl.deleteBuffer(s.boxBuf);
       if (s.cylBuf) gl.deleteBuffer(s.cylBuf);
+      if (s.sphereBuf) gl.deleteBuffer(s.sphereBuf);
+      if (s.bondBuf) gl.deleteBuffer(s.bondBuf);
     }
     gl.deleteProgram(this.shadowProg);
     gl.deleteProgram(this.sceneProg);

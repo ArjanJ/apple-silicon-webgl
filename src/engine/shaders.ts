@@ -116,6 +116,84 @@ void evalInstance(
   } else if (ch == 14) {
     float gateActive = clamp(0.25 + uMacLoads.x * 1.15, 0.0, 1.0);
     liveEnergy = (param > 0.5) ? gateActive : 0.0;
+  } else if (ch == 15) {
+    // Silicon Lattice / HfO2 atom: REAL thermal phonon vibration driven by live Mac die temp (uSocTemp)!
+    float ph = instC.z;
+    float amp = 0.012 + uSocTemp * 0.036 + uMacLoads.x * 0.018;
+    float freq = 5.5 + uSocTemp * 6.5;
+    center.x += sin(uTime * freq + ph * 3.1) * amp;
+    center.y += cos(uTime * (freq * 1.13) + ph * 4.7) * amp;
+    center.z += sin(uTime * (freq * 0.89) + ph * 2.3) * amp;
+    liveEnergy = param;
+  } else if (ch == 16 || ch == 17) {
+    liveEnergy = param;
+  } else if (ch == 18) {
+    // Drifting conduction electrons streaming through 0.54nm Silicon Crystal channels
+    float speed = 0.35 + uMacLoads.x * 1.15;
+    float prog = fract(uTime * speed + instC.z);
+    center.x = mix(-2.75, 2.75, prog);
+    center.y += sin(prog * 18.84 + instC.w * 6.28) * 0.14;
+    center.z += cos(prog * 12.56 + instC.z * 6.28) * 0.12;
+    liveEnergy = 0.75 + uMacLoads.x * 0.5;
+  } else if (ch == 19) {
+    // Orbiting Quantum Probability Density Packet around 111pm Silicon Atom / 28Si Nucleus
+    float rad = instA.x;
+    float inc = instA.y;
+    float theta0 = instA.z;
+    float speed = param * (0.75 + uMacLoads.x * 0.85);
+    float ang = theta0 + uTime * speed;
+    float precess = instC.z + uTime * 0.28;
+    vec3 pOrb = vec3(cos(ang) * rad, sin(ang) * sin(inc) * rad, sin(ang) * cos(inc) * rad);
+    float cp = cos(precess), sp = sin(precess);
+    center = vec3(pOrb.x * cp - pOrb.z * sp, pOrb.y, pOrb.x * sp + pOrb.z * cp);
+    liveEnergy = 0.72 + 0.28 * sin(uTime * 5.0 + instC.z * 9.0);
+  } else if (ch == 21) {
+    // 28Si Nucleon zero-point strong-force nuclear vibration
+    float ph = instC.z;
+    float amp = 0.022 + uMacLoads.x * 0.015;
+    center.x += sin(uTime * 11.5 + ph * 3.7) * amp;
+    center.y += cos(uTime * 13.1 + ph * 5.1) * amp;
+    center.z += sin(uTime * 9.7 + ph * 2.9) * amp;
+    liveEnergy = param;
+  }
+}
+
+void buildLocalPosAndNorm(
+  vec3 aAnchor, vec3 aNorm, vec3 center, vec3 halfSize, float bevelR, int ch,
+  out vec3 worldPos, out vec3 worldNorm
+) {
+  if (ch == 16) {
+    // Arbitrary 3D oriented bond / strong-force flux tube
+    vec3 dir = halfSize;
+    float halfLen = length(dir);
+    vec3 up = dir / max(halfLen, 0.0001);
+    vec3 ref = (abs(up.y) < 0.95) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 right = normalize(cross(ref, up));
+    vec3 fwd = cross(right, up);
+    vec3 lp = vec3(aAnchor.x * bevelR, aAnchor.y * halfLen, aAnchor.z * bevelR);
+    worldPos = center + right * lp.x + up * lp.y + fwd * lp.z;
+    worldNorm = normalize(right * aNorm.x + up * aNorm.y + fwd * aNorm.z);
+  } else if (ch == 17) {
+    // 3D oriented teardrop sp3 quantum hybridized orbital lobe
+    vec3 dir = halfSize;
+    float lobeLen = length(dir);
+    vec3 up = dir / max(lobeLen, 0.0001);
+    vec3 ref = (abs(up.y) < 0.95) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 right = normalize(cross(ref, up));
+    vec3 fwd = cross(right, up);
+    // Shape unit sphere into physical sp3 teardrop stretching outward from nucleus (t = 0..1)
+    float t = clamp(aAnchor.y * 0.5 + 0.5, 0.0, 1.0);
+    float breath = 1.0 + 0.04 * sin(uTime * 3.2 + lobeLen * 4.0);
+    float profile = pow(t, 0.65) * sin(t * 3.14159265) * 1.48 * breath;
+    float rad = bevelR * profile;
+    vec3 lp = vec3(aAnchor.x * rad, t * lobeLen * breath, aAnchor.z * rad);
+    worldPos = center + right * lp.x + up * lp.y + fwd * lp.z;
+    worldNorm = normalize(right * aNorm.x + up * (aNorm.y * 0.65) + fwd * aNorm.z);
+  } else {
+    float r = min(bevelR, min(halfSize.x, min(halfSize.y, halfSize.z)) * 0.46);
+    vec3 inner = max(halfSize - vec3(r), vec3(0.0));
+    worldPos = center + aAnchor * inner + aNorm * r;
+    worldNorm = aNorm;
   }
 }
 `;
@@ -137,6 +215,7 @@ uniform vec4 uCoreA;
 uniform vec4 uCoreB;
 uniform float uNetLoad;
 uniform float uPulsePhase;
+uniform float uSocTemp;
 
 ${COMMON_INSTANCE_GLSL}
 
@@ -145,9 +224,8 @@ void main() {
   float bevelR, matId, liveEnergy;
   evalInstance(aInstA, aInstB, aInstC, center, halfSize, bevelR, matId, liveEnergy);
 
-  float r = min(bevelR, min(halfSize.x, min(halfSize.y, halfSize.z)) * 0.46);
-  vec3 inner = max(halfSize - vec3(r), vec3(0.0));
-  vec3 worldPos = center + aAnchor * inner + aNorm * r;
+  vec3 worldPos, worldNorm;
+  buildLocalPosAndNorm(aAnchor, aNorm, center, halfSize, bevelR, int(aInstC.x + 0.5), worldPos, worldNorm);
 
   gl_Position = uLightVP * vec4(worldPos * uWorldScale, 1.0);
 }
@@ -176,6 +254,7 @@ uniform vec4 uCoreA;
 uniform vec4 uCoreB;
 uniform float uNetLoad;
 uniform float uPulsePhase;
+uniform float uSocTemp;
 
 out vec3 vWorldPos;
 out vec3 vScaledPos;
@@ -194,15 +273,13 @@ void main() {
   float bevelR, matId, liveEnergy;
   evalInstance(aInstA, aInstB, aInstC, center, halfSize, bevelR, matId, liveEnergy);
 
-  float r = min(bevelR, min(halfSize.x, min(halfSize.y, halfSize.z)) * 0.46);
-  vec3 inner = max(halfSize - vec3(r), vec3(0.0));
-  vec3 localPos = aAnchor * inner + aNorm * r;
-  vec3 worldPos = center + localPos;
+  vec3 worldPos, worldNorm;
+  buildLocalPosAndNorm(aAnchor, aNorm, center, halfSize, bevelR, int(aInstC.x + 0.5), worldPos, worldNorm);
   vec3 scaledPos = worldPos * uWorldScale;
 
   vWorldPos = worldPos;
   vScaledPos = scaledPos;
-  vNormal = aNorm;
+  vNormal = worldNorm;
   vShadowCoord = uLightVP * vec4(scaledPos, 1.0);
   vEdgeFactor = abs(aAnchor);
   vMatId = matId;
@@ -400,16 +477,33 @@ void main() {
     rough = 0.56;
     metal = 0.38;
   } else if (matId < 6.5) {
-    // Saturated electric-cyan signal / 3nm electron channel (no white clipping!)
+    // Saturated electric-cyan signal / 3nm electron channel / conduction electron / gluon flux
     baseCol = vec3(0.14, 0.52, 0.72);
     rough = 0.16;
     metal = 0.35;
     emissive = vec3(0.08, 0.62, 0.98) * (0.68 + liveEnergy * 0.58 + 0.12 * sin(uTime * 8.0));
-  } else {
+  } else if (matId < 7.5) {
     baseCol = vec3(0.028, 0.036, 0.052);
     rough = 0.28;
     metal = 0.78;
     if (liveEnergy > 0.05) emissive = vec3(0.14, 0.46, 0.95) * liveEnergy * 0.75;
+  } else if (matId < 8.5) {
+    // Mat 8: Luminous 3D Quantum sp3 Electron Orbital Probability Cloud (Fresnel Rim + Wave Interference!)
+    float qWave = 0.5 + 0.5 * sin(length(p) * 8.5 - uTime * 3.8 + vExtraA * 6.28);
+    float rim = pow(1.0 - ndotv, 1.65);
+    baseCol = vec3(0.03, 0.14, 0.28);
+    rough = 0.12;
+    metal = 0.20;
+    vec3 cloudHue = mix(vec3(0.06, 0.45, 0.96), vec3(0.32, 0.88, 1.05), rim * 0.75 + qWave * 0.25);
+    emissive = cloudHue * (0.16 + rim * 1.05 + qWave * 0.16) * (0.65 + liveEnergy * 0.45);
+  } else {
+    // Mat 9: Radiant Sapphire-Cyan 28Si Proton / Oxygen atom with subtle internal quark-gluon shimmer
+    float quark = 0.5 + 0.5 * sin(p.x * 14.0 + uTime * 4.5) * cos(p.y * 14.0 - uTime * 3.7) * sin(p.z * 14.0 + uTime * 4.1);
+    float rim = pow(1.0 - ndotv, 2.2);
+    baseCol = vec3(0.06, 0.24, 0.52) + vec3(0.08, 0.20, 0.32) * quark;
+    rough = 0.18;
+    metal = 0.78;
+    emissive = vec3(0.08, 0.44, 0.98) * (0.18 + rim * 0.55 + quark * 0.28) * max(0.25, liveEnergy);
   }
 
   if (uThermal > 0.5) {

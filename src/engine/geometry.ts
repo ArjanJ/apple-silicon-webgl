@@ -252,3 +252,72 @@ export function createParametricBeveledCylinder(segments = 20): MeshBuffers {
     indexCount: idx.length,
   };
 }
+
+/**
+ * Watertight unit sphere (radius = 1).
+ * aAnchor = unit sphere position, aNorm = outward unit normal.
+ * Works seamlessly with both standard scaling (spheres/ellipsoids) and oriented orbital lobes!
+ */
+export function createUnitSphere(latSegs = 14, lonSegs = 20): MeshBuffers {
+  const verts: number[] = [];
+  const idx: number[] = [];
+
+  for (let lat = 0; lat <= latSegs; lat++) {
+    const theta = (lat / latSegs) * Math.PI;
+    const sinT = Math.sin(theta);
+    const cosT = Math.cos(theta);
+    for (let lon = 0; lon <= lonSegs; lon++) {
+      const phi = (lon / lonSegs) * Math.PI * 2;
+      const nx = sinT * Math.cos(phi);
+      const ny = cosT;
+      const nz = sinT * Math.sin(phi);
+      verts.push(nx, ny, nz, nx, ny, nz);
+    }
+  }
+
+  const row = lonSegs + 1;
+  for (let lat = 0; lat < latSegs; lat++) {
+    for (let lon = 0; lon < lonSegs; lon++) {
+      const a = lat * row + lon;
+      const b = a + row;
+      // Reverse winding so normals face outward (CCW from outside)
+      idx.push(a, a + 1, b);
+      idx.push(a + 1, b + 1, b);
+    }
+  }
+
+  return {
+    vertices: new Float32Array(verts),
+    indices: new Uint16Array(idx),
+    indexCount: idx.length,
+  };
+}
+
+/**
+ * Unit Y-axis cylinder (radius = 1, y in [-1, 1]) for arbitrary 3D oriented bonds & strong-force flux tubes.
+ */
+export function createUnitBondCylinder(segments = 10): MeshBuffers {
+  const verts: number[] = [];
+  const idx: number[] = [];
+  for (let i = 0; i < segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    verts.push(c, 1, s, c, 0, s);
+    verts.push(c, -1, s, c, 0, s);
+  }
+  for (let i = 0; i < segments; i++) {
+    const j = (i + 1) % segments;
+    const t0 = i * 2;
+    const b0 = t0 + 1;
+    const t1 = j * 2;
+    const b1 = t1 + 1;
+    idx.push(t0, t1, b1);
+    idx.push(t0, b1, b0);
+  }
+  return {
+    vertices: new Float32Array(verts),
+    indices: new Uint16Array(idx),
+    indexCount: idx.length,
+  };
+}

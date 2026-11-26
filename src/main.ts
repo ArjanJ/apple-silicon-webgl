@@ -17,14 +17,20 @@ const ZOOM_STOPS = [
   { z: 2.0, label: 'Canyons' },
   { z: 3.0, label: 'Grid' },
   { z: 4.0, label: '3 nm' },
+  { z: 5.0, label: 'Lattice' },
+  { z: 6.0, label: 'Atom' },
+  { z: 7.0, label: 'Nucleus' },
 ];
 
 const DIAL_TICKS = [
-  { deg: -136, label: '10×' },
-  { deg: -68, label: '2.5K×' },
-  { deg: 0, label: '250K×' },
-  { deg: 68, label: '8M×' },
-  { deg: 136, label: '100M×' },
+  { deg: -140, label: '10×' },
+  { deg: -100, label: '2.5K×' },
+  { deg: -60, label: '250K×' },
+  { deg: -20, label: '8M×' },
+  { deg: 20, label: '100M×' },
+  { deg: 60, label: '1B×' },
+  { deg: 100, label: '5B×' },
+  { deg: 140, label: '100T×' },
 ];
 
 const ICONS = {
@@ -99,7 +105,7 @@ function mountApp(): void {
         ${buildReticleSvg()}
         <div id="nm-bracket" class="nm-bracket" style="opacity:0;pointer-events:none;display:none;">
           <div class="nm-line"></div>
-          <div class="nm-label">3 nm · ~11 Silicon Atoms</div>
+          <div id="nm-label" class="nm-label">3 nm · ~11 Silicon Atoms</div>
           <div class="nm-line"></div>
         </div>
       </div>
@@ -194,6 +200,7 @@ function mountApp(): void {
   const reticleArc = document.getElementById('reticle-arc')!;
   const reticleDial = document.getElementById('reticle-dial')!;
   const nmBracket = document.getElementById('nm-bracket')!;
+  const nmLabel = document.getElementById('nm-label')!;
   const scaleCaption = document.getElementById('scale-caption')!;
   const railButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#zoom-rail .rail-stop'));
 
@@ -267,15 +274,17 @@ function mountApp(): void {
       if (Math.abs(z - lastZoomRendered) < 0.0005) return;
       lastZoomRendered = z;
 
-      const { magText, sizeText, dialDeg } = formatMagnification(z);
-      const frac = Math.max(0.03, Math.min(1, (z / 4) * 0.78 + 0.04));
+      const { magText, sizeText, dialDeg, bracketText, bracketOpacity } = formatMagnification(z);
+      const frac = Math.max(0.03, Math.min(1, (z / 7) * 0.78 + 0.04));
       reticleArc.setAttribute('stroke-dasharray', `${(circ * frac).toFixed(1)} ${circ.toFixed(1)}`);
       reticleDial.setAttribute('transform', `rotate(${(-dialDeg * 0.55).toFixed(2)} 270 270)`);
 
-      if (z >= 3.55) {
-        const op = Math.max(0, Math.min(1, (z - 3.55) / 0.35));
+      if (bracketText && bracketOpacity > 0.01) {
         nmBracket.style.display = 'flex';
-        nmBracket.style.opacity = op.toFixed(3);
+        nmBracket.style.opacity = bracketOpacity.toFixed(3);
+        if (nmLabel.textContent !== bracketText) {
+          nmLabel.textContent = bracketText;
+        }
       } else if (nmBracket.style.display !== 'none') {
         nmBracket.style.display = 'none';
       }
