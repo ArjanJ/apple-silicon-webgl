@@ -50,15 +50,14 @@ body,
   cursor: grabbing;
 }
 
-/* Liquid Glass Shared Material */
+/* High-Speed Obsidian Glass (Zero backdrop-filter compositor readback tax!) */
+.obsidian-glass,
 .liquid-glass {
-  background: var(--glass);
-  border: 0.5px solid var(--hairline);
+  background: linear-gradient(180deg, rgba(28, 29, 35, 0.86) 0%, rgba(13, 14, 18, 0.90) 100%);
+  border: 0.5px solid rgba(255, 255, 255, 0.13);
   box-shadow:
-    inset 0 0.5px 0 var(--specular),
-    0 16px 44px rgba(0, 0, 0, 0.48);
-  backdrop-filter: blur(36px) saturate(190%);
-  -webkit-backdrop-filter: blur(36px) saturate(190%);
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.22),
+    0 14px 38px rgba(0, 0, 0, 0.58);
 }
 
 /* Circular Optical Microscope Reticle (Whisper-Thin Monochrome Platinum) */
@@ -104,12 +103,11 @@ body,
   font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 0.02em;
-  color: rgba(245, 245, 247, 0.9);
+  color: rgba(245, 245, 247, 0.92);
   padding: 4px 11px;
   border-radius: 999px;
-  background: rgba(12, 12, 15, 0.55);
+  background: linear-gradient(180deg, rgba(24, 25, 30, 0.88), rgba(11, 12, 16, 0.92));
   border: 0.5px solid rgba(255, 255, 255, 0.16);
-  backdrop-filter: blur(20px);
   white-space: nowrap;
 }
 
