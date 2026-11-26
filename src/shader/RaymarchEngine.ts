@@ -65,7 +65,7 @@ export class RaymarchEngine {
   private pulsePhase = 0;
 
   public thermal = false;
-  public autoOrbit = true;
+  public autoOrbit = false;
 
   private dragging = false;
   private lastX = 0;

@@ -1,14 +1,10 @@
 import React from 'react';
-import { MicroscopeMode } from '../shader/RaymarchEngine';
 
 interface MicroscopeReticleProps {
-  mode: MicroscopeMode;
   zoom: number; // 0..4
   magText: string;
   sizeText: string;
   dialDeg: number;
-  mooreDensityLabel?: string;
-  mooreYear?: number;
 }
 
 const DIAL_TICKS = [
@@ -19,21 +15,13 @@ const DIAL_TICKS = [
   { deg: 136, label: '100M×' },
 ];
 
-export const MicroscopeReticle: React.FC<MicroscopeReticleProps> = ({
-  mode,
-  zoom,
-  magText,
-  sizeText,
-  dialDeg,
-  mooreDensityLabel,
-  mooreYear,
-}) => {
-  const show3nmBracket = mode === 'live' && zoom >= 3.55;
+export const MicroscopeReticle: React.FC<MicroscopeReticleProps> = ({ zoom, magText, sizeText, dialDeg }) => {
+  const show3nmBracket = zoom >= 3.55;
   const bracketOpacity = Math.max(0, Math.min(1, (zoom - 3.55) / 0.35));
 
   const r = 242;
   const circ = 2 * Math.PI * r;
-  const frac = mode === 'live' ? Math.max(0.03, Math.min(1, (zoom / 4) * 0.78 + 0.04)) : 0.78;
+  const frac = Math.max(0.03, Math.min(1, (zoom / 4) * 0.78 + 0.04));
 
   return (
     <div className="reticle-layer" aria-hidden="true">
@@ -45,7 +33,7 @@ export const MicroscopeReticle: React.FC<MicroscopeReticleProps> = ({
           cy="270"
           r={r}
           fill="none"
-          stroke={mode === 'moore' ? 'rgba(255, 212, 121, 0.42)' : 'rgba(78, 196, 255, 0.42)'}
+          stroke="rgba(78, 196, 255, 0.42)"
           strokeWidth="1.6"
           strokeDasharray={`${circ * frac} ${circ}`}
           strokeLinecap="round"
@@ -77,55 +65,43 @@ export const MicroscopeReticle: React.FC<MicroscopeReticleProps> = ({
         <line x1="270" y1="258" x2="270" y2="265" stroke="rgba(255,255,255,0.16)" strokeWidth="0.8" />
         <line x1="270" y1="275" x2="270" y2="282" stroke="rgba(255,255,255,0.16)" strokeWidth="0.8" />
 
-        {mode === 'live' &&
-          DIAL_TICKS.map((tk) => {
-            const rad = ((tk.deg - 90) * Math.PI) / 180;
-            const tx = 270 + Math.cos(rad) * (r + 16);
-            const ty = 270 + Math.sin(rad) * (r + 16);
-            return (
-              <text
-                key={tk.label}
-                x={tx}
-                y={ty}
-                fill="rgba(245, 245, 247, 0.34)"
-                fontSize="7.5"
-                fontFamily="'JetBrains Mono', monospace"
-                fontWeight="600"
-                textAnchor="middle"
-                dominantBaseline="middle"
-              >
-                {tk.label}
-              </text>
-            );
-          })}
+        {DIAL_TICKS.map((tk) => {
+          const rad = ((tk.deg - 90) * Math.PI) / 180;
+          const tx = 270 + Math.cos(rad) * (r + 16);
+          const ty = 270 + Math.sin(rad) * (r + 16);
+          return (
+            <text
+              key={tk.label}
+              x={tx}
+              y={ty}
+              fill="rgba(245, 245, 247, 0.34)"
+              fontSize="7.5"
+              fontFamily="'JetBrains Mono', monospace"
+              fontWeight="600"
+              textAnchor="middle"
+              dominantBaseline="middle"
+            >
+              {tk.label}
+            </text>
+          );
+        })}
       </svg>
 
       {/* Bottom-left Precision Physical Scale Ruler */}
       <div className="scale-ruler">
         <div className="ruler-bar" />
         <div className="ruler-text">
-          <span>{mode === 'moore' ? '10 µm fixed lens' : sizeText}</span>
+          <span>{sizeText}</span>
           <span className="ruler-sep">·</span>
-          <span className="ruler-mag">{mode === 'moore' ? `${mooreYear}` : magText}</span>
+          <span className="ruler-mag">{magText}</span>
         </div>
       </div>
 
-      {/* Mode 0 Peak 3nm Bracket */}
+      {/* Peak 3nm Feature Bracket */}
       {show3nmBracket && (
         <div className="nm-bracket" style={{ opacity: bracketOpacity }}>
           <div className="nm-line" />
           <div className="nm-label">3 nm · ~11 Silicon Atoms</div>
-          <div className="nm-line" />
-        </div>
-      )}
-
-      {/* Mode 1 Fixed 1971 Transistor Footprint Callout */}
-      {mode === 'moore' && (
-        <div className="nm-bracket" style={{ transform: 'translate(-50%, 144px)' }}>
-          <div className="nm-line" />
-          <div className="nm-label">
-            1971 Single-Transistor Footprint (10 µm) · Now holds <strong>{mooreDensityLabel}×</strong>
-          </div>
           <div className="nm-line" />
         </div>
       )}
