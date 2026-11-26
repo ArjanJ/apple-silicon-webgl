@@ -47,6 +47,11 @@ function liveMacTelemetryPlugin(): Plugin {
   let prevNetTime = Date.now();
   let lastCached: TelemetryPayload | null = null;
   let lastFetchMs = 0;
+  let lastHeavyMs = 0;
+  let cachedMemUsedGB = memTotalGB * 0.45;
+  let cachedNetKBps = 0;
+  let cachedTopProcs: { name: string; cpu: number }[] = [];
+  let cachedGpuEst = 0.2;
   let initDone = false;
 
   async function initStaticInfo() {
@@ -98,77 +103,70 @@ function liveMacTelemetryPlugin(): Plugin {
     const pCoreAvg = avg(pSlice.length ? pSlice : coreLoads);
     const cpuTotal = avg(coreLoads);
 
-    // 2. Real Unified Memory Usage via vm_stat
-    let memUsedGB = memTotalGB * (1 - os.freemem() / os.totalmem());
-    try {
-      const { stdout } = await execFileAsync('vm_stat', []);
-      const pageMatch = stdout.match(/page size of (\d+) bytes/);
-      const pageSize = pageMatch ? parseInt(pageMatch[1], 10) : 16384;
-      const grab = (label: string) => {
-        const m = stdout.match(new RegExp(`${label}:\\s+(\\d+)\\.`));
-        return m ? parseInt(m[1], 10) : 0;
-      };
-      const active = grab('Pages active');
-      const wired = grab('Pages wired down');
-      const compressed = grab('Pages occupied by compressor');
-      const usedBytes = (active + wired + compressed) * pageSize;
-      if (usedBytes > 0) {
-        memUsedGB = Math.min(memTotalGB, usedBytes / 1024 ** 3);
-      }
-    } catch {
-      // keep os.freemem fallback
-    }
+    // 2-4. Only spawn macOS subprocesses (vm_stat / netstat / ps) every 2.2s so telemetry uses ~0% CPU!
+    if (now - lastHeavyMs >= 2200 || cachedTopProcs.length === 0) {
+      lastHeavyMs = now;
+      let memUsedGB = memTotalGB * (1 - os.freemem() / os.totalmem());
+      let netKBps = cachedNetKBps;
+      const topProcs: { name: string; cpu: number }[] = [];
+      let gpuEst = Math.min(1, cpuTotal * 0.45 + 0.08);
 
-    // 3. Real Network Traffic KB/s via netstat -ib
-    let netKBps = 0;
-    try {
-      const { stdout } = await execFileAsync('netstat', ['-ib']);
-      let sumBytes = 0;
-      const seen = new Set<string>();
-      for (const line of stdout.split('\n')) {
-        if (!line.startsWith('en')) continue;
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 10 && parts[2].includes('<Link#')) {
-          const iface = parts[0];
-          if (seen.has(iface)) continue;
-          seen.add(iface);
-          const ibytes = parseInt(parts[6], 10) || 0;
-          const obytes = parseInt(parts[9], 10) || 0;
-          sumBytes += ibytes + obytes;
-        }
-      }
-      const dtSec = Math.max(0.2, (now - prevNetTime) / 1000);
-      if (prevNetBytes > 0 && sumBytes >= prevNetBytes) {
-        netKBps = Math.round(((sumBytes - prevNetBytes) / 1024 / dtSec) * 10) / 10;
-      }
-      prevNetBytes = sumBytes;
-      prevNetTime = now;
-    } catch {
-      netKBps = 0;
-    }
+      const [vmOut, netOut, psOut] = await Promise.allSettled([
+        execFileAsync('vm_stat', []),
+        execFileAsync('netstat', ['-ib']),
+        execFileAsync('ps', ['-Arcwwwxo', '%cpu,comm']),
+      ]);
 
-    // 4. Real Top Running Processes on This Mac
-    const topProcs: { name: string; cpu: number }[] = [];
-    let gpuEst = Math.min(1, cpuTotal * 0.45 + 0.08);
-    try {
-      const { stdout } = await execFileAsync('ps', ['-Arcwwwxo', '%cpu,comm']);
-      const lines = stdout.trim().split('\n').slice(1, 9);
-      for (const line of lines) {
-        const m = line.trim().match(/^([\d.]+)\s+(.+)$/);
-        if (!m) continue;
-        const cpu = parseFloat(m[1]) || 0;
-        const rawPath = m[2].trim();
-        const shortName = rawPath.split('/').pop() || rawPath;
-        if (shortName === 'ps') continue;
-        if (topProcs.length < 4) {
-          topProcs.push({ name: shortName, cpu: Math.round(cpu * 10) / 10 });
+      if (vmOut.status === 'fulfilled') {
+        const stdout = vmOut.value.stdout;
+        const pageMatch = stdout.match(/page size of (\d+) bytes/);
+        const pageSize = pageMatch ? parseInt(pageMatch[1], 10) : 16384;
+        const grab = (label: string) => {
+          const m = stdout.match(new RegExp(`${label}:\\s+(\\d+)\\.`));
+          return m ? parseInt(m[1], 10) : 0;
+        };
+        const usedBytes = (grab('Pages active') + grab('Pages wired down') + grab('Pages occupied by compressor')) * pageSize;
+        if (usedBytes > 0) memUsedGB = Math.min(memTotalGB, usedBytes / 1024 ** 3);
+      }
+
+      if (netOut.status === 'fulfilled') {
+        let sumBytes = 0;
+        const seen = new Set<string>();
+        for (const line of netOut.value.stdout.split('\n')) {
+          if (!line.startsWith('en')) continue;
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 10 && parts[2].includes('<Link#')) {
+            if (seen.has(parts[0])) continue;
+            seen.add(parts[0]);
+            sumBytes += (parseInt(parts[6], 10) || 0) + (parseInt(parts[9], 10) || 0);
+          }
         }
-        if (/WindowServer|Renderer|GPU|ffmpeg|Safari|Chrome|Final Cut|Blender/i.test(shortName)) {
-          gpuEst = Math.min(1, gpuEst + cpu / 180);
+        const dtSec = Math.max(0.5, (now - prevNetTime) / 1000);
+        if (prevNetBytes > 0 && sumBytes >= prevNetBytes) {
+          netKBps = Math.round(((sumBytes - prevNetBytes) / 1024 / dtSec) * 10) / 10;
+        }
+        prevNetBytes = sumBytes;
+        prevNetTime = now;
+      }
+
+      if (psOut.status === 'fulfilled') {
+        for (const line of psOut.value.stdout.trim().split('\n').slice(1, 9)) {
+          const m = line.trim().match(/^([\d.]+)\s+(.+)$/);
+          if (!m) continue;
+          const cpu = parseFloat(m[1]) || 0;
+          const shortName = m[2].trim().split('/').pop() || m[2].trim();
+          if (shortName === 'ps') continue;
+          if (topProcs.length < 4) topProcs.push({ name: shortName, cpu: Math.round(cpu * 10) / 10 });
+          if (/WindowServer|Renderer|GPU|ffmpeg|Safari|Chrome|Final Cut|Blender/i.test(shortName)) {
+            gpuEst = Math.min(1, gpuEst + cpu / 180);
+          }
         }
       }
-    } catch {
-      // ignore
+
+      cachedMemUsedGB = Math.round(memUsedGB * 10) / 10;
+      cachedNetKBps = netKBps;
+      if (topProcs.length > 0) cachedTopProcs = topProcs;
+      cachedGpuEst = gpuEst;
     }
 
     lastCached = {
@@ -180,12 +178,12 @@ function liveMacTelemetryPlugin(): Plugin {
       pCoreAvg,
       eCoreAvg,
       cpuTotal,
-      memUsedGB: Math.round(memUsedGB * 10) / 10,
+      memUsedGB: cachedMemUsedGB,
       memTotalGB,
-      memRatio: Math.max(0.05, Math.min(1, memUsedGB / Math.max(1, memTotalGB))),
-      netKBps,
-      gpuEst,
-      topProcs,
+      memRatio: Math.max(0.05, Math.min(1, cachedMemUsedGB / Math.max(1, memTotalGB))),
+      netKBps: cachedNetKBps,
+      gpuEst: cachedGpuEst,
+      topProcs: cachedTopProcs,
       live: true,
       timestamp: now,
     };

@@ -1,12 +1,16 @@
 import { DEFAULT_TELEMETRY, LiveMacTelemetry } from '../sim/macTelemetry';
 import { FRAGMENT_SHADER, POST_FRAGMENT_SHADER, VERTEX_SHADER } from './siliconRaymarch';
 
-export type MicroscopeMode = 'live' | 'moore';
-
 export interface RaymarchHooks {
   onZoomChange: (uZoom: number) => void;
 }
 
+/**
+ * High-Performance 2-Pass WebGL2 GPU Raymarching Engine with Adaptive Dynamic Resolution.
+ *   - Keeps frame rate locked smoothly at 60 FPS on Retina displays by dynamically scaling
+ *     Pass 1's internal FBO resolution (0.75x .. 1.35x CSS pixels) while rendering Pass 2
+ *     crisply at full canvas resolution!
+ */
 export class RaymarchEngine {
   private container: HTMLElement;
   private canvas: HTMLCanvasElement;
@@ -20,14 +24,17 @@ export class RaymarchEngine {
   private fboH = 1;
   private useFloatFbo = false;
 
+  // Dynamic adaptive render scale (1.0 = CSS 1x, 1.35 = Retina crisp, drops to 0.78 if GPU busy)
+  private renderScale = 1.15;
+  private emaFrameMs = 16.0;
+  private lastScaleAdjust = 0;
+
   private sceneUniforms: {
     uResolution: WebGLUniformLocation | null;
     uTime: WebGLUniformLocation | null;
     uZoom: WebGLUniformLocation | null;
     uYaw: WebGLUniformLocation | null;
     uPitch: WebGLUniformLocation | null;
-    uMode: WebGLUniformLocation | null;
-    uEraProgress: WebGLUniformLocation | null;
     uMacLoads: WebGLUniformLocation | null;
     uCoreA: WebGLUniformLocation | null;
     uCoreB: WebGLUniformLocation | null;
@@ -42,7 +49,6 @@ export class RaymarchEngine {
     uTime: WebGLUniformLocation | null;
   };
 
-  public mode: MicroscopeMode = 'live';
   public zoom = 0.0;
   private targetZoom = 0.0;
   private yaw = -0.35;
@@ -50,11 +56,6 @@ export class RaymarchEngine {
   private targetYaw = -0.35;
   private targetPitch = 0.86;
 
-  // Moore's Law continuous era progress 0.0 (1971) -> 1.0 (2026)
-  public eraProgress = 0.0;
-  private targetEraProgress = 0.0;
-
-  // Smoothed live Mac telemetry for silky shader transitions
   private telemetry: LiveMacTelemetry = { ...DEFAULT_TELEMETRY };
   private smoothP = 0.18;
   private smoothE = 0.14;
@@ -86,6 +87,8 @@ export class RaymarchEngine {
     const gl = this.canvas.getContext('webgl2', {
       antialias: false,
       alpha: false,
+      depth: false,
+      stencil: false,
       powerPreference: 'high-performance',
     });
     if (!gl) {
@@ -103,8 +106,6 @@ export class RaymarchEngine {
       uZoom: gl.getUniformLocation(this.sceneProgram, 'uZoom'),
       uYaw: gl.getUniformLocation(this.sceneProgram, 'uYaw'),
       uPitch: gl.getUniformLocation(this.sceneProgram, 'uPitch'),
-      uMode: gl.getUniformLocation(this.sceneProgram, 'uMode'),
-      uEraProgress: gl.getUniformLocation(this.sceneProgram, 'uEraProgress'),
       uMacLoads: gl.getUniformLocation(this.sceneProgram, 'uMacLoads'),
       uCoreA: gl.getUniformLocation(this.sceneProgram, 'uCoreA'),
       uCoreB: gl.getUniformLocation(this.sceneProgram, 'uCoreB'),
@@ -157,8 +158,8 @@ export class RaymarchEngine {
 
   private allocFbo(w: number, h: number): void {
     const gl = this.gl;
-    this.fboW = w;
-    this.fboH = h;
+    this.fboW = Math.max(1, w);
+    this.fboH = Math.max(1, h);
     gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -166,9 +167,9 @@ export class RaymarchEngine {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
     if (this.useFloatFbo) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, this.fboW, this.fboH, 0, gl.RGBA, gl.HALF_FLOAT, null);
     } else {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, this.fboW, this.fboH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     }
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
@@ -178,20 +179,6 @@ export class RaymarchEngine {
 
   public setTelemetry(t: LiveMacTelemetry): void {
     this.telemetry = t;
-  }
-
-  public setMode(mode: MicroscopeMode): void {
-    this.mode = mode;
-    if (mode === 'moore') {
-      this.targetPitch = 0.88;
-      this.targetYaw = -0.25;
-    } else {
-      this.flyToZoom(this.targetZoom);
-    }
-  }
-
-  public setEraProgress(p: number): void {
-    this.targetEraProgress = Math.max(0, Math.min(1, p));
   }
 
   public flyToZoom(z: number): void {
@@ -217,23 +204,16 @@ export class RaymarchEngine {
   private resize = (): void => {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
-    const cw = Math.floor(w * dpr);
-    const ch = Math.floor(h * dpr);
-    this.canvas.width = cw;
-    this.canvas.height = ch;
-    this.allocFbo(cw, ch);
+    const screenDpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    this.canvas.width = Math.floor(w * screenDpr);
+    this.canvas.height = Math.floor(h * screenDpr);
+    this.allocFbo(Math.floor(w * this.renderScale), Math.floor(h * this.renderScale));
   };
 
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
     const delta = -e.deltaY * (e.ctrlKey ? 0.0065 : 0.0014);
-    if (this.mode === 'live') {
-      this.targetZoom = Math.max(0, Math.min(4, this.targetZoom + delta));
-    } else {
-      // In Moore's Law Time Machine, pinching/scrolling forward scrubs through the decades!
-      this.targetEraProgress = Math.max(0, Math.min(1, this.targetEraProgress + delta * 0.25));
-    }
+    this.targetZoom = Math.max(0, Math.min(4, this.targetZoom + delta));
   };
 
   private onPointerDown = (e: PointerEvent): void => {
@@ -275,9 +255,30 @@ export class RaymarchEngine {
     this.rafId = requestAnimationFrame(this.loop);
 
     const now = performance.now();
-    const dt = Math.min(0.05, (now - this.lastFrame) / 1000);
+    const rawDtMs = now - this.lastFrame;
     this.lastFrame = now;
+    const dt = Math.min(0.05, rawDtMs / 1000);
     const elapsedSec = (now - this.startTime) / 1000;
+
+    // Adaptive Dynamic Resolution Controller (keeps locked 60 FPS automatically!)
+    if (rawDtMs > 1 && rawDtMs < 120) {
+      this.emaFrameMs = this.emaFrameMs * 0.9 + rawDtMs * 0.1;
+    }
+    if (now - this.lastScaleAdjust > 700) {
+      let nextScale = this.renderScale;
+      if (this.emaFrameMs > 20.5 && this.renderScale > 0.78) {
+        nextScale = Math.max(0.78, this.renderScale - 0.12);
+      } else if (this.emaFrameMs < 14.5 && this.renderScale < 1.35) {
+        nextScale = Math.min(1.35, this.renderScale + 0.08);
+      }
+      if (Math.abs(nextScale - this.renderScale) > 0.02) {
+        this.renderScale = nextScale;
+        this.lastScaleAdjust = now;
+        const w = Math.max(1, this.container.clientWidth);
+        const h = Math.max(1, this.container.clientHeight);
+        this.allocFbo(Math.floor(w * this.renderScale), Math.floor(h * this.renderScale));
+      }
+    }
 
     // Smooth live Mac telemetry
     const lr = Math.min(1, dt * 4.5);
@@ -298,21 +299,20 @@ export class RaymarchEngine {
     this.pulsePhase = (this.pulsePhase + dt * pulseSpeed) % 1;
 
     const prevZ = this.zoom;
-    this.zoom += (this.targetZoom - this.zoom) * Math.min(1, dt * 4.5);
+    this.zoom += (this.targetZoom - this.zoom) * Math.min(1, dt * 5.2);
     if (Math.abs(this.zoom - prevZ) > 0.0008) {
       this.hooks.onZoomChange(this.zoom);
     }
-    this.eraProgress += (this.targetEraProgress - this.eraProgress) * Math.min(1, dt * 6.0);
 
     if (this.autoOrbit && !this.dragging) {
       this.targetYaw += dt * 0.075;
     }
-    this.yaw += (this.targetYaw - this.yaw) * Math.min(1, dt * 5.0);
-    this.pitch += (this.targetPitch - this.pitch) * Math.min(1, dt * 5.0);
+    this.yaw += (this.targetYaw - this.yaw) * Math.min(1, dt * 6.0);
+    this.pitch += (this.targetPitch - this.pitch) * Math.min(1, dt * 6.0);
 
     const gl = this.gl;
 
-    // PASS 1: Render HDR 3D PBR + 1-Bounce Reflection SDF Raymarching into FBO
+    // PASS 1: Fast Bounding-Slab PBR + 1-Bounce Reflection Raymarching into adaptive FBO
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
     gl.viewport(0, 0, this.fboW, this.fboH);
     gl.useProgram(this.sceneProgram);
@@ -321,8 +321,6 @@ export class RaymarchEngine {
     gl.uniform1f(this.sceneUniforms.uZoom, this.zoom);
     gl.uniform1f(this.sceneUniforms.uYaw, this.yaw);
     gl.uniform1f(this.sceneUniforms.uPitch, this.pitch);
-    gl.uniform1f(this.sceneUniforms.uMode, this.mode === 'moore' ? 1.0 : 0.0);
-    gl.uniform1f(this.sceneUniforms.uEraProgress, this.eraProgress);
     gl.uniform4f(this.sceneUniforms.uMacLoads, this.smoothP, this.smoothE, this.smoothGpu, this.smoothMem);
     gl.uniform4f(
       this.sceneUniforms.uCoreA,
@@ -343,7 +341,7 @@ export class RaymarchEngine {
     gl.uniform1f(this.sceneUniforms.uThermal, this.thermal ? 1.0 : 0.0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    // PASS 2: Optical Bloom + Edge Microscope DoF + Chromatic Dispersion + SEM Film Grain -> Screen
+    // PASS 2: Fast 6-tap Hexagonal Optical Bloom + Edge DoF + SEM Grain -> Full Canvas
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.useProgram(this.postProgram);

@@ -38,7 +38,7 @@ export function App() {
     };
   }, []);
 
-  // Poll real live Mac hardware telemetry every 550ms
+  // Poll real live Mac hardware telemetry every 850ms
   useEffect(() => {
     let alive = true;
     const poll = async () => {
@@ -54,7 +54,7 @@ export function App() {
       }
     };
     poll();
-    const id = window.setInterval(poll, 550);
+    const id = window.setInterval(poll, 850);
     return () => {
       alive = false;
       window.clearInterval(id);
