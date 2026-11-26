@@ -16,21 +16,23 @@ const ZOOM_STOPS = [
   { z: 1.0, label: 'Striations' },
   { z: 2.0, label: 'Canyons' },
   { z: 3.0, label: 'Grid' },
-  { z: 4.0, label: '3 nm' },
-  { z: 5.0, label: 'Lattice' },
-  { z: 6.0, label: 'Atom' },
-  { z: 7.0, label: 'Nucleus' },
+  { z: 4.0, label: 'Cell' },
+  { z: 5.0, label: '3 nm' },
+  { z: 6.0, label: 'Lattice' },
+  { z: 7.0, label: 'Atom' },
+  { z: 8.0, label: 'Nucleus' },
 ];
 
 const DIAL_TICKS = [
-  { deg: -140, label: '10×' },
-  { deg: -100, label: '2.5K×' },
-  { deg: -60, label: '250K×' },
-  { deg: -20, label: '8M×' },
-  { deg: 20, label: '100M×' },
-  { deg: 60, label: '1B×' },
-  { deg: 100, label: '5B×' },
-  { deg: 140, label: '100T×' },
+  { deg: -144, label: '10×' },
+  { deg: -108, label: '1K×' },
+  { deg: -72, label: '100K×' },
+  { deg: -36, label: '1M×' },
+  { deg: 0, label: '5M×' },
+  { deg: 36, label: '40M×' },
+  { deg: 72, label: '250M×' },
+  { deg: 108, label: '1.2B×' },
+  { deg: 144, label: '40T×' },
 ];
 
 const ICONS = {
@@ -275,7 +277,7 @@ function mountApp(): void {
       lastZoomRendered = z;
 
       const { magText, sizeText, dialDeg, bracketText, bracketOpacity } = formatMagnification(z);
-      const frac = Math.max(0.03, Math.min(1, (z / 7) * 0.78 + 0.04));
+      const frac = Math.max(0.03, Math.min(1, (z / 8) * 0.78 + 0.04));
       reticleArc.setAttribute('stroke-dasharray', `${(circ * frac).toFixed(1)} ${circ.toFixed(1)}`);
       reticleDial.setAttribute('transform', `rotate(${(-dialDeg * 0.55).toFixed(2)} 270 270)`);
 

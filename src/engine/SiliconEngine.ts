@@ -25,9 +25,10 @@ import {
   buildWorld2,
   buildWorld3,
   buildWorld4,
-  buildWorld5,
-  buildWorld6,
-  buildWorld7,
+  buildWorldAtom,
+  buildWorldGate3nm,
+  buildWorldLattice,
+  buildWorldNucleus,
   WorldInstances,
 } from './worlds';
 
@@ -60,8 +61,8 @@ interface FboTarget {
 }
 
 const SHADOW_SIZE = 2048;
-export const MAX_ZOOM = 7.0;
-const STAGE_FLOOR_Y = [-0.37, -0.22, -0.54, -0.21, -0.24, -6.0, -6.0, -6.0];
+export const MAX_ZOOM = 8.0;
+const STAGE_FLOOR_Y = [-0.37, -0.22, -0.54, -0.21, -0.24, -6.0, -6.0, -6.0, -6.0];
 
 /**
  * High-Speed Hardware-Instanced WebGL2 PBR Engine.
@@ -226,16 +227,17 @@ export class SiliconEngine {
     this.bondIbo = this.createIndexBuffer(this.bondMesh.indices);
     this.emptyVao = gl.createVertexArray()!;
 
-    // Build all 8 instanced worlds (12mm Die -> 3nm GAA -> 0.54nm Lattice -> 111pm Atom -> 3.1fm Nucleus!)
+    // Build all 9 instanced worlds: 12mm Die -> 24nm Cell -> 3nm Gate -> 0.54nm Lattice -> 111pm Atom -> 3.1fm Nucleus!
     const worlds: WorldInstances[] = [
       buildWorld0(),
       buildWorld1(),
       buildWorld2(),
       buildWorld3(),
       buildWorld4(),
-      buildWorld5(),
-      buildWorld6(),
-      buildWorld7(),
+      buildWorldGate3nm(),
+      buildWorldLattice(),
+      buildWorldAtom(),
+      buildWorldNucleus(),
     ];
     for (let i = 0; i < worlds.length; i++) {
       this.stages.push(this.uploadStage(worlds[i], STAGE_FLOOR_Y[i]));
@@ -642,17 +644,20 @@ export class SiliconEngine {
       this.targetPitch = 0.56;
       this.targetYaw = 0.54;
     } else if (z < 3.5) {
-      this.targetPitch = 0.9;
+      this.targetPitch = 0.88;
       this.targetYaw = 0.16;
     } else if (z < 4.5) {
-      this.targetPitch = 0.62;
-      this.targetYaw = 0.34;
+      this.targetPitch = 0.52;
+      this.targetYaw = 0.28;
     } else if (z < 5.5) {
-      this.targetPitch = 0.36;
-      this.targetYaw = 0.58;
+      this.targetPitch = 0.32;
+      this.targetYaw = 0.36;
     } else if (z < 6.5) {
       this.targetPitch = 0.28;
-      this.targetYaw = 0.72;
+      this.targetYaw = 0.44;
+    } else if (z < 7.5) {
+      this.targetPitch = 0.26;
+      this.targetYaw = 0.62;
     } else {
       this.targetPitch = 0.22;
       this.targetYaw = 0.48;
@@ -944,12 +949,8 @@ export class SiliconEngine {
     const fps = Math.round(1000 / Math.max(4, this.emaFrameMs));
     this.hooks.onZoomFrame(this.zoom, fps);
 
-    // Camera matrices (matching telephoto Apple studio macro lens: fovY = 33.1 deg)
-    const distBase = 10.2 + (5.1 - 10.2) * this.smoothstep(0.0, 1.15, this.zoom);
-    const distMid = distBase + (4.7 - distBase) * this.smoothstep(1.8, 4.0, this.zoom);
-    const distLat = distMid + (6.8 - distMid) * this.smoothstep(4.2, 5.1, this.zoom);
-    const distAtom = distLat + (8.4 - distLat) * this.smoothstep(5.3, 6.0, this.zoom);
-    const dist = distAtom + (6.9 - distAtom) * this.smoothstep(6.2, 7.0, this.zoom);
+    // Strictly monotonic, steady camera distance (10.2 -> 5.4, NEVER pulls backward when zooming in!)
+    const dist = 10.2 + (5.4 - 10.2) * this.smoothstep(0.0, 1.15, this.zoom);
     const cp = Math.cos(this.pitch);
     const camX = Math.sin(this.yaw) * cp * dist;
     const camY = Math.sin(this.pitch) * dist;
@@ -960,20 +961,20 @@ export class SiliconEngine {
     mat4LookAt(this.viewMat, camX, camY, camZ, 0, 0, 0, 0, 1, 0);
     mat4Multiply(this.viewProjMat, this.projMat, this.viewMat);
 
-    // Determine active scale stage(s) — only draws 2 stages inside the brief cross-dissolve window!
+    // Determine active scale stage(s) — accelerates optical expansion on the 100,000x Atom -> Nucleus dive!
     const z = Math.max(0, Math.min(MAX_ZOOM, this.zoom));
-    const idx = Math.min(6, Math.floor(z));
+    const idx = Math.min(7, Math.floor(z));
     const f = z >= MAX_ZOOM ? 1.0 : z - idx;
     const semFactor = this.smoothstep(0.9, 2.1, z);
 
-    const opticalStep = 2.85;
+    const opticalStep = idx === 7 ? 5.6 : 3.35;
     const s0 = Math.pow(opticalStep, f);
     const s1 = Math.pow(opticalStep, f - 1.0);
     if (idx === 0) this.world0Scale = s0;
     if (this.hasInspect && z > 0.85) {
       this.clearInspect();
     }
-    const blend = z >= MAX_ZOOM ? 1.0 : this.smoothstep(0.22, 0.78, f);
+    const blend = z >= MAX_ZOOM ? 1.0 : this.smoothstep(0.20, 0.80, f);
 
     const gl = this.gl;
 

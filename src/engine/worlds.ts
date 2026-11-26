@@ -458,11 +458,12 @@ export function buildWorld4(): WorldInstances {
       // Spanning Gold Gate Bridge across all 3 fin banks
       b.addBox(cx, 0.18, cz - 0.82, 1.54, 0.072, 0.16, 0.022, 3, 13, isHero * 2);
 
-      // Bottom Half (z = +0.82): 2 rows x 3 horizontal 3nm GAA stacked nanosheets (2 vertical sheet layers!)
+      // Bottom Half (z = +0.58): 2 rows x 3 horizontal 3nm GAA stacked nanosheets (2 vertical sheet layers!)
+      // Centered close to origin so diving into World 5 (Single 3nm Gate) flows straight into the glowing nanosheet!
       const rowOffsets = [-0.36, 0.36];
       const sheetYs = [0.055 - 0.068, 0.055 + 0.068];
       for (let ri = 0; ri < 2; ri++) {
-        const rowBaseZ = cz + 0.82 + rowOffsets[ri];
+        const rowBaseZ = cz + 0.58 + rowOffsets[ri];
         for (let k = -1; k <= 1; k++) {
           const fz = rowBaseZ + k * 0.19;
           // 2 vertically stacked horizontal 3nm nanosheets
@@ -482,16 +483,100 @@ export function buildWorld4(): WorldInstances {
 }
 
 /**
- * WORLD 5: 0.543 nm Silicon Diamond-Cubic Crystal Lattice + HfO2 High-K Gate Oxide (1B×)
- *   - Authentic 8-atom diamond-cubic unit cell (a = 0.543 nm, Si-Si bond = 0.235 nm, 109.5 deg tetrahedral)
- *   - Every Si atom vibrates in 3D with real thermal phonon amplitude driven by live Mac die temp (uSocTemp)!
- *   - Free conduction electrons stream through crystal channels with live Mac CPU load!
- *   - Capped above by an atomic HfO2 (Hafnium Dioxide) high-k gate dielectric sheet.
+ * WORLD 5 (NEW BRIDGE): Single 3.0 nm GAA Nanosheet Gate Cross-Section (40M×)
+ *   - Physically bridges World 4 (24nm Transistor Cell) and World 6 (0.54nm Silicon Crystal Lattice)!
+ *   - Shows ONE single 3 nm Silicon nanosheet ribbon running along X right through a cutaway
+ *     Gold/Tungsten Gate-All-Around metal collar + razor-thin HfO2 high-k gate dielectric liner.
+ *   - Inside the cutaway of the 3 nm ribbon, you can ALREADY see the ~11-atom-wide rows of
+ *     Silicon atoms lined up in crystal order, with glowing cyan electrons tunneling under the gate!
  */
-export function buildWorld5(): WorldInstances {
+export function buildWorldGate3nm(): WorldInstances {
   const b = new InstanceBuilder();
 
-  const a = 1.62; // 1 unit cell = 0.543 nm
+  // Flanking stacked sibling nanosheets (faintly above & below in the GAA stack, establishing 3D context)
+  for (const sibY of [-1.22, 1.22]) {
+    b.addBox(0, sibY, 0, 5.2, 0.16, 0.38, 0.045, 2);
+    // Thin HfO2 sleeve around sibling sheets
+    b.addBox(0, sibY, 0, 0.92, 0.22, 0.44, 0.04, 4);
+  }
+
+  // Left & Right Silicon Source/Drain Epitaxial Pads feeding the central 3nm nanosheet ribbon
+  b.addBox(-3.65, 0.0, 0.0, 1.65, 0.34, 0.62, 0.06, 2);
+  b.addBox(3.65, 0.0, 0.0, 1.65, 0.34, 0.62, 0.06, 2);
+
+  // Outer unbroken Silicon Nanosheet shoulders entering & leaving the gate (cut open in center [-1.85..+1.85] to reveal atoms!)
+  b.addBox(-2.05, 0.0, 0.0, 0.38, 0.28, 0.52, 0.04, 2);
+  b.addBox(2.05, 0.0, 0.0, 0.38, 0.28, 0.52, 0.04, 2);
+
+  // Cutaway C-Shaped Gold/Tungsten Metal Gate-All-Around Sleeve wrapping top, bottom, and back of the 3nm ribbon
+  // (Front face cut open so you peer straight into the HfO2 oxide + atomic Silicon channel!)
+  b.addBox(0, 0.64, -0.06, 1.18, 0.15, 0.72, 0.042, 3, 13, 2);   // Top metal gate cap
+  b.addBox(0, -0.64, -0.06, 1.18, 0.15, 0.72, 0.042, 3, 13, 2);  // Bottom metal gate wrap
+  b.addBox(0, 0.0, -0.66, 1.18, 0.64, 0.14, 0.040, 3, 13, 2);    // Back gate bridge connecting top & bottom
+  // Vertical gate sidewall risers connecting the sibling sheets in the GAA stack
+  b.addBox(-1.12, 0.0, -0.58, 0.12, 1.42, 0.22, 0.032, 3, 13, 2);
+  b.addBox(1.12, 0.0, -0.58, 0.12, 1.42, 0.22, 0.032, 3, 13, 2);
+
+  // High-k HfO2 (Hafnium Dioxide) Gate Insulator Liner (~1.2 nm dielectric jacket between metal gate and Si channel)
+  b.addBox(0, 0.44, -0.02, 1.12, 0.055, 0.58, 0.018, 9, 0, 0.35);  // Top HfO2 dielectric film
+  b.addBox(0, -0.44, -0.02, 1.12, 0.055, 0.58, 0.018, 9, 0, 0.35); // Bottom HfO2 dielectric film
+  b.addBox(0, 0.0, -0.50, 1.12, 0.44, 0.055, 0.018, 9, 0, 0.35);   // Back HfO2 dielectric film
+
+  // Exposed Atomic Silicon Crystal Core inside the 3 nm nanosheet ribbon (11 atoms long x 3 layers tall x 4 rows deep!)
+  // Directly previews World 6 (0.543 nm Silicon Crystal Lattice) right inside the glowing 3nm ribbon!
+  const stepX = 0.33;
+  const stepY = 0.22;
+  const stepZ = 0.26;
+  const ribbonAtoms: { x: number; y: number; z: number }[] = [];
+
+  for (let ix = -5; ix <= 5; ix++) {
+    for (let iy = -1; iy <= 1; iy++) {
+      for (let iz = -1; iz <= 1; iz++) {
+        // Stagger diamond-cubic sublattice rows so it already reads as crystalline silicon
+        const staggerX = ((iy + iz) & 1) ? stepX * 0.28 : 0;
+        const ax = ix * stepX + staggerX;
+        const ay = iy * stepY;
+        const az = iz * stepZ;
+        const isDopant = ix === -3 && iy === 0 && iz === 1;
+        b.addSphere(ax, ay, az, isDopant ? 0.092 : 0.074, isDopant ? 0.092 : 0.074, isDopant ? 0.092 : 0.074, 0, isDopant ? 3 : 2, 15, isDopant ? 0.6 : 0.1, ix * 1.3 + iy * 2.7 + iz, 0);
+        ribbonAtoms.push({ x: ax, y: ay, z: az });
+      }
+    }
+  }
+
+  // Crystalline covalent lattice bonds linking nearest silicon atoms inside the cutaway ribbon
+  for (let i = 0; i < ribbonAtoms.length; i++) {
+    const p1 = ribbonAtoms[i];
+    for (let j = i + 1; j < ribbonAtoms.length; j++) {
+      const p2 = ribbonAtoms[j];
+      const d = Math.hypot(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z);
+      if (d > 0.10 && d < 0.37) {
+        b.addBond(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z, 0.016, 4, 0);
+      }
+    }
+  }
+
+  // Translucent cyan quantum inversion channel glow + 18 streaming electrons racing through the 3nm gate under voltage!
+  for (let e = 0; e < 18; e++) {
+    const ly = -0.20 + (e % 3) * 0.20;
+    const lz = -0.24 + (Math.floor(e / 3) % 3) * 0.24;
+    const ph = (e * 0.193) % 1.0;
+    b.addSphere(0, ly, lz, 0.048, 0.048, 0.048, 0, 6, 18, 0.95, ph, (e % 3) * 0.3);
+  }
+
+  return b.finish();
+}
+
+/**
+ * WORLD 6: 0.543 nm Silicon Diamond-Cubic Crystal Lattice + HfO2 High-K Gate Oxide (250M×)
+ *   - Authentic 8-atom diamond-cubic unit cell (a = 0.543 nm, Si-Si bond = 0.235 nm, 109.5 deg tetrahedral)
+ *   - Spatially aligned with World 5's 3nm Gate cutaway: Silicon crystal along X, HfO2 dielectric directly overhead!
+ *   - Every Si atom vibrates in 3D with real thermal phonon amplitude driven by live Mac die temp (uSocTemp)!
+ */
+export function buildWorldLattice(): WorldInstances {
+  const b = new InstanceBuilder();
+
+  const a = 1.24; // Rescaled cleanly for steady camera dist = 5.4 (zero camera pullback!)
   const basis: [number, number, number][] = [
     [0, 0, 0],
     [0, 0.5, 0.5],
@@ -512,27 +597,24 @@ export function buildWorld5(): WorldInstances {
         for (let bi = 0; bi < basis.length; bi++) {
           const [bx, by, bz] = basis[bi];
           const wx = (ix + bx - nx * 0.5) * a;
-          const wy = (iy + by - ny * 0.5) * a - 0.35;
+          const wy = (iy + by - ny * 0.5) * a - 0.28;
           const wz = (iz + bz - nz * 0.5) * a;
-          // Trim far corners for a sleek cylindrical/hexagonal atomic cutaway look
-          if (wx * wx + wz * wz > 7.6) continue;
-          const isDopant = hash12(wx * 3.1 + 7.2, wz * 4.7 + wy * 2.1) > 0.93 && Math.abs(wx) < 1.8 && Math.abs(wz) < 1.8;
+          if (wx * wx + wz * wz > 4.6) continue;
+          const isDopant = hash12(wx * 3.1 + 7.2, wz * 4.7 + wy * 2.1) > 0.93 && Math.abs(wx) < 1.35 && Math.abs(wz) < 1.35;
           atoms.push({ x: wx, y: wy, z: wz, dopant: isDopant });
         }
       }
     }
   }
 
-  // Add silicon & phosphorus-dopant spheres (channel 15 = thermal phonon vibration!)
   for (let i = 0; i < atoms.length; i++) {
     const at = atoms[i];
-    const r = at.dopant ? 0.245 : 0.205;
+    const r = at.dopant ? 0.19 : 0.16;
     const mat = at.dopant ? 3 : 2;
     const energy = at.dopant ? 0.65 : 0.0;
     b.addSphere(at.x, at.y, at.z, r, r, r, 0, mat, 15, energy, i * 0.73, at.dopant ? 1 : 0);
   }
 
-  // Exact tetrahedral Si-Si covalent bonds (nearest neighbor distance = a * sqrt(3)/4 = 0.7015)
   const bondMax = a * 0.433 * 1.12;
   const bondMax2 = bondMax * bondMax;
   for (let i = 0; i < atoms.length; i++) {
@@ -543,61 +625,55 @@ export function buildWorld5(): WorldInstances {
       const dy = p2.y - p1.y;
       const dz = p2.z - p1.z;
       const d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 > 0.05 && d2 <= bondMax2) {
+      if (d2 > 0.04 && d2 <= bondMax2) {
         const nearDopant = p1.dopant || p2.dopant;
-        b.addBond(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z, 0.044, nearDopant ? 6 : 4, nearDopant ? 0.45 : 0.0);
+        b.addBond(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z, 0.034, nearDopant ? 6 : 4, nearDopant ? 0.45 : 0.0);
       }
     }
   }
 
   // High-k HfO2 (Hafnium Dioxide) Gate Oxide atomic canopy hovering cleanly above the silicon channel
-  const oxideY = 1.62;
+  const oxideY = 1.24;
   for (let gx = -3; gx <= 3; gx++) {
     for (let gz = -3; gz <= 3; gz++) {
-      const ox = gx * 0.86;
-      const oz = gz * 0.86;
-      if (ox * ox + oz * oz > 7.2) continue;
-      // Hafnium (Hf) metallic gold-bronze atom
-      b.addSphere(ox, oxideY, oz, 0.145, 0.145, 0.145, 0, 3, 15, 0.15, gx * 1.9 + gz * 3.1, 0);
-      // Flanking Oxygen (O) dark-sapphire atoms
+      const ox = gx * 0.66;
+      const oz = gz * 0.66;
+      if (ox * ox + oz * oz > 4.4) continue;
+      b.addSphere(ox, oxideY, oz, 0.112, 0.112, 0.112, 0, 3, 15, 0.15, gx * 1.9 + gz * 3.1, 0);
       if (gx < 3) {
-        b.addSphere(ox + 0.43, oxideY - 0.16, oz, 0.088, 0.088, 0.088, 0, 9, 15, 0.22, gx * 2.7 - gz, 0);
-        b.addBond(ox, oxideY, oz, ox + 0.43, oxideY - 0.16, oz, 0.022, 4, 0);
+        b.addSphere(ox + 0.33, oxideY - 0.12, oz, 0.068, 0.068, 0.068, 0, 9, 15, 0.22, gx * 2.7 - gz, 0);
+        b.addBond(ox, oxideY, oz, ox + 0.33, oxideY - 0.12, oz, 0.017, 4, 0);
       }
       if (gz < 3) {
-        b.addSphere(ox, oxideY + 0.16, oz + 0.43, 0.088, 0.088, 0.088, 0, 9, 15, 0.22, gz * 3.3 + gx, 0);
-        b.addBond(ox, oxideY, oz, ox, oxideY + 0.16, oz + 0.43, 0.022, 4, 0);
+        b.addSphere(ox, oxideY + 0.12, oz + 0.33, 0.068, 0.068, 0.068, 0, 9, 15, 0.22, gz * 3.3 + gx, 0);
+        b.addBond(ox, oxideY, oz, ox, oxideY + 0.12, oz + 0.33, 0.017, 4, 0);
       }
     }
   }
 
-  // 24 Live Conduction Electrons streaming through the crystal channels (Channel 18)
+  // 24 Live Conduction Electrons streaming through the crystal channels
   for (let e = 0; e < 24; e++) {
-    const laneY = -0.85 + (e % 4) * 0.52;
-    const laneZ = -1.65 + (Math.floor(e / 4) - 2.5) * 0.62;
+    const laneY = -0.68 + (e % 4) * 0.40;
+    const laneZ = -1.25 + (Math.floor(e / 4) - 2.5) * 0.48;
     const phase = (e * 0.173) % 1.0;
-    b.addSphere(0, laneY, laneZ, 0.082, 0.082, 0.082, 0, 6, 18, 0.95, phase, (e % 3) * 0.35);
+    b.addSphere(0, laneY, laneZ, 0.064, 0.064, 0.064, 0, 6, 18, 0.95, phase, (e % 3) * 0.35);
   }
 
   return b.finish();
 }
 
 /**
- * WORLD 6: 111 pm Single Silicon-28 Atom & Quantum sp3 Hybridized Orbitals (5B×)
- *   - 4 glowing tetrahedral sp3 hybridized covalent orbital lobes (Channel 17, Mat 8)
- *   - 220 swirling quantum electron probability density packets across 1s / 2s2p / 3sp3 shells (Channel 19)
- *   - 4 neighboring Silicon atoms at tetrahedral corners connected by covalent bridges
- *   - Tiny blazing central 28Si nucleus teasing the final dive into 3.1 fm!
+ * WORLD 7: 111 pm Single Silicon-28 Atom & Quantum sp3 Hybridized Orbitals (1.2B×)
+ *   - Sized cleanly for steady camera dist = 5.4 so all 4 outer neighbor Si atoms frame inside the viewport!
  */
-export function buildWorld6(): WorldInstances {
+export function buildWorldAtom(): WorldInstances {
   const b = new InstanceBuilder();
 
-  // Central blazing 28Si nucleus core (real nucleus is 100,000x smaller; shown as luminous pinpoint)
-  b.addSphere(0, 0, 0, 0.13, 0.13, 0.13, 0, 6, 21, 1.35, 0, 0);
+  // Central blazing 28Si nucleus core pinpoint
+  b.addSphere(0, 0, 0, 0.085, 0.085, 0.085, 0, 6, 21, 1.35, 0, 0);
   // Inner 1s2 core electron cloud halo
-  b.addSphere(0, 0, 0, 0.36, 0.36, 0.36, 0, 8, 15, 0.65, 1.1, 0);
+  b.addSphere(0, 0, 0, 0.24, 0.24, 0.24, 0, 8, 15, 0.65, 1.1, 0);
 
-  // 4 Tetrahedral sp3 Hybridized Covalent Orbital Lobes
   const invSqrt3 = 1 / Math.sqrt(3);
   const tetDirs: [number, number, number][] = [
     [ invSqrt3,  invSqrt3,  invSqrt3],
@@ -608,31 +684,29 @@ export function buildWorld6(): WorldInstances {
 
   for (let i = 0; i < 4; i++) {
     const [dx, dy, dz] = tetDirs[i];
-    // Primary glowing sp3 orbital lobe (channel 17: aInstB = axis*length, aInstA.w = max radius)
-    b.addSphere(0, 0, 0, dx * 2.15, dy * 2.15, dz * 2.15, 0.66, 8, 17, 0.85, i * 0.25, 0);
+    // Primary glowing sp3 orbital lobe
+    b.addSphere(0, 0, 0, dx * 1.42, dy * 1.42, dz * 1.42, 0.44, 8, 17, 0.85, i * 0.25, 0);
     // Subtle opposite anti-bonding back-lobe
-    b.addSphere(0, 0, 0, -dx * 0.72, -dy * 0.72, -dz * 0.72, 0.26, 8, 17, 0.38, i * 0.25 + 0.5, 0);
+    b.addSphere(0, 0, 0, -dx * 0.48, -dy * 0.48, -dz * 0.48, 0.17, 8, 17, 0.38, i * 0.25 + 0.5, 0);
 
-    // Neighboring Silicon atom at tetrahedral bond distance (dist = 3.55)
-    const nx = dx * 3.55;
-    const ny = dy * 3.55;
-    const nz = dz * 3.55;
-    b.addSphere(nx, ny, nz, 0.34, 0.34, 0.34, 0, 2, 15, 0.15, i * 2.1, 0);
-    // Shared covalent electron bridge thread
-    b.addBond(dx * 0.25, dy * 0.25, dz * 0.25, nx * 0.90, ny * 0.90, nz * 0.90, 0.028, 6, 0.5);
+    // Neighboring Silicon atom at tetrahedral bond distance (fits cleanly at dist = 5.4!)
+    const nx = dx * 2.28;
+    const ny = dy * 2.28;
+    const nz = dz * 2.28;
+    b.addSphere(nx, ny, nz, 0.22, 0.22, 0.22, 0, 2, 15, 0.15, i * 2.1, 0);
+    b.addBond(dx * 0.16, dy * 0.16, dz * 0.16, nx * 0.90, ny * 0.90, nz * 0.90, 0.019, 6, 0.5);
   }
 
-  // 220 Orbiting Quantum Probability Density Packets (1s, 2p, and 3sp3 valence shells)
+  // 220 Orbiting Quantum Probability Density Packets (1s, 2p, 3sp3 valence shells)
   for (let i = 0; i < 220; i++) {
     const shell = i < 36 ? 0 : i < 110 ? 1 : 2;
-    const shellR = shell === 0 ? 0.78 : shell === 1 ? 1.48 : 2.38;
-    const jitter = (hash12(i * 1.37, shell * 7.13) - 0.5) * (shell === 2 ? 0.55 : 0.28);
+    const shellR = shell === 0 ? 0.52 : shell === 1 ? 0.98 : 1.58;
+    const jitter = (hash12(i * 1.37, shell * 7.13) - 0.5) * (shell === 2 ? 0.36 : 0.18);
     const radius = shellR + jitter;
     const theta = hash12(i * 2.91, 13.7) * Math.PI * 2;
     const inc = (hash12(i * 5.13, 3.1) - 0.5) * Math.PI;
-    const size = shell === 0 ? 0.048 : shell === 1 ? 0.042 : 0.036;
+    const size = shell === 0 ? 0.032 : shell === 1 ? 0.028 : 0.024;
     const mat = shell === 2 && i % 5 === 0 ? 3 : 6;
-    // chType = 19: aInstA = (radius, inc, theta, 0), aInstB = (size, size, size, mat), aInstC = (19, speed, phase, shell)
     const speed = shell === 0 ? 1.85 : shell === 1 ? 1.15 : 0.68;
     b.addSphere(radius, inc, theta, size, size, size, 0, mat, 19, speed, i * 0.31, shell);
   }
@@ -641,18 +715,15 @@ export function buildWorld6(): WorldInstances {
 }
 
 /**
- * WORLD 7: 3.1 fm Silicon-28 Atomic Nucleus (100T×)
- *   - 28 densely packed nucleons: 14 Protons (radiant sapphire-cyan, mat 9) + 14 Neutrons (sculpted platinum-gold, mat 3)
- *   - Strong-force gluon/pion binding flux filaments pulsing between neighboring nucleons
- *   - Continuous zero-point nuclear vibration (Channel 21)
+ * WORLD 8: 3.1 fm Silicon-28 Atomic Nucleus (40T×)
+ *   - 28 densely packed nucleons (14 Protons + 14 Neutrons), cleanly framed at steady camera dist = 5.4!
  */
-export function buildWorld7(): WorldInstances {
+export function buildWorldNucleus(): WorldInstances {
   const b = new InstanceBuilder();
 
   const nucleons: { x: number; y: number; z: number; isProton: boolean }[] = [];
 
-  // Inner core shell (4 nucleons: alpha-cluster tetrahedron)
-  const coreR = 0.44;
+  const coreR = 0.34;
   const s = coreR / Math.sqrt(3);
   const coreCoords: [number, number, number][] = [
     [ s,  s,  s],
@@ -664,50 +735,45 @@ export function buildWorld7(): WorldInstances {
     nucleons.push({ x: coreCoords[i][0], y: coreCoords[i][1], z: coreCoords[i][2], isProton: i % 2 === 0 });
   }
 
-  // Mid shell (10 nucleons via golden spiral sphere)
   const golden = Math.PI * (3 - Math.sqrt(5));
   for (let i = 0; i < 10; i++) {
     const y = 1 - (i / 9) * 2;
     const rad = Math.sqrt(Math.max(0, 1 - y * y));
     const th = golden * i;
-    const R = 0.94;
+    const R = 0.72;
     nucleons.push({ x: Math.cos(th) * rad * R, y: y * R, z: Math.sin(th) * rad * R, isProton: i % 2 === 0 });
   }
 
-  // Outer valence shell (14 nucleons => 4 + 10 + 14 = 28 nucleons total: 14P + 14N!)
   for (let i = 0; i < 14; i++) {
     const y = 1 - (i / 13) * 2;
     const rad = Math.sqrt(Math.max(0, 1 - y * y));
     const th = golden * (i + 17.5);
-    const R = 1.44;
+    const R = 1.10;
     nucleons.push({ x: Math.cos(th) * rad * R, y: y * R, z: Math.sin(th) * rad * R, isProton: i % 2 === 1 });
   }
 
   for (let i = 0; i < nucleons.length; i++) {
     const n = nucleons[i];
-    const r = 0.44;
-    // Protons = radiant electric sapphire-cyan (mat 9), Neutrons = sculpted satin copper-platinum (mat 3)
+    const r = 0.335;
     b.addSphere(n.x, n.y, n.z, r, r, r, 0, n.isProton ? 9 : 3, 21, n.isProton ? 0.95 : 0.35, i * 1.17, n.isProton ? 1 : 0);
   }
 
-  // Strong nuclear force gluon/pion flux filaments connecting adjacent nucleons
   for (let i = 0; i < nucleons.length; i++) {
     const a1 = nucleons[i];
     for (let j = i + 1; j < nucleons.length; j++) {
       const a2 = nucleons[j];
       const d = Math.hypot(a2.x - a1.x, a2.y - a1.y, a2.z - a1.z);
-      if (d < 1.18) {
-        b.addBond(a1.x, a1.y, a1.z, a2.x, a2.y, a2.z, 0.052, 6, 0.72);
+      if (d < 0.90) {
+        b.addBond(a1.x, a1.y, a1.z, a2.x, a2.y, a2.z, 0.038, 6, 0.72);
       }
     }
   }
 
-  // Subtle ambient quark/meson virtual field sparks orbiting the nuclear surface
   for (let k = 0; k < 48; k++) {
-    const rad = 1.85 + (hash12(k * 3.1, 9.7) - 0.5) * 0.55;
+    const rad = 1.44 + (hash12(k * 3.1, 9.7) - 0.5) * 0.42;
     const theta = hash12(k * 7.3, 2.1) * Math.PI * 2;
     const inc = (hash12(k * 4.9, 5.5) - 0.5) * Math.PI;
-    b.addSphere(rad, inc, theta, 0.036, 0.036, 0.036, 0, k % 3 === 0 ? 3 : 6, 19, 1.65, k * 0.42, 0);
+    b.addSphere(rad, inc, theta, 0.028, 0.028, 0.028, 0, k % 3 === 0 ? 3 : 6, 19, 1.65, k * 0.42, 0);
   }
 
   return b.finish();

@@ -30,7 +30,7 @@ export function pickDieRegion(wx: number, wz: number): DieInspectHit | null {
         return {
           id: `pcore-${coreIdx}`,
           box: [cx, cz, 0.305, 0.405],
-          diveZoom: 4.0,
+          diveZoom: 5.0,
           title: () => `Performance Core P${coreIdx}`,
           subtitle: (t) => `${t.chipName} · High-Performance Cluster`,
           metric: (t) => {
