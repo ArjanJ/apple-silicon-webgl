@@ -1,89 +1,77 @@
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  ChevronLeft,
-  ChevronRight,
-  Flame,
-  Pause,
-  Play,
-  Rotate3d,
-  RotateCcw,
-  Volume2,
-  VolumeX,
-} from 'lucide-react';
+import { Activity, Clock, Flame, Pause, Play, Rotate3d, Zap } from 'lucide-react';
 import { MicroscopeReticle } from './components/MicroscopeReticle';
-import { RaymarchEngine } from './shader/RaymarchEngine';
-import { formatMagnification, MICRO_CHAPTERS, MicroJourneyState } from './sim/microJourney';
+import { MicroscopeMode, RaymarchEngine } from './shader/RaymarchEngine';
+import {
+  DEFAULT_TELEMETRY,
+  interpolateMooresLaw,
+  LiveMacTelemetry,
+  MOORES_ERAS,
+} from './sim/macTelemetry';
+import { formatMagnification } from './sim/microJourney';
 
-function playAppleTap(freq = 480, muted = false): void {
-  if (muted) return;
-  try {
-    const AC =
-      window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    if (!AC) return;
-    const ctx = new AC();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(freq, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(freq * 1.12, ctx.currentTime + 0.05);
-    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.025, ctx.currentTime + 0.008);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.11);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.13);
-    setTimeout(() => ctx.close().catch(() => {}), 200);
-  } catch {
-    // ignore
-  }
-}
-
-const SAMPLE_KEYS = ['A', 'H', 'S', 'Z', '7'];
+const LIVE_ZOOM_STOPS = [
+  { z: 0.0, label: 'Silicon Die · 10×', desc: 'Your actual Mac’s P-Cores, E-Cores, GPU & Unified RAM glowing live' },
+  { z: 1.0, label: 'Striations · 2.5K×', desc: 'Dense SRAM cache banks and hair-thin metallic power rails' },
+  { z: 2.0, label: 'Metal Canyons · 250K×', desc: 'Sculpted 3D silver-titanium traces & ringed vertical vias' },
+  { z: 3.0, label: 'Nano Grid · 8M×', desc: 'Repeating nanometer cell fortresses switching live with your CPU load' },
+  { z: 4.0, label: '3nm Fins · 100M×', desc: '2-tier stacked 3nm GAA nanosheet ribbons over crystalline silicon' },
+];
 
 export function App() {
-  const journeyRef = useRef<MicroJourneyState | null>(null);
-  if (!journeyRef.current) journeyRef.current = new MicroJourneyState();
-  const journey = journeyRef.current;
-
   const mountRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<RaymarchEngine | null>(null);
 
+  const [mode, setMode] = useState<MicroscopeMode>('live');
   const [zoom, setZoom] = useState(0.0);
-  const [chapterIdx, setChapterIdx] = useState(0);
-  const [playing, setPlaying] = useState(true);
+  const [telemetry, setTelemetry] = useState<LiveMacTelemetry>(DEFAULT_TELEMETRY);
   const [thermal, setThermal] = useState(false);
-  const [autoOrbit, setAutoOrbit] = useState(false);
-  const [muted, setMuted] = useState(false);
-  const [manualGate, setManualGate] = useState<boolean | null>(null);
-  const [, setTick] = useState(0);
+  const [autoOrbit, setAutoOrbit] = useState(true);
+  const [bursting, setBursting] = useState(false);
 
-  const mutedRef = useRef(muted);
-  mutedRef.current = muted;
+  // Moore's Law Time Machine state (1971 -> 2026)
+  const [year, setYear] = useState(1971);
+  const [moorePlaying, setMoorePlaying] = useState(false);
 
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
-    const engine = new RaymarchEngine(mount, journey, {
+    const engine = new RaymarchEngine(mount, {
       onZoomChange: (z) => setZoom(z),
-      onChapterChange: (idx) => {
-        setChapterIdx(idx);
-        playAppleTap(340 + idx * 55, mutedRef.current);
-      },
     });
     engineRef.current = engine;
-
-    const timer = window.setInterval(() => {
-      setTick((t) => t + 1);
-      setPlaying(journey.playing);
-    }, 80);
-
     return () => {
-      window.clearInterval(timer);
       engine.dispose();
       engineRef.current = null;
     };
-  }, [journey]);
+  }, []);
+
+  // Poll real live Mac hardware telemetry every 550ms from Vite's zero-sudo /api/telemetry middleware!
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/telemetry', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = (await res.json()) as LiveMacTelemetry;
+        if (!alive) return;
+        setTelemetry(data);
+        engineRef.current?.setTelemetry(data);
+      } catch {
+        // fallback cleanly if static preview
+      }
+    };
+    poll();
+    const id = window.setInterval(poll, 550);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  useEffect(() => {
+    engineRef.current?.setMode(mode);
+  }, [mode]);
 
   useEffect(() => {
     if (engineRef.current) engineRef.current.thermal = thermal;
@@ -93,101 +81,144 @@ export function App() {
     if (engineRef.current) engineRef.current.autoOrbit = autoOrbit;
   }, [autoOrbit]);
 
+  // Sync Moore's Law year -> GPU shader eraProgress
   useEffect(() => {
-    journey.manualGate = manualGate;
-  }, [journey, manualGate]);
+    const prog = (year - 1971) / (2026 - 1971);
+    engineRef.current?.setEraProgress(prog);
+  }, [year]);
 
-  // Press ANY physical key on keyboard to immediately trace that exact letter!
+  // Auto-play Moore's Law 1971 -> 2026 continuous time-lapse!
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        journey.playing = false;
-        journey.jumpTo(Math.min(MICRO_CHAPTERS.length - 1, journey.chapterIdx + 1));
-        return;
-      }
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        journey.playing = false;
-        journey.jumpTo(Math.max(0, journey.chapterIdx - 1));
-        return;
-      }
-      if (e.key === ' ') {
-        e.preventDefault();
-        journey.playing = !journey.playing;
-        setPlaying(journey.playing);
-        return;
-      }
-      if (e.key.length === 1 && /^[a-zA-Z0-9!?]$/.test(e.key)) {
-        e.preventDefault();
-        playAppleTap(580, mutedRef.current);
-        journey.setKey(e.key);
-        setPlaying(true);
-        setTick((t) => t + 1);
-      }
+    if (!moorePlaying || mode !== 'moore') return;
+    let raf = 0;
+    let last = performance.now();
+    const step = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      setYear((prev) => {
+        const next = prev + dt * 4.4; // ~12.5 seconds for full 55-year evolution
+        if (next >= 2026) {
+          setMoorePlaying(false);
+          return 2026;
+        }
+        return next;
+      });
+      raf = requestAnimationFrame(step);
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [journey]);
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [moorePlaying, mode]);
 
-  const chapter = MICRO_CHAPTERS[chapterIdx] ?? MICRO_CHAPTERS[0];
+  // Real 3.5-second multi-core Web Worker burst so the user can watch THEIR ACTUAL MAC spike live!
+  const triggerMacBurst = () => {
+    if (bursting) return;
+    setBursting(true);
+    const workerCode = `
+      const end = Date.now() + 3400;
+      let acc = 0;
+      while (Date.now() < end) {
+        for (let i = 0; i < 200000; i++) acc += Math.sqrt(i * 1.13);
+      }
+      postMessage(acc);
+    `;
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    const workers: Worker[] = [];
+    const count = Math.min(8, Math.max(4, telemetry.pCoreCount || 6));
+    for (let i = 0; i < count; i++) {
+      workers.push(new Worker(url));
+    }
+    window.setTimeout(() => {
+      workers.forEach((w) => w.terminate());
+      URL.revokeObjectURL(url);
+      setBursting(false);
+    }, 3600);
+  };
+
   const { magText, sizeText, dialDeg } = formatMagnification(zoom);
-  const progressPct = Math.min(100, (journey.elapsed / Math.max(0.1, chapter.durationSec)) * 100);
-  const show3nmCard = zoom >= 3.45;
-  const showOutputCard = chapterIdx === 5 && zoom < 0.7;
-  const gateIsOn = journey.gateOn > 0.35;
+  const moore = interpolateMooresLaw(year);
+  const activeZoomIdx = Math.round(zoom);
+  const activeZoomStop = LIVE_ZOOM_STOPS[activeZoomIdx] ?? LIVE_ZOOM_STOPS[0];
 
-  // Progressive pixel reveal during Chapter 6
-  const litCutoff = Math.floor(Math.min(1, journey.elapsed / 1.8) * 38);
+  const cpuPct = Math.round(telemetry.cpuTotal * 100);
+  const pPct = Math.round(telemetry.pCoreAvg * 100);
+  const ePct = Math.round(telemetry.eCoreAvg * 100);
 
   return (
     <div className="apple-stage">
-      {/* Full-Bleed GPU 3D Raymarched Microscopic Silicon Viewport */}
+      {/* Full-Bleed 2-Pass WebGL2 GPU Raymarched Viewport */}
       <div ref={mountRef} className="raymarch-mount" />
 
-      {/* Circular Optical / Electron Microscope Reticle + 3nm Dimension Bracket */}
-      <MicroscopeReticle zoom={zoom} magText={magText} sizeText={sizeText} dialDeg={dialDeg} />
+      {/* Circular Optical Microscope Reticle + Scale Bracket */}
+      <MicroscopeReticle
+        mode={mode}
+        zoom={zoom}
+        magText={magText}
+        sizeText={sizeText}
+        dialDeg={mode === 'moore' ? moore.progress * 260 : dialDeg}
+        mooreDensityLabel={moore.densityLabel}
+        mooreYear={moore.year}
+      />
 
-      {/* Top Apple Frosted-Glass Pills */}
+      {/* Top Apple Frosted-Glass HUD */}
       <div className="hud-top">
+        {/* Left Identity Pill */}
         <div className="apple-pill">
-          <div className="apple-keycap" title="Press any letter on your keyboard">
-            {journey.char}
-          </div>
+          <span className={`live-dot ${mode === 'moore' ? 'moore' : ''}`} />
           <div className="brand-stack">
             <div className="brand-headline">
-              <span>Silicon Microscope</span>
+              <span>{mode === 'live' ? telemetry.chipName : `Moore’s Law · ${moore.year}`}</span>
               <span className="brand-spec">
-                {magText} · {sizeText}
+                {mode === 'live' ? `${magText} · ${sizeText}` : moore.nodeLabel}
               </span>
             </div>
             <div className="brand-sub">
-              <span>Press any key to trace</span>
-              <div className="key-selector">
-                {SAMPLE_KEYS.map((k) => (
-                  <button
-                    key={k}
-                    className={`key-dot ${journey.char === k ? 'active' : ''}`}
-                    onClick={() => {
-                      playAppleTap(580, muted);
-                      journey.setKey(k);
-                      setPlaying(true);
-                    }}
-                  >
-                    {k}
-                  </button>
-                ))}
-              </div>
+              {mode === 'live'
+                ? `${telemetry.pCoreCount}P + ${telemetry.eCoreCount}E Cores · ${telemetry.memUsedGB}/${telemetry.memTotalGB} GB RAM`
+                : `${moore.era.chip} · ${moore.era.transistorsTotal} transistors`}
             </div>
           </div>
         </div>
 
+        {/* Center Mode Switcher */}
+        <div className="mode-switcher">
+          <button
+            className={`mode-btn ${mode === 'live' ? 'active' : ''}`}
+            onClick={() => {
+              setMoorePlaying(false);
+              setMode('live');
+            }}
+          >
+            <Activity size={13} />
+            Live Mac X-Ray
+          </button>
+          <button
+            className={`mode-btn ${mode === 'moore' ? 'active' : ''}`}
+            onClick={() => {
+              setMode('moore');
+            }}
+          >
+            <Clock size={13} />
+            1971 → 2026 Time Machine
+          </button>
+        </div>
+
+        {/* Right Controls */}
         <div className="tool-pill">
+          {mode === 'live' && (
+            <button
+              className={`icon-pill-btn burst ${bursting ? 'active' : ''}`}
+              onClick={triggerMacBurst}
+              title="Run a real 3.5-second multi-core burst on your Mac and watch the 3D cores ignite"
+            >
+              <Zap size={13} />
+              {bursting ? 'Bursting...' : 'Burst Mac'}
+            </button>
+          )}
           <button
             className={`icon-pill-btn ${thermal ? 'active' : ''}`}
             onClick={() => setThermal((v) => !v)}
-            title="Toggle Thermal Infrared Vision"
+            title="Toggle Infrared Thermal Vision"
           >
             <Flame size={13} />
             Thermal
@@ -200,153 +231,152 @@ export function App() {
             <Rotate3d size={13} />
             Orbit
           </button>
-          <button
-            className="icon-pill-btn"
-            onClick={() => setMuted((m) => !m)}
-            title={muted ? 'Unmute Sound' : 'Mute Sound'}
-            style={{ padding: '6px 9px' }}
-          >
-            {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
-          </button>
         </div>
       </div>
 
-      {/* Peak 3nm Magnification: Minimal Apple Gate Voltage Switch Card */}
-      {show3nmCard && (
-        <div className="floating-glass-card">
-          <div className="fg-eyebrow">3 nm GAA Fin Switch · Bit {7 - journey.activeBitIdx}</div>
-          <div className="fg-title">
-            {(journey.gateOn * 0.72).toFixed(2)}V — {gateIsOn ? 'Conducting (1)' : 'Blocked (0)'}
+      {/* Right Floating Live Mac Hardware Telemetry Card (Live Mac X-Ray Mode) */}
+      {mode === 'live' && (
+        <div className="mac-telemetry-card">
+          <div className="card-eyebrow">
+            <span>LIVE THIS MAC · {cpuPct}% CPU</span>
+            <span style={{ color: telemetry.live ? '#30d158' : '#86868b' }}>
+              {telemetry.live ? '● STREAMING' : 'SIM'}
+            </span>
           </div>
-          <div className="fg-body">
-            Live binary bits of <strong>'{journey.char}'</strong> ({journey.binary}) switch the gold metal gate
-            bridge across the 3 nm channels.
-          </div>
-          <div className="seg-switch">
-            <button className={`seg-opt ${manualGate === null ? 'active' : ''}`} onClick={() => setManualGate(null)}>
-              Live
-            </button>
-            <button className={`seg-opt ${manualGate === true ? 'active' : ''}`} onClick={() => setManualGate(true)}>
-              0.72V ON
-            </button>
-            <button className={`seg-opt ${manualGate === false ? 'active' : ''}`} onClick={() => setManualGate(false)}>
-              0V OFF
-            </button>
-          </div>
-        </div>
-      )}
 
-      {/* Chapter 6: Optical Display Output Card showing exact pixel matrix of pressed key */}
-      {showOutputCard && (
-        <div className="floating-glass-card">
-          <div className="fg-eyebrow">Display Engine · T+400 µs</div>
-          <div className="fg-title">Pixel Output: '{journey.char}'</div>
-          <div className="glyph-matrix">
-            {journey.glyph.map((row, r) =>
-              row.map((val, c) => {
-                const idx = r * 5 + c;
-                const lit = val === 1 && idx <= litCutoff;
-                return <div key={`${r}-${c}`} className={`glyph-px ${lit ? 'lit' : ''}`} />;
-              })
-            )}
+          {/* Real Per-Core CPU Spark Bars (E-Cores + P-Cores) */}
+          <div className="core-bars" title="Live utilization of each physical core on your Mac">
+            {telemetry.coreLoads.slice(0, 12).map((load, idx) => {
+              const isE = idx < telemetry.eCoreCount;
+              const pct = Math.max(8, Math.round(load * 100));
+              const col = isE
+                ? '#64d2ff'
+                : load > 0.65
+                  ? '#ff9f0a'
+                  : load > 0.3
+                    ? '#5ac8fa'
+                    : '#3a6ea5';
+              return (
+                <div key={idx} className="core-col">
+                  <div className="core-fill" style={{ height: `${pct}%`, background: col }} />
+                  <span className="core-lbl">{isE ? `E${idx}` : `P${idx - telemetry.eCoreCount}`}</span>
+                </div>
+              );
+            })}
           </div>
-          <div className="fg-body" style={{ textAlign: 'center' }}>
-            ASCII {journey.ascii} ({journey.binary}) rendered in <strong>0.0004 s</strong>
-          </div>
-        </div>
-      )}
 
-      {/* Bottom Apple Keynote Story Dock */}
-      <div className="hud-bottom">
-        <div className="story-dock">
-          <div className="story-top-line">
-            <div className="story-title">{chapter.headline(journey.char, journey.binary)}</div>
-            <div className="story-right-meta">
-              <span className="time-tag">T+{chapter.timeUs}</span>
-              <div className="bin-strip" title={`ASCII ${journey.ascii} = ${journey.binary}`}>
-                {journey.binary.split('').map((b, i) => (
-                  <span
-                    key={i}
-                    className={`bin-cell ${b === '1' ? 'one' : ''} ${journey.activeBitIdx === i ? 'active' : ''}`}
-                  >
-                    {b}
-                  </span>
-                ))}
+          <div className="stat-pair">
+            <div className="mini-stat">
+              <div className="mini-stat-lbl">Unified Memory</div>
+              <div className="mini-stat-val">
+                {telemetry.memUsedGB} / {telemetry.memTotalGB} GB
+              </div>
+            </div>
+            <div className="mini-stat">
+              <div className="mini-stat-lbl">Network I/O</div>
+              <div className="mini-stat-val">
+                {telemetry.netKBps >= 1024
+                  ? `${(telemetry.netKBps / 1024).toFixed(1)} MB/s`
+                  : `${telemetry.netKBps.toFixed(0)} KB/s`}
               </div>
             </div>
           </div>
 
-          <div className="story-caption">{chapter.caption(journey.char, journey.binary, journey.ascii)}</div>
-
-          <div className="controls-row">
-            <div className="transport">
-              <button
-                className={`t-btn ${playing ? 'white' : ''}`}
-                onClick={() => {
-                  if (!journey.playing && journey.chapterIdx === MICRO_CHAPTERS.length - 1) {
-                    journey.jumpTo(0);
-                  }
-                  journey.playing = !journey.playing;
-                  setPlaying(journey.playing);
-                }}
-              >
-                {playing ? <Pause size={12} /> : <Play size={12} />}
-                {playing ? 'Playing' : 'Play'}
-              </button>
-              <button
-                className="t-btn icon"
-                onClick={() => {
-                  journey.playing = false;
-                  setPlaying(false);
-                  journey.jumpTo(Math.max(0, chapterIdx - 1));
-                }}
-                title="Previous Chapter (←)"
-              >
-                <ChevronLeft size={14} />
-              </button>
-              <button
-                className="t-btn icon"
-                onClick={() => {
-                  journey.playing = false;
-                  setPlaying(false);
-                  journey.jumpTo(Math.min(MICRO_CHAPTERS.length - 1, chapterIdx + 1));
-                }}
-                title="Next Chapter (→)"
-              >
-                <ChevronRight size={14} />
-              </button>
-              <button
-                className="t-btn icon"
-                onClick={() => {
-                  journey.playing = true;
-                  setPlaying(true);
-                  journey.jumpTo(0);
-                }}
-                title="Replay Journey"
-              >
-                <RotateCcw size={12} />
-              </button>
+          <div className="proc-list">
+            <div style={{ fontSize: 9.5, fontFamily: 'var(--mono)', color: '#86868b', marginBottom: 2 }}>
+              DRIVING SILICON RIGHT NOW
             </div>
-
-            <div className="chapter-pills">
-              {MICRO_CHAPTERS.map((ch) => {
-                const isActive = ch.index === chapterIdx;
-                const isDone = ch.index < chapterIdx;
-                return (
-                  <button
-                    key={ch.id}
-                    className={`ch-pill ${isActive ? 'active' : isDone ? 'done' : ''}`}
-                    onClick={() => journey.jumpTo(ch.index)}
-                    title={`${ch.shortLabel} (${ch.magLabel} · ${ch.featureSize})`}
-                  >
-                    {ch.shortLabel}
-                    {isActive && <span className="ch-bar" style={{ width: `${progressPct}%` }} />}
-                  </button>
-                );
-              })}
-            </div>
+            {telemetry.topProcs.slice(0, 3).map((p, i) => (
+              <div key={i} className="proc-row">
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 175 }}>
+                  {p.name}
+                </span>
+                <span className="proc-cpu">{p.cpu.toFixed(1)}%</span>
+              </div>
+            ))}
           </div>
         </div>
+      )}
+
+      {/* Bottom Apple Keynote Dock */}
+      <div className="hud-bottom">
+        {mode === 'live' ? (
+          <div className="story-dock">
+            <div className="story-top-line">
+              <div className="story-title">
+                Live X-Ray of Your {telemetry.chipName} — {activeZoomStop.label}
+              </div>
+              <span className="density-badge">
+                P-Cores {pPct}% · E-Cores {ePct}% · Pinch to zoom 10× → 100M×
+              </span>
+            </div>
+            <div className="story-caption">{activeZoomStop.desc}</div>
+            <div className="controls-row">
+              <div className="zoom-pills">
+                {LIVE_ZOOM_STOPS.map((st, idx) => (
+                  <button
+                    key={st.label}
+                    className={`ch-pill ${activeZoomIdx === idx ? 'active' : ''}`}
+                    onClick={() => engineRef.current?.flyToZoom(st.z)}
+                  >
+                    {st.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="story-dock">
+            <div className="story-top-line">
+              <div className="story-title">{moore.era.headline}</div>
+              <span className="density-badge">
+                {moore.densityLabel}× inside one 1971 switch
+              </span>
+            </div>
+            <div className="story-caption">{moore.era.caption}</div>
+
+            <div className="controls-row">
+              <button
+                className={`t-btn ${moorePlaying ? 'white' : ''}`}
+                onClick={() => {
+                  if (!moorePlaying && year >= 2025.5) setYear(1971);
+                  setMoorePlaying((p) => !p);
+                }}
+              >
+                {moorePlaying ? <Pause size={12} /> : <Play size={12} />}
+                {moorePlaying ? 'Playing 55 yrs' : 'Play 1971 → 2026'}
+              </button>
+
+              <input
+                type="range"
+                className="moore-slider"
+                min={1971}
+                max={2026}
+                step={0.1}
+                value={year}
+                onChange={(e) => {
+                  setMoorePlaying(false);
+                  setYear(parseFloat(e.target.value));
+                }}
+              />
+            </div>
+
+            <div className="era-pills">
+              {MOORES_ERAS.map((e) => (
+                <button
+                  key={e.year}
+                  className={`ch-pill ${moore.era.year === e.year ? 'active' : ''}`}
+                  onClick={() => {
+                    setMoorePlaying(false);
+                    setYear(e.year);
+                  }}
+                >
+                  {e.year} · {e.nodeNm >= 1000 ? `${e.nodeNm / 1000}µm` : `${e.nodeNm}nm`}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

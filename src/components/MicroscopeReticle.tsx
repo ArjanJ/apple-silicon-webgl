@@ -1,10 +1,14 @@
 import React from 'react';
+import { MicroscopeMode } from '../shader/RaymarchEngine';
 
 interface MicroscopeReticleProps {
+  mode: MicroscopeMode;
   zoom: number; // 0..4
   magText: string;
   sizeText: string;
   dialDeg: number;
+  mooreDensityLabel?: string;
+  mooreYear?: number;
 }
 
 const DIAL_TICKS = [
@@ -15,35 +19,39 @@ const DIAL_TICKS = [
   { deg: 136, label: '100M×' },
 ];
 
-export const MicroscopeReticle: React.FC<MicroscopeReticleProps> = ({ zoom, magText, sizeText, dialDeg }) => {
-  const show3nmBracket = zoom >= 3.55;
+export const MicroscopeReticle: React.FC<MicroscopeReticleProps> = ({
+  mode,
+  zoom,
+  magText,
+  sizeText,
+  dialDeg,
+  mooreDensityLabel,
+  mooreYear,
+}) => {
+  const show3nmBracket = mode === 'live' && zoom >= 3.55;
   const bracketOpacity = Math.max(0, Math.min(1, (zoom - 3.55) / 0.35));
 
-  // Progress arc along the subtle optical ring
   const r = 242;
   const circ = 2 * Math.PI * r;
-  const frac = Math.max(0.03, Math.min(1, (zoom / 4) * 0.78 + 0.04));
+  const frac = mode === 'live' ? Math.max(0.03, Math.min(1, (zoom / 4) * 0.78 + 0.04)) : 0.78;
 
   return (
     <div className="reticle-layer" aria-hidden="true">
       <svg className="reticle-svg" viewBox="0 0 540 540">
-        {/* Ultra-fine outer lens perimeter */}
         <circle cx="270" cy="270" r={r} fill="none" stroke="rgba(255,255,255,0.09)" strokeWidth="0.9" />
 
-        {/* Subtle luminous sapphire magnification progress arc */}
         <circle
           cx="270"
           cy="270"
           r={r}
           fill="none"
-          stroke="rgba(78, 196, 255, 0.42)"
+          stroke={mode === 'moore' ? 'rgba(255, 212, 121, 0.42)' : 'rgba(78, 196, 255, 0.42)'}
           strokeWidth="1.6"
           strokeDasharray={`${circ * frac} ${circ}`}
           strokeLinecap="round"
           transform="rotate(-226 270 270)"
         />
 
-        {/* Rotating precision microscope dial ticks */}
         <g transform={`rotate(${-dialDeg * 0.55} 270 270)`}>
           {Array.from({ length: 72 }).map((_, i) => {
             const ang = (i / 72) * Math.PI * 2;
@@ -57,56 +65,67 @@ export const MicroscopeReticle: React.FC<MicroscopeReticleProps> = ({ zoom, magT
                 y1={270 + Math.sin(ang) * r1}
                 x2={270 + Math.cos(ang) * r2}
                 y2={270 + Math.sin(ang) * r2}
-                stroke={isMajor ? 'rgba(255,255,255,0.26)' : 'rgba(255,255,255,0.1)'}
+                stroke={isMajor ? 'rgba(255,255,255,0.24)' : 'rgba(255,255,255,0.09)'}
                 strokeWidth={isMajor ? '1' : '0.6'}
               />
             );
           })}
         </g>
 
-        {/* Subtle center optical crosshairs (ultra-low opacity so they never clutter 3D silicon) */}
-        <line x1="258" y1="270" x2="265" y2="270" stroke="rgba(255,255,255,0.18)" strokeWidth="0.8" />
-        <line x1="275" y1="270" x2="282" y2="270" stroke="rgba(255,255,255,0.18)" strokeWidth="0.8" />
-        <line x1="270" y1="258" x2="270" y2="265" stroke="rgba(255,255,255,0.18)" strokeWidth="0.8" />
-        <line x1="270" y1="275" x2="270" y2="282" stroke="rgba(255,255,255,0.18)" strokeWidth="0.8" />
+        <line x1="258" y1="270" x2="265" y2="270" stroke="rgba(255,255,255,0.16)" strokeWidth="0.8" />
+        <line x1="275" y1="270" x2="282" y2="270" stroke="rgba(255,255,255,0.16)" strokeWidth="0.8" />
+        <line x1="270" y1="258" x2="270" y2="265" stroke="rgba(255,255,255,0.16)" strokeWidth="0.8" />
+        <line x1="270" y1="275" x2="270" y2="282" stroke="rgba(255,255,255,0.16)" strokeWidth="0.8" />
 
-        {/* Magnification markers along the top arc */}
-        {DIAL_TICKS.map((tk) => {
-          const rad = ((tk.deg - 90) * Math.PI) / 180;
-          const tx = 270 + Math.cos(rad) * (r + 16);
-          const ty = 270 + Math.sin(rad) * (r + 16);
-          return (
-            <text
-              key={tk.label}
-              x={tx}
-              y={ty}
-              fill="rgba(245, 245, 247, 0.34)"
-              fontSize="7.5"
-              fontFamily="'JetBrains Mono', monospace"
-              fontWeight="600"
-              textAnchor="middle"
-              dominantBaseline="middle"
-            >
-              {tk.label}
-            </text>
-          );
-        })}
+        {mode === 'live' &&
+          DIAL_TICKS.map((tk) => {
+            const rad = ((tk.deg - 90) * Math.PI) / 180;
+            const tx = 270 + Math.cos(rad) * (r + 16);
+            const ty = 270 + Math.sin(rad) * (r + 16);
+            return (
+              <text
+                key={tk.label}
+                x={tx}
+                y={ty}
+                fill="rgba(245, 245, 247, 0.34)"
+                fontSize="7.5"
+                fontFamily="'JetBrains Mono', monospace"
+                fontWeight="600"
+                textAnchor="middle"
+                dominantBaseline="middle"
+              >
+                {tk.label}
+              </text>
+            );
+          })}
       </svg>
 
-      {/* Precision Scale Bar + Live 3nm Measurement Bracket */}
+      {/* Bottom-left Precision Physical Scale Ruler */}
       <div className="scale-ruler">
         <div className="ruler-bar" />
         <div className="ruler-text">
-          <span>{sizeText}</span>
+          <span>{mode === 'moore' ? '10 µm fixed lens' : sizeText}</span>
           <span className="ruler-sep">·</span>
-          <span className="ruler-mag">{magText}</span>
+          <span className="ruler-mag">{mode === 'moore' ? `${mooreYear}` : magText}</span>
         </div>
       </div>
 
+      {/* Mode 0 Peak 3nm Bracket */}
       {show3nmBracket && (
         <div className="nm-bracket" style={{ opacity: bracketOpacity }}>
           <div className="nm-line" />
           <div className="nm-label">3 nm · ~11 Silicon Atoms</div>
+          <div className="nm-line" />
+        </div>
+      )}
+
+      {/* Mode 1 Fixed 1971 Transistor Footprint Callout */}
+      {mode === 'moore' && (
+        <div className="nm-bracket" style={{ transform: 'translate(-50%, 144px)' }}>
+          <div className="nm-line" />
+          <div className="nm-label">
+            1971 Single-Transistor Footprint (10 µm) · Now holds <strong>{mooreDensityLabel}×</strong>
+          </div>
           <div className="nm-line" />
         </div>
       )}
