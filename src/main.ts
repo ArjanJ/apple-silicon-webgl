@@ -1,6 +1,7 @@
 import './styles.css';
 import { DieInspectHit } from './engine/inspect';
 import { SiliconEngine } from './engine/SiliconEngine';
+import { BrowserTelemetrySource } from './sim/browserTelemetry';
 import { DEFAULT_TELEMETRY, LiveMacTelemetry } from './sim/macTelemetry';
 import { formatMagnification } from './sim/microJourney';
 
@@ -12,27 +13,31 @@ import { formatMagnification } from './sim/microJourney';
  */
 
 const ZOOM_STOPS = [
+  { z: -1.0, label: 'Scale' },
   { z: 0.0, label: 'Die' },
-  { z: 1.0, label: 'Striations' },
-  { z: 2.0, label: 'Canyons' },
-  { z: 3.0, label: 'Grid' },
+  { z: 1.0, label: 'Power' },
+  { z: 2.0, label: 'Routing' },
+  { z: 3.0, label: 'Rows' },
   { z: 4.0, label: 'Cell' },
-  { z: 5.0, label: '3 nm' },
+  { z: 5.0, label: 'Gate' },
   { z: 6.0, label: 'Lattice' },
   { z: 7.0, label: 'Atom' },
   { z: 8.0, label: 'Nucleus' },
+  { z: 9.0, label: 'Quarks' },
 ];
 
 const DIAL_TICKS = [
-  { deg: -144, label: '10×' },
-  { deg: -108, label: '1K×' },
-  { deg: -72, label: '100K×' },
-  { deg: -36, label: '1M×' },
+  { deg: -144, label: '1×' },
+  { deg: -115, label: '10×' },
+  { deg: -86, label: '1K×' },
+  { deg: -58, label: '100K×' },
+  { deg: -29, label: '1M×' },
   { deg: 0, label: '5M×' },
-  { deg: 36, label: '40M×' },
-  { deg: 72, label: '250M×' },
-  { deg: 108, label: '1.2B×' },
-  { deg: 144, label: '40T×' },
+  { deg: 29, label: '25M×' },
+  { deg: 58, label: '250M×' },
+  { deg: 86, label: '1.2B×' },
+  { deg: 115, label: '40T×' },
+  { deg: 144, label: '150T×' },
 ];
 
 const ICONS = {
@@ -83,7 +88,7 @@ function buildReticleSvg(): string {
         stroke-width="1.25"
         stroke-dasharray="${(circ * 0.04).toFixed(2)} ${circ.toFixed(2)}"
         stroke-linecap="round"
-        transform="rotate(-226 270 270)"
+        transform="rotate(-234 270 270)"
       />
       <g id="reticle-dial">${ticks}</g>
       <line x1="259" y1="270" x2="265" y2="270" stroke="rgba(255,255,255,0.16)" stroke-width="0.7" />
@@ -107,7 +112,7 @@ function mountApp(): void {
         ${buildReticleSvg()}
         <div id="nm-bracket" class="nm-bracket" style="opacity:0;pointer-events:none;display:none;">
           <div class="nm-line"></div>
-          <div id="nm-label" class="nm-label">3 nm · ~11 Silicon Atoms</div>
+          <div id="nm-label" class="nm-label">12 nm Gate · 5 nm GAA Ribbon</div>
           <div class="nm-line"></div>
         </div>
       </div>
@@ -121,17 +126,17 @@ function mountApp(): void {
         <div class="hud-top">
           <div class="editorial-brand">
             <div class="editorial-title-row">
-              <span class="live-pulse"></span>
+              <span id="live-pulse" class="live-pulse"></span>
               <span id="chip-name" class="editorial-name">Apple Silicon</span>
             </div>
-            <div id="editorial-meta" class="editorial-meta">Connecting to Mac hardware…</div>
+            <div id="editorial-meta" class="editorial-meta">Initializing silicon telemetry…</div>
           </div>
 
           <div class="tool-capsule obsidian-glass">
-            <button id="btn-activity" class="glass-btn" title="Inspect live per-core CPU, GPU, and die thermal telemetry">
+            <button id="btn-activity" class="glass-btn" title="Inspect per-core CPU, GPU, and die thermal telemetry">
               ${ICONS.activity}<span>Activity</span>
             </button>
-            <button id="btn-burst" class="glass-btn" title="Run a 3.5-second multi-core burst on your Mac">
+            <button id="btn-burst" class="glass-btn" title="Run a 3.5-second multi-core Web Worker burst">
               ${ICONS.zap}<span id="btn-burst-lbl">Burst</span>
             </button>
             <div class="capsule-divider"></div>
@@ -185,11 +190,11 @@ function mountApp(): void {
         </div>
 
         <div class="hud-bottom">
-          <div id="scale-caption" class="floating-scale-caption">12.0 mm · 10×</div>
+          <div id="scale-caption" class="floating-scale-caption">21 mm · 10×</div>
           <div id="zoom-rail" class="zoom-rail obsidian-glass">
             ${ZOOM_STOPS.map(
               (st, idx) =>
-                `<button class="rail-stop ${idx === 0 ? 'active' : ''}" data-idx="${idx}" data-z="${st.z}">${st.label}</button>`
+                `<button class="rail-stop ${st.z === 0 ? 'active' : ''}" data-idx="${idx}" data-z="${st.z}">${st.label}</button>`
             ).join('')}
           </div>
         </div>
@@ -206,6 +211,7 @@ function mountApp(): void {
   const scaleCaption = document.getElementById('scale-caption')!;
   const railButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#zoom-rail .rail-stop'));
 
+  const livePulseEl = document.getElementById('live-pulse')!;
   const chipNameEl = document.getElementById('chip-name')!;
   const editorialMetaEl = document.getElementById('editorial-meta')!;
   const hudChromeEl = document.getElementById('hud-chrome')!;
@@ -241,8 +247,8 @@ function mountApp(): void {
   let showActivity = false;
   let pureView = false;
   let bursting = false;
-  let lastZoomRendered = -1;
-  let lastActiveStop = 0;
+  let lastZoomRendered = -99;
+  let lastActiveStop = 1;
   let lastCaption = '';
   let lastFpsUpdate = 0;
   let currentFps = 120;
@@ -260,9 +266,18 @@ function mountApp(): void {
     inspectSub.textContent = activeInspect.subtitle(telemetry);
     inspectMetric.textContent = activeInspect.metric(telemetry);
     inspectDetail.textContent = activeInspect.detail(telemetry);
-    const stopName = ZOOM_STOPS[Math.round(activeInspect.diveZoom)]?.label ?? '3 nm';
+    const stopName = ZOOM_STOPS.find((s) => Math.abs(s.z - activeInspect!.diveZoom) < 0.01)?.label ?? 'Die';
     inspectDive.textContent = `Dive to ${stopName} →`;
   };
+
+  const telemetryModeBadge = () =>
+    telemetry.nativeTelemetry
+      ? 'IOKIT'
+      : telemetry.live
+        ? 'LIVE'
+        : telemetry.pressureState
+          ? 'PRESSURE'
+          : 'WEB SIM';
 
   const engine = new SiliconEngine(gpuMount, {
     onZoomFrame: (z, fps) => {
@@ -270,14 +285,14 @@ function mountApp(): void {
       const now = performance.now();
       if (showActivity && now - lastFpsUpdate > 350) {
         lastFpsUpdate = now;
-        sheetFpsEl.textContent = `${currentFps} FPS · ${telemetry.nativeTelemetry ? 'IOKIT' : 'LIVE'}`;
+        sheetFpsEl.textContent = `${currentFps} FPS · ${telemetryModeBadge()}`;
       }
 
       if (Math.abs(z - lastZoomRendered) < 0.0005) return;
       lastZoomRendered = z;
 
       const { magText, sizeText, dialDeg, bracketText, bracketOpacity } = formatMagnification(z);
-      const frac = Math.max(0.03, Math.min(1, (z / 8) * 0.78 + 0.04));
+      const frac = Math.max(0.015, Math.min(0.8, ((z + 1) / 10) * 0.8));
       reticleArc.setAttribute('stroke-dasharray', `${(circ * frac).toFixed(1)} ${circ.toFixed(1)}`);
       reticleDial.setAttribute('transform', `rotate(${(-dialDeg * 0.55).toFixed(2)} 270 270)`);
 
@@ -297,7 +312,7 @@ function mountApp(): void {
         scaleCaption.textContent = cap;
       }
 
-      const stopIdx = Math.round(z);
+      const stopIdx = Math.max(0, Math.min(ZOOM_STOPS.length - 1, Math.round(z) + 1));
       if (stopIdx !== lastActiveStop) {
         railButtons[lastActiveStop]?.classList.remove('active');
         railButtons[stopIdx]?.classList.add('active');
@@ -314,8 +329,11 @@ function mountApp(): void {
   inspectDive.addEventListener('click', () => {
     if (!activeInspect) return;
     const z = activeInspect.diveZoom;
+    // Dive directly into the inspected die block's exact physical (cx, cz) coordinates!
+    const targetXZ: [number, number] | undefined =
+      activeInspect.id !== 'us-quarter' ? [activeInspect.box[0], activeInspect.box[1]] : undefined;
     engine.clearInspect();
-    engine.flyToZoom(z);
+    engine.flyToZoom(z, targetXZ);
   });
 
   // Wire zoom rail clicks
@@ -331,7 +349,7 @@ function mountApp(): void {
   const renderActivitySheet = () => {
     if (!showActivity) return;
     sheetCoresEl.textContent = `${telemetry.pCoreCount}P + ${telemetry.eCoreCount}E CORES`;
-    sheetFpsEl.textContent = `${currentFps} FPS · ${telemetry.nativeTelemetry ? 'IOKIT' : 'LIVE'}`;
+    sheetFpsEl.textContent = `${currentFps} FPS · ${telemetryModeBadge()}`;
 
     hwGpuLbl.textContent = `${telemetry.gpuCores}C GPU`;
     hwGpuVal.textContent = `${Math.round(telemetry.gpuEst * 100)}%`;
@@ -412,9 +430,12 @@ function mountApp(): void {
     }
   });
 
+  const browserTelemetry = new BrowserTelemetrySource(engine.getGpuRenderer());
+
   btnBurst.addEventListener('click', () => {
     if (bursting) return;
     bursting = true;
+    browserTelemetry.setBurst(true);
     btnBurst.classList.add('active');
     btnBurstLbl.textContent = 'Bursting';
 
@@ -436,34 +457,80 @@ function mountApp(): void {
       workers.forEach((w) => w.terminate());
       URL.revokeObjectURL(url);
       bursting = false;
+      browserTelemetry.setBurst(false);
       btnBurst.classList.remove('active');
       btnBurstLbl.textContent = 'Burst';
     }, 3600);
   });
 
-  // Poll zero-latency in-memory native Mach/IOKit telemetry every 650ms
-  const pollTelemetry = async () => {
-    try {
-      const res = await fetch('/api/telemetry', { cache: 'no-store' });
-      if (!res.ok) return;
-      const data = (await res.json()) as LiveMacTelemetry;
-      telemetry = data;
-      engine.setTelemetry(data);
+  const applyTelemetry = (data: LiveMacTelemetry) => {
+    telemetry = data;
+    engine.setTelemetry(data);
 
-      chipNameEl.textContent = data.chipName;
-      const cpuPct = Math.round(data.cpuTotal * 100);
-      const gpuPct = Math.round(data.gpuEst * 100);
-      const tempPart = data.socTempC !== null ? `${data.socTempC.toFixed(0)}°C · ` : '';
+    livePulseEl.classList.toggle('sim', !data.live);
+    chipNameEl.textContent = data.chipName;
+    const cpuPct = Math.round(data.cpuTotal * 100);
+    const gpuPct = Math.round(data.gpuEst * 100);
+    const tempPart = data.socTempC !== null ? `${data.socTempC.toFixed(0)}°C · ` : '';
+    if (data.live) {
       editorialMetaEl.textContent = `${tempPart}${cpuPct}% CPU · ${gpuPct}% GPU · ${data.memUsedGB}/${data.memTotalGB} GB`;
-      renderActivitySheet();
-      if (activeInspect) renderInspectCard();
-    } catch {
-      // ignore in static preview
+    } else {
+      const modeTag = data.pressureState ? `PRESSURE ${data.thermalState.toUpperCase()}` : 'WEB SIM';
+      editorialMetaEl.textContent = `${tempPart}${cpuPct}% CPU · ${gpuPct}% GPU · ${data.totalCores}C · ${modeTag}`;
     }
+    renderActivitySheet();
+    if (activeInspect) renderInspectCard();
   };
 
-  pollTelemetry();
-  window.setInterval(pollTelemetry, 650);
+  let useBrowserMode = false;
+  let pollTimer: number | null = null;
+
+  const startBrowserTelemetry = () => {
+    if (useBrowserMode) return;
+    useBrowserMode = true;
+    if (pollTimer !== null) {
+      window.clearInterval(pollTimer);
+    }
+    const tick = () => applyTelemetry(browserTelemetry.sample(engine.getFrameActivity()));
+    tick();
+    pollTimer = window.setInterval(tick, 450);
+  };
+
+  // Use native Mach/IOKit middleware when running locally (npm run dev);
+  // automatically fall back to zero-install hybrid browser telemetry on static hosts (GitHub Pages / preview).
+  const isLocalHost =
+    import.meta.env.DEV ||
+    window.location.hostname === '127.0.0.1' ||
+    window.location.hostname === 'localhost';
+
+  if (!isLocalHost) {
+    startBrowserTelemetry();
+  } else {
+    let liveFailures = 0;
+    const pollTelemetry = async () => {
+      try {
+        const res = await fetch('/api/telemetry', { cache: 'no-store' });
+        const ct = res.headers.get('content-type') || '';
+        if (!res.ok || !ct.includes('application/json')) {
+          throw new Error('No local telemetry API');
+        }
+        const data = (await res.json()) as LiveMacTelemetry;
+        if (!data || !Array.isArray(data.coreLoads)) {
+          throw new Error('Invalid telemetry payload');
+        }
+        liveFailures = 0;
+        applyTelemetry(data);
+      } catch {
+        liveFailures++;
+        if (liveFailures >= 1 && !telemetry.live) {
+          startBrowserTelemetry();
+        }
+      }
+    };
+
+    void pollTelemetry();
+    pollTimer = window.setInterval(pollTelemetry, 650);
+  }
 }
 
 mountApp();

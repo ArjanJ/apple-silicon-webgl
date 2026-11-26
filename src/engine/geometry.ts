@@ -315,6 +315,26 @@ export function createUnitBondCylinder(segments = 10): MeshBuffers {
     idx.push(t0, t1, b1);
     idx.push(t0, b1, b0);
   }
+  // Watertight top & bottom end caps so bonds never look like hollow pipes end-on
+  const topCenter = segments * 2;
+  verts.push(0, 1, 0, 0, 1, 0);
+  const topRingStart = topCenter + 1;
+  for (let i = 0; i < segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    verts.push(Math.cos(a), 1, Math.sin(a), 0, 1, 0);
+  }
+  const botCenter = topRingStart + segments;
+  verts.push(0, -1, 0, 0, -1, 0);
+  const botRingStart = botCenter + 1;
+  for (let i = 0; i < segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    verts.push(Math.cos(a), -1, Math.sin(a), 0, -1, 0);
+  }
+  for (let i = 0; i < segments; i++) {
+    const j = (i + 1) % segments;
+    idx.push(topCenter, topRingStart + j, topRingStart + i);
+    idx.push(botCenter, botRingStart + i, botRingStart + j);
+  }
   return {
     vertices: new Float32Array(verts),
     indices: new Uint16Array(idx),

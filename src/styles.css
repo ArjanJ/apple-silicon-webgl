@@ -160,6 +160,11 @@ body,
   animation: breathe 2.4s ease-in-out infinite;
 }
 
+.live-pulse.sim {
+  background: #5ac8fa;
+  box-shadow: 0 0 10px rgba(90, 200, 250, 0.8);
+}
+
 @keyframes breathe {
   0%,
   100% {

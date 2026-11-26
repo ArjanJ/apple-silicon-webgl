@@ -246,6 +246,7 @@ function liveMacTelemetryPlugin(): Plugin {
 }
 
 export default defineConfig({
+  base: './',
   plugins: [liveMacTelemetryPlugin()],
   server: {
     port: 5175,

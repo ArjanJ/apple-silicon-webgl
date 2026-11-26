@@ -1,3 +1,5 @@
+export type TelemetrySource = 'iokit' | 'node' | 'browser';
+
 export interface LiveMacTelemetry {
   chipName: string;
   totalCores: number;
@@ -12,15 +14,17 @@ export interface LiveMacTelemetry {
   memTotalGB: number;
   memRatio: number;
   netKBps: number;
-  gpuEst: number; // Real IOKit GPU Device Utilization (0..1)
+  gpuEst: number; // Real IOKit GPU Device Utilization (0..1) or browser hybrid estimate
   gpuRenderer: number;
   gpuTiler: number;
   gpuMemGB: number;
-  socTempC: number | null; // Real Apple Silicon PMU die temp in deg C
+  socTempC: number | null; // Real Apple Silicon PMU die temp in deg C (or modeled thermal curve)
   thermalState: string;
   topProcs: { name: string; cpu: number }[];
   nativeTelemetry: boolean;
   live: boolean;
+  source?: TelemetrySource;
+  pressureState?: string | null;
   timestamp: number;
 }
 
