@@ -62,8 +62,10 @@ import {
 } from './worlds';
 
 export interface EngineHooks {
-  onZoomFrame: (zoom: number, fps: number) => void;
+  onZoomFrame: (zoom: number, fps: number, motion: number, interacting: boolean) => void;
   onInspect: (hit: DieInspectHit | null) => void;
+  onHover?: (hit: DieInspectHit | null, clientX: number, clientY: number) => void;
+  onTourChange?: (active: boolean) => void;
 }
 
 interface StageDraw {
@@ -111,6 +113,23 @@ export const MIN_ZOOM = -2.4;
 export const MAX_ZOOM = 9.0;
 const STAGE_FLOOR_Y = [-0.598, -0.26, -0.14, -0.075, -0.35, -6.0, -6.0, -6.0, -6.0, -6.0];
 const WORLD0_GRID_STEP = WORLD1_PITCH / STAGE_RATIOS[0]; // 0.095 (exact World 1 grid pitch on World 0!)
+
+/** Keyframed Cinematic Dive choreography: [timeSec, zoom, pitch, yawOffset] */
+const TOUR_KEYS: readonly [number, number, number, number][] = [
+  [0.0, -1.08, 0.96, 0.0],
+  [3.0, 0.0, 0.84, -0.06],
+  [5.4, 0.02, 0.78, 0.08],
+  [8.4, 1.0, 0.72, 0.22],
+  [11.4, 2.0, 0.62, 0.38],
+  [14.2, 3.0, 0.56, 0.5],
+  [17.0, 4.0, 0.46, 0.64],
+  [20.2, 5.0, 0.3, 0.8],
+  [23.2, 6.0, 0.28, 0.98],
+  [26.2, 7.0, 0.24, 1.22],
+  [29.4, 8.0, 0.3, 1.52],
+  [32.6, 9.0, 0.32, 1.88],
+  [35.2, 9.0, 0.34, 2.18],
+];
 
 // Precompute cumulative log-scales for exact physical locking across all 9 nested stages
 const LOG_CUM_SCALE: number[] = [0];
@@ -218,11 +237,20 @@ export class SiliconEngine {
   // Parity (+1 or -1) of the currently selected Silicon atom in World 6 (rotates World 7 by 90° Y for B-sublattice!)
   private atomParity: 1 | -1 = 1;
 
-  // Interactive click-to-inspect state
+  // Interactive click-to-inspect & whisper-quiet hover preview state
   private inspectBox: [number, number, number, number] = [0, 0, 0, 0];
+  private inspectId: string | null = null;
   private hasInspect = false;
+  private hoverBox: [number, number, number, number] = [0, 0, 0, 0];
+  private hoverId: string | null = null;
+  private hasHover = false;
   private downX = 0;
   private downY = 0;
+
+  // Cinematic Dive (choreographed Scale -> Quarks journey with instant manual handoff)
+  private tourActive = false;
+  private tourElapsed = 0;
+  private tourBaseYaw = -0.14;
 
   // Camera & snappy zoom state
   public zoom = 0.0;
@@ -230,9 +258,9 @@ export class SiliconEngine {
   private zoomRate = 15.0;
   private smoothMotion = 0.0;
 
-  private yaw = -0.35;
+  private yaw = -0.18;
   private pitch = 0.86;
-  private targetYaw = -0.35;
+  private targetYaw = -0.18;
   private targetPitch = 0.86;
 
   // Live Mac telemetry
@@ -763,6 +791,8 @@ export class SiliconEngine {
       'uCoinNormTex',
       'uCoinSpec',
       'uFocusXZ',
+      'uFocusDist',
+      'uDofStrength',
       'uFogDensity',
       'uZoom',
       'uSemFactor',
@@ -771,12 +801,13 @@ export class SiliconEngine {
       'uTranslucent',
       'uRegionKind',
       'uInspectBox',
+      'uHoverBox',
     ]);
 
     this.uPrefilter = grab(this.prefilterProg, ['uTex', 'uTexelSize']);
     this.uDown = grab(this.bloomDownProg, ['uTex', 'uHalfPixel']);
     this.uUp = grab(this.bloomUpProg, ['uTex', 'uHalfPixel']);
-    this.uComp = grab(this.compositeProg, ['uTex', 'uBloomTex', 'uResolution', 'uMotion', 'uTime']);
+    this.uComp = grab(this.compositeProg, ['uTex', 'uBloomTex', 'uResolution', 'uMotion', 'uTime', 'uVoidPlunge']);
   }
 
   private createArrayBuffer(data: Float32Array): WebGLBuffer {
@@ -1059,8 +1090,90 @@ export class SiliconEngine {
   public clearInspect(): void {
     if (!this.hasInspect) return;
     this.hasInspect = false;
+    this.inspectId = null;
     this.inspectBox = [0, 0, 0, 0];
     this.hooks.onInspect(null);
+  }
+
+  public clearHover(): void {
+    if (!this.hasHover) return;
+    this.hasHover = false;
+    this.hoverId = null;
+    this.hoverBox = [0, 0, 0, 0];
+    this.hooks.onHover?.(null, 0, 0);
+  }
+
+  public get isTourActive(): boolean {
+    return this.tourActive;
+  }
+
+  /** Pick the hottest live P-Core on the user's Mac as the hero dive target */
+  private getBusiestPCoreXZ(): [number, number] {
+    const pCount = Math.max(2, Math.min(12, this.dieSpec.pCores || 8));
+    const pRowsN = pCount <= 4 ? 1 : 2;
+    const pColsN = Math.ceil(pCount / pRowsN);
+    const pStepX = 2.48 / pColsN;
+    const pStepZ = 1.68 / pRowsN;
+    const eOff = Math.min(this.telemetry.eCoreCount, Math.max(0, this.telemetry.coreLoads.length - pCount));
+    let bestIdx = 0;
+    let bestLoad = -1;
+    for (let i = 0; i < pCount; i++) {
+      const l = this.telemetry.coreLoads[eOff + i] ?? 0;
+      if (l > bestLoad) {
+        bestLoad = l;
+        bestIdx = i;
+      }
+    }
+    const r = Math.floor(bestIdx / pColsN);
+    const c = bestIdx % pColsN;
+    const cx = -1.68 + (c - (pColsN - 1) * 0.5) * pStepX;
+    const cz = -1.04 + (r - (pRowsN - 1) * 0.5) * pStepZ;
+    return [
+      Math.round(cx / WORLD0_GRID_STEP) * WORLD0_GRID_STEP,
+      Math.round(cz / WORLD0_GRID_STEP) * WORLD0_GRID_STEP,
+    ];
+  }
+
+  public startTour(): void {
+    if (this.tourActive) return;
+    this.clearInspect();
+    this.clearHover();
+    this.tourActive = true;
+    this.tourElapsed = 0;
+    this.tourBaseYaw = -0.16;
+
+    // Reset nested anchors cleanly and lock World 0 onto the hottest live P-Core!
+    const [tx, tz] = this.getBusiestPCoreXZ();
+    this.targetAnchor0[0] = clamp(tx, -WORLD0_DIE_CLAMP_X, WORLD0_DIE_CLAMP_X);
+    this.targetAnchor0[1] = clamp(tz, -WORLD0_DIE_CLAMP_Z, WORLD0_DIE_CLAMP_Z);
+    for (let k = 1; k < this.anchors.length; k++) {
+      this.anchors[k][0] = 0;
+      this.anchors[k][1] = 0;
+      this.anchors[k][2] = k === 4 ? WORLD4_GATE_Z : 0;
+    }
+    this.atomParity = 1;
+    this.recomputeEffOffsets();
+
+    // Start from the Scale landmark if already zoomed deep, or continue cleanly from Scale
+    if (this.zoom > 0.35 || this.zoom < -1.4) {
+      this.targetZoom = -1.08;
+      this.zoomRate = 4.5;
+    }
+    this.hooks.onTourChange?.(true);
+  }
+
+  public stopTour(): void {
+    if (!this.tourActive) return;
+    this.tourActive = false;
+    this.targetZoom = this.zoom;
+    this.targetYaw = this.yaw;
+    this.targetPitch = this.pitch;
+    this.hooks.onTourChange?.(false);
+  }
+
+  public toggleTour(): void {
+    if (this.tourActive) this.stopTour();
+    else this.startTour();
   }
 
   /** Compute camera-space ray (origin + unit direction) for a client pixel */
@@ -1110,80 +1223,61 @@ export class SiliconEngine {
     ];
   }
 
-  /** Pick the closest 3D Silicon atom in World 6 to the pointer ray */
-  private pickNearestLatticeAtom(clientX: number, clientY: number): LatticeAtomSite | null {
-    const ray = this.getPointerRay(clientX, clientY);
-    if (!ray) return null;
-    const s6 = this.stageScales[6];
-    const off6 = this.effOffsets[6];
-    let best: LatticeAtomSite | null = null;
-    let bestScore = Infinity;
-    for (let i = 0; i < this.latticeAtoms.length; i++) {
-      const at = this.latticeAtoms[i];
-      const cx = (at.x - off6[0]) * s6;
-      const cy = (at.y - off6[1]) * s6;
-      const cz = (at.z - off6[2]) * s6;
-      const px = cx - ray.ox;
-      const py = cy - ray.oy;
-      const pz = cz - ray.oz;
-      const t = px * ray.dx + py * ray.dy + pz * ray.dz;
-      if (t < 0.2) continue;
-      const rx = px - ray.dx * t;
-      const ry = py - ray.dy * t;
-      const rz = pz - ray.dz * t;
-      const perp = Math.hypot(rx, ry, rz);
-      // Favor atoms close to the pointer ray, gently preferring nearer atoms on tie
-      const score = perp + t * 0.035;
-      if (score < bestScore) {
-        bestScore = score;
-        best = at;
-      }
-    }
-    return best;
-  }
-
   public flyToZoom(z: number, dieTargetXZ?: [number, number]): void {
+    this.stopTour();
     this.targetZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
-    this.zoomRate = 8.5;
+    this.zoomRate = 6.8;
     if (dieTargetXZ) {
       const gx = Math.round(dieTargetXZ[0] / WORLD0_GRID_STEP) * WORLD0_GRID_STEP;
       const gz = Math.round(dieTargetXZ[1] / WORLD0_GRID_STEP) * WORLD0_GRID_STEP;
       this.targetAnchor0[0] = clamp(gx, -WORLD0_DIE_CLAMP_X, WORLD0_DIE_CLAMP_X);
       this.targetAnchor0[1] = clamp(gz, -WORLD0_DIE_CLAMP_Z, WORLD0_DIE_CLAMP_Z);
+    } else if (z <= 0.05) {
+      this.targetAnchor0[0] = 0;
+      this.targetAnchor0[1] = 0;
+      if (this.zoom <= 0.55) {
+        for (let k = 1; k < this.anchors.length; k++) {
+          this.anchors[k][0] = 0;
+          this.anchors[k][1] = 0;
+          this.anchors[k][2] = k === 4 ? WORLD4_GATE_Z : 0;
+        }
+        this.atomParity = 1;
+        this.recomputeEffOffsets();
+      }
     }
     if (z < -0.5) {
       this.targetPitch = 0.96;
       this.targetYaw = -0.14;
     } else if (z < 0.5) {
       this.targetPitch = 0.86;
-      this.targetYaw = -0.34;
+      this.targetYaw = -0.18;
     } else if (z < 1.5) {
-      this.targetPitch = 0.78;
-      this.targetYaw = 0.24;
+      this.targetPitch = 0.76;
+      this.targetYaw = 0.08;
     } else if (z < 2.5) {
-      this.targetPitch = 0.64;
-      this.targetYaw = 0.48;
+      this.targetPitch = 0.66;
+      this.targetYaw = 0.20;
     } else if (z < 3.5) {
-      this.targetPitch = 0.86;
-      this.targetYaw = 0.16;
-    } else if (z < 4.5) {
-      this.targetPitch = 0.56;
+      this.targetPitch = 0.58;
       this.targetYaw = 0.24;
+    } else if (z < 4.5) {
+      this.targetPitch = 0.48;
+      this.targetYaw = 0.28;
     } else if (z < 5.5) {
-      this.targetPitch = 0.30;
-      this.targetYaw = 0.30;
+      this.targetPitch = 0.32;
+      this.targetYaw = 0.32;
     } else if (z < 6.5) {
-      this.targetPitch = 0.26;
+      this.targetPitch = 0.28;
       this.targetYaw = 0.38;
     } else if (z < 7.5) {
-      this.targetPitch = 0.24;
-      this.targetYaw = 0.56;
+      this.targetPitch = 0.26;
+      this.targetYaw = 0.44;
     } else if (z < 8.5) {
       this.targetPitch = 0.30;
       this.targetYaw = 0.46;
     } else {
-      this.targetPitch = 0.34;
-      this.targetYaw = 0.52;
+      this.targetPitch = 0.32;
+      this.targetYaw = 0.50;
     }
   }
 
@@ -1199,59 +1293,15 @@ export class SiliconEngine {
   };
 
   /**
-   * Zoom-to-cursor on scroll/pinch!
-   * When zooming IN over any region of the silicon die (or any tile/canyon/cell/gate/atom),
-   * smoothly targets that exact physical feature under the cursor (Option 1: non-silicon regions
-   * stay cleanly clamped onto the silicon die once diving past z > 0).
+   * Steady center-reticle zoom on scroll/pinch (zero lateral cursor-drift).
+   * Lateral targeting is handled deliberately via click-to-inspect ("Dive to...") or Shift/Right-drag pan.
    */
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
-    const delta = -e.deltaY * (e.ctrlKey ? 0.011 : 0.0031);
-    const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this.targetZoom + delta));
-    this.targetZoom = nextZoom;
-    this.zoomRate = 16.5;
-
-    // Only steer zoom-to-cursor when zooming IN (scrolling out reverses cleanly along your entry path!)
-    if (delta <= 0.0005) return;
-
-    const z = this.zoom;
-    if (z >= -0.35 && z < 0.56) {
-      // Aim anywhere on the Apple Silicon die — snapped cleanly to the fixed 0.095 micro-striation grid!
-      const diePt = this.unprojectDiePoint(e.clientX, e.clientY);
-      if (diePt) {
-        const onDie = Math.abs(diePt[0]) <= 3.15 && Math.abs(diePt[1]) <= 2.48;
-        if (onDie || nextZoom > 0.12) {
-          const gx = clamp(Math.round(diePt[0] / WORLD0_GRID_STEP) * WORLD0_GRID_STEP, -WORLD0_DIE_CLAMP_X, WORLD0_DIE_CLAMP_X);
-          const gz = clamp(Math.round(diePt[1] / WORLD0_GRID_STEP) * WORLD0_GRID_STEP, -WORLD0_DIE_CLAMP_Z, WORLD0_DIE_CLAMP_Z);
-          const pull = Math.min(1.0, Math.abs(delta) * 5.0 + 0.42);
-          this.targetAnchor0[0] = Math.round((this.targetAnchor0[0] + (gx - this.targetAnchor0[0]) * pull) / WORLD0_GRID_STEP) * WORLD0_GRID_STEP;
-          this.targetAnchor0[1] = Math.round((this.targetAnchor0[1] + (gz - this.targetAnchor0[1]) * pull) / WORLD0_GRID_STEP) * WORLD0_GRID_STEP;
-        }
-      }
-    } else if (z >= 0.78 && z < 5.20) {
-      // Discrete grid/gate/ribbon levels 1..5: steer while viewing level k, lock once diving into k+1!
-      const k = Math.floor(z + 0.25);
-      const fracIntoNext = z - k;
-      const lockFrac = k === 1 ? 0.30 : k === 2 ? 0.22 : k === 3 ? 0.04 : k === 4 ? 0.20 : 0.05;
-      if (k >= 1 && k <= 5 && fracIntoNext < lockFrac) {
-        const camHit = this.unprojectPlaneXZ(e.clientX, e.clientY, 0.0);
-        if (camHit) {
-          const sk = this.stageScales[k];
-          const lx = camHit[0] / sk + this.effOffsets[k][0];
-          const lz = camHit[1] / sk + this.effOffsets[k][2];
-          const steer = 0.72;
-          const bx = this.anchors[k][0] + (lx - this.anchors[k][0]) * steer;
-          const bz = this.anchors[k][2] + (lz - this.anchors[k][2]) * steer;
-          this.setStageAnchorSnapped(k, bx, 0, bz, true);
-        }
-      }
-    } else if (z >= 5.72 && z < 6.20) {
-      // World 6 (3D Silicon Crystal Lattice): aim at ANY Silicon atom under the cursor before opening orbitals!
-      const atom = this.pickNearestLatticeAtom(e.clientX, e.clientY);
-      if (atom) {
-        this.setStageAnchorSnapped(6, atom.x, atom.y, atom.z, true);
-      }
-    }
+    this.stopTour();
+    const delta = -e.deltaY * (e.ctrlKey ? 0.010 : 0.0028);
+    this.targetZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this.targetZoom + delta));
+    this.zoomRate = 10.5;
   };
 
   private onContextMenu = (e: MouseEvent): void => {
@@ -1259,6 +1309,8 @@ export class SiliconEngine {
   };
 
   private onPointerDown = (e: PointerEvent): void => {
+    this.stopTour();
+    this.clearHover();
     this.dragging = true;
     // Right-drag or Shift+drag pans the microscope stage laterally; normal left-drag orbits in 3D!
     this.dragMode = e.button === 2 || e.shiftKey ? 'pan' : 'orbit';
@@ -1272,12 +1324,21 @@ export class SiliconEngine {
 
   private onPointerMove = (e: PointerEvent): void => {
     if (!this.dragging) {
-      if (this.zoom < 0.85) {
+      if (!this.tourActive && this.zoom < 0.85) {
         const pt = this.unprojectDiePoint(e.clientX, e.clientY);
         const hit = pt ? pickDieRegion(pt[0], pt[1], this.dieSpec) : null;
         this.canvas.style.cursor = hit ? 'pointer' : 'grab';
+        if (hit) {
+          this.hasHover = true;
+          this.hoverId = hit.id;
+          this.hoverBox = hit.box;
+          this.hooks.onHover?.(hit, e.clientX, e.clientY);
+        } else {
+          this.clearHover();
+        }
       } else {
         this.canvas.style.cursor = 'grab';
+        this.clearHover();
       }
       return;
     }
@@ -1332,6 +1393,7 @@ export class SiliconEngine {
       const hit = pt ? pickDieRegion(pt[0], pt[1], this.dieSpec) : null;
       if (hit) {
         this.hasInspect = true;
+        this.inspectId = hit.id;
         this.inspectBox = hit.box;
         this.hooks.onInspect(hit);
       } else {
@@ -1340,10 +1402,17 @@ export class SiliconEngine {
     }
   };
 
+  private onPointerLeave = (): void => {
+    if (!this.dragging) {
+      this.clearHover();
+    }
+  };
+
   private onPointerCancel = (e: PointerEvent): void => {
     this.dragging = false;
     this.dragMode = 'orbit';
     this.canvas.style.cursor = 'grab';
+    this.clearHover();
     try {
       this.canvas.releasePointerCapture(e.pointerId);
     } catch {
@@ -1359,6 +1428,7 @@ export class SiliconEngine {
     this.canvas.addEventListener('pointermove', this.onPointerMove);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
     this.canvas.addEventListener('pointercancel', this.onPointerCancel);
+    this.canvas.addEventListener('pointerleave', this.onPointerLeave);
   }
 
   private drawOpaqueStage(stage: StageDraw): void {
@@ -1427,6 +1497,8 @@ export class SiliconEngine {
     semFactor: number,
     focusX: number,
     focusZ: number,
+    focusDist: number,
+    dofStrength: number,
     fogDensity: number
   ): void {
     const gl = this.gl;
@@ -1486,9 +1558,10 @@ export class SiliconEngine {
     gl.colorMask(true, true, true, true);
 
     // 2A) Unified 4x MSAA HDR Opaque PBR Pass — ALL nested scales share ONE 3D depth buffer!
+    // Clear alpha to 0.0 so empty obsidian backdrop carries CoC = 0.0!
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.msaaFbo ?? this.hdrMain.fbo);
     gl.viewport(0, 0, this.canvasW, this.canvasH);
-    gl.clearColor(0.003, 0.005, 0.009, 1.0);
+    gl.clearColor(0.003, 0.005, 0.009, 0.0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     gl.useProgram(this.sceneProg);
@@ -1525,6 +1598,8 @@ export class SiliconEngine {
     gl.uniform1i(this.uScene.uCoinNormTex, 2);
     gl.uniform4f(this.uScene.uCoinSpec, QUARTER_X, QUARTER_Z, QUARTER_RADIUS, QUARTER_HY);
     gl.uniform2f(this.uScene.uFocusXZ, focusX, focusZ);
+    gl.uniform1f(this.uScene.uFocusDist, focusDist);
+    gl.uniform1f(this.uScene.uDofStrength, dofStrength);
     gl.uniform1f(this.uScene.uFogDensity, fogDensity);
     gl.uniform3f(this.uScene.uCamPos, camX, camY, camZ);
     gl.uniform1f(this.uScene.uZoom, this.zoom);
@@ -1558,10 +1633,21 @@ export class SiliconEngine {
       } else {
         gl.uniform4f(this.uScene.uInspectBox, 0, 0, 0, 0);
       }
+      if (idx === 0 && this.hasHover && (!this.hasInspect || this.hoverId !== this.inspectId)) {
+        gl.uniform4f(
+          this.uScene.uHoverBox,
+          this.hoverBox[0],
+          this.hoverBox[1],
+          this.hoverBox[2],
+          this.hoverBox[3]
+        );
+      } else {
+        gl.uniform4f(this.uScene.uHoverBox, 0, 0, 0, 0);
+      }
       this.drawOpaqueStage(stage);
     }
 
-    // 2B) Translucent Volumetric Quantum Orbital Pass (depth-tested, additive Fresnel glow!)
+    // 2B) Translucent Volumetric Quantum Orbital Pass (depth-tested, additive RGB while preserving opaque CoC alpha!)
     let hasTranslucent = false;
     for (let i = 0; i < activeStages.length; i++) {
       if (this.stages[activeStages[i].idx].transSphereCount > 0) {
@@ -1571,11 +1657,12 @@ export class SiliconEngine {
     }
     if (hasTranslucent) {
       gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ZERO, gl.ONE);
       gl.depthMask(false);
       gl.uniform1f(this.uScene.uTranslucent, 1.0);
       gl.uniform1f(this.uScene.uLensClearance, 0.0);
       gl.uniform4f(this.uScene.uInspectBox, 0, 0, 0, 0);
+      gl.uniform4f(this.uScene.uHoverBox, 0, 0, 0, 0);
 
       for (let i = 0; i < activeStages.length; i++) {
         const { idx, scale } = activeStages[i];
@@ -1647,15 +1734,35 @@ export class SiliconEngine {
     this.pulsePhase = (this.pulsePhase + dt * pulseSpeed) % 1;
 
     // Smooth continuous World 0 die anchor & smooth camera pan decay
-    const a0Factor = 1 - Math.exp(-12.0 * dt);
+    const a0Factor = 1 - Math.exp(-8.5 * dt);
     this.anchors[0][0] += (this.targetAnchor0[0] - this.anchors[0][0]) * a0Factor;
     this.anchors[0][2] += (this.targetAnchor0[1] - this.anchors[0][2]) * a0Factor;
     this.recomputeEffOffsets();
 
-    const shiftDecay = Math.exp(-11.0 * dt);
+    const shiftDecay = Math.exp(-7.5 * dt);
     this.smoothCamShiftX *= shiftDecay;
     this.smoothCamShiftY *= shiftDecay;
     this.smoothCamShiftZ *= shiftDecay;
+
+    // Cinematic Dive keyframed choreography (Scale -> Hottest P-Core -> BEOL -> FEOL -> Gate -> Lattice -> Atom -> Nucleus -> Quarks)
+    if (this.tourActive) {
+      this.tourElapsed += dt;
+      const totalDur = TOUR_KEYS[TOUR_KEYS.length - 1][0];
+      if (this.tourElapsed >= totalDur) {
+        this.stopTour();
+      } else {
+        let seg = 0;
+        while (seg < TOUR_KEYS.length - 2 && this.tourElapsed > TOUR_KEYS[seg + 1][0]) seg++;
+        const k0 = TOUR_KEYS[seg];
+        const k1 = TOUR_KEYS[seg + 1];
+        const u = clamp((this.tourElapsed - k0[0]) / Math.max(0.001, k1[0] - k0[0]), 0, 1);
+        const s = 0.5 - 0.5 * Math.cos(Math.PI * u);
+        this.targetZoom = k0[1] + (k1[1] - k0[1]) * s;
+        this.targetPitch = k0[2] + (k1[2] - k0[2]) * s;
+        this.targetYaw = this.tourBaseYaw + (k0[3] + (k1[3] - k0[3]) * s);
+        this.zoomRate = 4.6;
+      }
+    }
 
     // Frame-rate-independent snappy zoom & optical motion tracking
     const prevZ = this.zoom;
@@ -1668,15 +1775,16 @@ export class SiliconEngine {
     const targetMotion = Math.min(1.0, zoomVel * 0.20);
     this.smoothMotion += (targetMotion - this.smoothMotion) * (1 - Math.exp(-14.0 * dt));
 
-    if (this.autoOrbit && !this.dragging) {
+    if (this.autoOrbit && !this.dragging && !this.tourActive) {
       this.targetYaw += dt * 0.075;
     }
-    const rotFactor = 1 - Math.exp(-10.0 * dt);
+    const rotRate = this.dragging ? 14.0 : this.tourActive ? 3.8 : 6.0;
+    const rotFactor = 1 - Math.exp(-rotRate * dt);
     this.yaw += (this.targetYaw - this.yaw) * rotFactor;
     this.pitch += (this.targetPitch - this.pitch) * rotFactor;
 
     const fps = Math.round(1000 / Math.max(4, this.emaFrameMs));
-    this.hooks.onZoomFrame(this.zoom, fps);
+    this.hooks.onZoomFrame(this.zoom, fps, this.smoothMotion, this.dragging || this.tourActive);
 
     // Compute exact continuous log-scale for EVERY nested world (0..9) relative to current zoom z
     const z = Math.max(0, Math.min(MAX_ZOOM, this.zoom));
@@ -1696,21 +1804,22 @@ export class SiliconEngine {
     if (this.hasInspect && z > 0.85) {
       this.clearInspect();
     }
+    if (this.hasHover && z > 0.85) {
+      this.clearHover();
+    }
 
     // Smooth camera framing:
     //   - At Die (z = 0) and Scale (z < 0), stays centered on the chip package (with the US Quarter off to the side)
-    //   - As you zoom into ANY spot on the die (z: 0.02 -> 0.68), smoothly glides right onto anchor[0]!
+    //   - As you dive into an inspected die block (z: 0.02 -> 0.68), glides monotonically onto anchor[0] without overshoot
     //   - At deeper scales (z >= 0.7), locks onto the nested floating origin (0,0,0) + smooth pan glide!
     const aspect = this.canvasW / Math.max(1, this.canvasH);
     const outT = Math.max(0.0, -this.zoom);
     const macroOut = this.smoothstep(0.0, -0.85, this.zoom);
     const diveFocus = this.smoothstep(0.02, 0.68, this.zoom);
 
-    const pkgOriginX = -this.effOffsets[0][0] * this.world0Scale;
-    const pkgOriginZ = -this.effOffsets[0][2] * this.world0Scale;
-    const lookX = pkgOriginX * (1.0 - diveFocus) + this.smoothCamShiftX;
+    const lookX = -this.effOffsets[0][0] * (1.0 - diveFocus) + this.smoothCamShiftX;
     const lookY = this.smoothCamShiftY;
-    const lookZ = pkgOriginZ * (1.0 - diveFocus) + this.smoothCamShiftZ;
+    const lookZ = -this.effOffsets[0][2] * (1.0 - diveFocus) + this.smoothCamShiftZ;
 
     const aspectBoost = Math.max(1.0, 1.62 / Math.max(0.85, aspect));
     const subatomicBackoff = this.smoothstep(7.6, 8.2, this.zoom);
@@ -1746,8 +1855,25 @@ export class SiliconEngine {
       }
     }
 
+    // Optical microscope DOF aperture: tack-sharp when looking top-down, creamy macro bokeh at oblique 3/4 angles
+    const angleFactor = 1.0 - this.smoothstep(0.95, 1.48, this.pitch);
+    const scaleDof = 1.0 - 0.55 * this.smoothstep(5.8, 7.2, this.zoom);
+    const dofStrength = (0.12 + 0.62 * angleFactor) * scaleDof;
+
     // PASS 0 + 1: Unified Multi-Scale 3D Render (ZERO 2D fading!)
-    this.renderUnifiedScene(activeStages, elapsedSec, camX, camY, camZ, semFactor, lookX, lookZ, fogDensity);
+    this.renderUnifiedScene(
+      activeStages,
+      elapsedSec,
+      camX,
+      camY,
+      camZ,
+      semFactor,
+      lookX,
+      lookZ,
+      dist,
+      dofStrength,
+      fogDensity
+    );
 
     const gl = this.gl;
 
@@ -1816,6 +1942,8 @@ export class SiliconEngine {
     gl.uniform2f(this.uComp.uResolution, this.canvasW, this.canvasH);
     gl.uniform1f(this.uComp.uMotion, this.smoothMotion);
     gl.uniform1f(this.uComp.uTime, elapsedSec);
+    const voidPlunge = Math.exp(-Math.pow((this.zoom - 7.52) / 0.28, 2));
+    gl.uniform1f(this.uComp.uVoidPlunge, voidPlunge);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   };
 
@@ -1829,6 +1957,7 @@ export class SiliconEngine {
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
     this.canvas.removeEventListener('pointercancel', this.onPointerCancel);
+    this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
 
     const gl = this.gl;
     this.destroyRenderTargets();

@@ -2,12 +2,13 @@
  * High-Speed Hardware-Instanced WebGL2 PBR Shaders for Apple Silicon Microscope.
  *
  * Unified Multi-Scale Single-Object Pipeline (ZERO 2D cross-fading!):
- *   Pass 0: 2048px Hardware-PCF Directional Shadow Map (all active nested scales together)
- *   Pass 1A: 4x MSAA HDR (RGBA16F) Opaque Instanced PBR Pass (shared 3D depth buffer across scales!)
- *   Pass 1B: 4x MSAA HDR Translucent Quantum Orbital Cloud Pass (depth-tested, additive Fresnel glow)
- *   Pass 2: Dual-Kawase HDR Bloom (Downsample 1/2 -> 1/4 -> 1/8, Upsample 1/4 -> 1/2)
- *   Pass 3: Optical Composite (velocity radial zoom-blur, subtle chromatic dispersion,
- *           creamy Dual-Kawase bloom, studio vignette, ACES Filmic tone map, SEM grain)
+ *   Pass 0:  2048px Hardware-PCF Directional Shadow Map (all active nested scales together)
+ *   Pass 1A: 4x MSAA HDR (RGBA16F) Opaque Instanced Cook-Torrance GGX PBR + Clearcoat Pass
+ *            (packs analytical optical Circle-of-Confusion into alpha for zero-overhead DOF!)
+ *   Pass 1B: 4x MSAA HDR Translucent Volumetric Quantum Orbital Pass (preserves opaque CoC alpha)
+ *   Pass 2:  Dual-Kawase HDR Bloom (Downsample 1/2 -> 1/4 -> 1/8, Upsample 1/4 -> 1/2)
+ *   Pass 3:  Optical Composite (depth-aware bokeh DOF, velocity radial zoom-blur, subtle chromatic
+ *            dispersion, creamy Dual-Kawase bloom, void-plunge atmosphere, ACES Filmic tone map, SEM grain)
  */
 
 const COMMON_INSTANCE_GLSL = `
@@ -47,8 +48,8 @@ void evalInstance(
   } else if (ch == 1) {
     float load = getPCoreLoad(int(param + 0.5));
     liveEnergy = load;
-    halfSize.y += load * 0.008;
-    center.y += load * 0.004;
+    halfSize.y += load * 0.006;
+    center.y += load * 0.003;
   } else if (ch == 2) {
     liveEnergy = uMacLoads.y * 0.95;
   } else if (ch == 3) {
@@ -113,8 +114,6 @@ void evalInstance(
     liveEnergy = (param > 0.5) ? gateActive : 0.0;
   } else if (ch == 15) {
     // Silicon Lattice / HfO2 atom: REAL thermal phonon vibration driven by live Mac die temp (uSocTemp)!
-    // 4.6188 = 1 / (0.125 * sqrt(3)) keeps exact physical vibration parity across World 5 (1:6) and World 6!
-    // Lock the 4 immediate tetrahedral neighbors of the chosen atom site (uAtomHole) so World 7 stays welded!
     float lockDamp = (uAtomHole.w > 0.01 && length(center - uAtomHole.xyz) < 0.60) ? 0.0 : 1.0;
     float ph = instC.z;
     float amp = (0.008 + uSocTemp * 0.024 + uMacLoads.x * 0.012) * min(1.0, length(halfSize) * 4.6188) * lockDamp;
@@ -126,7 +125,6 @@ void evalInstance(
   } else if (ch == 16 || ch == 17) {
     liveEnergy = param;
   } else if (ch == 18) {
-    // Drifting conduction electrons streaming through Silicon Crystal channels
     float speed = 0.35 + uMacLoads.x * 1.15;
     float prog = fract(uTime * speed + instC.z);
     center.x = mix(-2.25, 2.25, prog);
@@ -134,7 +132,6 @@ void evalInstance(
     center.z += cos(prog * 12.56 + instC.z * 6.28) * 0.10;
     liveEnergy = 0.75 + uMacLoads.x * 0.5;
   } else if (ch == 19) {
-    // Orbiting Quantum Probability Density Packet around 111pm Silicon Atom / 28Si Nucleus
     float rad = instA.x;
     float inc = instA.y;
     float theta0 = instA.z;
@@ -146,7 +143,6 @@ void evalInstance(
     center = vec3(pOrb.x * cp - pOrb.z * sp, pOrb.y, pOrb.x * sp + pOrb.z * cp);
     liveEnergy = 0.72 + 0.28 * sin(uTime * 5.0 + instC.z * 9.0);
   } else if (ch == 21) {
-    // 28Si Nucleon / Valence Quark zero-point strong-force jitter
     float ph = instC.z;
     float amp = 0.022 + uMacLoads.x * 0.015;
     center.x += sin(uTime * 11.5 + ph * 3.7) * amp;
@@ -154,8 +150,6 @@ void evalInstance(
     center.z += sin(uTime * 9.7 + ph * 2.9) * amp;
     liveEnergy = param;
   } else if (ch == 22) {
-    // Stochastic Quantum |ψ|² Measurement Mist / Virtual Pion & Quark-Antiquark Sea
-    // Shimmers in-place (NO circular Kepler planetary rings!)
     float phase = instC.z * 6.28318 + instC.w * 4.7;
     float wave = 0.5 + 0.5 * sin(uTime * (2.6 + instC.z * 3.2) + phase);
     float pulse = pow(wave, 2.2);
@@ -165,7 +159,6 @@ void evalInstance(
     center.z += sin(uTime * 4.7 + phase * 0.7) * 0.014;
     liveEnergy = param * (0.35 + 0.95 * pulse);
   } else if (ch == 23) {
-    // Undulating QCD Gluon Color-Flux Tube between Valence Quarks
     liveEnergy = param * (0.85 + 0.25 * sin(uTime * 9.5 + length(center) * 5.0));
   }
 }
@@ -175,7 +168,6 @@ void buildLocalPosAndNorm(
   out vec3 worldPos, out vec3 worldNorm
 ) {
   if (ch == 16 || ch == 23) {
-    // Arbitrary 3D oriented covalent bond / undulating QCD gluon flux tube
     vec3 dir = halfSize;
     float halfLen = length(dir);
     vec3 up = dir / max(halfLen, 0.0001);
@@ -184,14 +176,12 @@ void buildLocalPosAndNorm(
     vec3 fwd = cross(right, up);
     float tubeR = bevelR;
     if (ch == 23) {
-      // Energetic gluon flux pinch/swell harmonic along tube axis
       tubeR *= 0.82 + 0.34 * sin(aAnchor.y * 6.28318 - uTime * 11.0 + halfLen * 8.0);
     }
     vec3 lp = vec3(aAnchor.x * tubeR, aAnchor.y * halfLen, aAnchor.z * tubeR);
     worldPos = center + right * lp.x + up * lp.y + fwd * lp.z;
     worldNorm = normalize(right * aNorm.x + up * aNorm.y + fwd * aNorm.z);
   } else if (ch == 17) {
-    // 3D oriented teardrop sp3 quantum hybridized orbital lobe
     vec3 dir = halfSize;
     float lobeLen = length(dir);
     vec3 up = dir / max(lobeLen, 0.0001);
@@ -212,17 +202,14 @@ void buildLocalPosAndNorm(
     worldNorm = aNorm;
   }
 }
+
 void applyDynamicCutouts(
   int ch, vec3 center, inout vec3 halfSize, inout float bevelR
 ) {
-  // 1) Dynamic XZ instance culling inside uHoleBox (cx, cz, hx, hz)
-  //    Mode 1 = tiled stages (World 1, 3, 4) above uHoleMinY
-  //    Mode 4 = World 5 3nm crystal ribbon patch ONLY (|center.y| < 0.26, leaves gold gate/HfO2 untouched!)
   if (uHoleBox.z > 0.001) {
     bool isTiledCull = (uHoleMode > 0.5 && uHoleMode < 1.5 && center.y > uHoleMinY);
     bool isRibbonCull = (uHoleMode > 3.5 && abs(center.y) < 0.26 && ch != 18);
     if (isTiledCull || isRibbonCull) {
-      // For bonds (ch == 16), use a slightly tighter inner box so seam-crossing bonds bridge cleanly!
       float margin = (ch == 16) ? -0.025 : 0.003;
       vec2 d = abs(center.xz - uHoleBox.xy) - (uHoleBox.zw + margin);
       if (max(d.x, d.y) < 0.0) {
@@ -231,11 +218,8 @@ void applyDynamicCutouts(
       }
     }
   }
-  // 2) Dynamic 3D spherical atom/bond/proton cutout around uAtomHole (cx, cy, cz, radius) in World 6 & World 8
-  //    Skip giant enveloping translucent halos (halfSize.x >= 0.60) so pion aura expands & fades organically!
   if (uAtomHole.w > 0.001 && (ch == 16 || halfSize.x < 0.60)) {
     float dAtom = length(center - uAtomHole.xyz);
-    // Collapse the exact chosen Silicon atom / Proton sphere (< 0.06) and its 4 immediate covalent bonds (< uAtomHole.w)
     float cutR = (ch == 16) ? uAtomHole.w : 0.06;
     if (dAtom < cutR) {
       halfSize = vec3(0.0);
@@ -261,7 +245,7 @@ uniform vec3 uStageOffset;
 uniform float uAtomRotY;
 uniform vec4 uHoleBox;
 uniform float uHoleMinY;
-uniform float uHoleMode; // 0 = off, 1 = VS instance + FS slab discard, 2 = FS-only slab discard, 4 = VS ribbon
+uniform float uHoleMode;
 uniform vec4 uAtomHole;
 uniform vec3 uCamPos;
 uniform float uLensClearance;
@@ -284,7 +268,6 @@ void main() {
   evalInstance(aInstA, aInstB, aInstC, center, halfSize, bevelR, matId, liveEnergy);
   applyDynamicCutouts(ch, center, halfSize, bevelR);
 
-  // Smooth physical 3D relief extrusion from surface (y = 0) when diving into micro-geometry
   if (uYExtrude < 0.999) {
     float ext = max(uYExtrude, 0.001);
     center.y *= ext;
@@ -292,7 +275,6 @@ void main() {
     bevelR = min(bevelR, halfSize.y * 0.45);
   }
 
-  // Match SCENE_VS near-lens clearance so cleared foreground atoms/nucleons never cast invisible shadows
   if (uLensClearance > 0.01 && length(center - uStageOffset) > 0.45) {
     vec3 sc = (center - uStageOffset) * uWorldScale;
     vec3 toInst = sc - uCamPos;
@@ -370,7 +352,7 @@ out vec3 vWorldPos;
 out vec3 vScaledPos;
 out vec3 vNormal;
 out vec4 vShadowCoord;
-out vec3 vEdgeFactor;
+out vec3 vLocalAnchor;
 flat out float vMatId;
 flat out float vLiveEnergy;
 flat out float vChanType;
@@ -385,7 +367,6 @@ void main() {
   evalInstance(aInstA, aInstB, aInstC, center, halfSize, bevelR, matId, liveEnergy);
   applyDynamicCutouts(ch, center, halfSize, bevelR);
 
-  // Smooth physical 3D relief extrusion from surface (y = 0) when diving into micro-geometry
   if (uYExtrude < 0.999) {
     float ext = max(uYExtrude, 0.001);
     center.y *= ext;
@@ -393,7 +374,6 @@ void main() {
     bevelR = min(bevelR, halfSize.y * 0.45);
   }
 
-  // Subtle physical optical objective clearance when flying inside the 3D crystal lattice or atomic nucleus
   if (uLensClearance > 0.01 && length(center - uStageOffset) > 0.45) {
     vec3 sc = (center - uStageOffset) * uWorldScale;
     vec3 toInst = sc - uCamPos;
@@ -423,7 +403,8 @@ void main() {
   vScaledPos = scaledPos;
   vNormal = worldNorm;
   vShadowCoord = uLightVP * vec4(scaledPos, 1.0);
-  vEdgeFactor = abs(aAnchor);
+  // Signed local anchor interpolates [-1..+1] across every flat face -> free per-block UVs!
+  vLocalAnchor = aAnchor;
   vMatId = matId;
   vLiveEnergy = liveEnergy;
   vChanType = aInstC.x;
@@ -441,7 +422,7 @@ in vec3 vWorldPos;
 in vec3 vScaledPos;
 in vec3 vNormal;
 in vec4 vShadowCoord;
-in vec3 vEdgeFactor;
+in vec3 vLocalAnchor;
 flat in float vMatId;
 flat in float vLiveEnergy;
 flat in float vChanType;
@@ -452,6 +433,8 @@ uniform sampler2D uCoinTex;
 uniform sampler2D uCoinNormTex;
 uniform vec4 uCoinSpec; // (cx, cz, radius, hy)
 uniform vec2 uFocusXZ;
+uniform float uFocusDist;
+uniform float uDofStrength;
 uniform float uFogDensity;
 uniform vec3 uCamPos;
 uniform float uTime;
@@ -464,11 +447,14 @@ uniform float uRegionKind; // 0 = Logic/CPU, 1 = SRAM/SLC, 2 = GPU
 uniform vec4 uMacLoads;
 uniform float uPulsePhase;
 uniform vec4 uInspectBox; // (cx, cz, hx, hz); hx <= 0 means inactive
+uniform vec4 uHoverBox;   // (cx, cz, hx, hz); subtle hover preview on World 0
 uniform vec4 uHoleBox;    // Dynamic recessed aperture (cx, cz, hx, hz)
-uniform float uHoleMinY;  // Only discard fragments above this Y (keeps deep sub-floor intact)
-uniform float uHoleMode;  // 0 = off, 1 = tiled slab discard, 2 = continuous die/canyon discard, 3 = die with bezel
+uniform float uHoleMinY;
+uniform float uHoleMode;
 
 out vec4 fragColor;
+
+const float PI = 3.14159265359;
 
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -499,22 +485,68 @@ float fbmGrain(vec2 p) {
   return v;
 }
 
-vec3 sampleStudioEnv(vec3 dir) {
+// Cook-Torrance GGX Microfacet BRDF helpers
+float D_GGX(float ndoth, float rough) {
+  float a = max(rough * rough, 0.0025);
+  float a2 = a * a;
+  float denom = ndoth * ndoth * (a2 - 1.0) + 1.0;
+  return a2 / (PI * denom * denom + 0.0001);
+}
+
+float G_SchlickGGX(float ndotv, float ndotl, float rough) {
+  float r = rough + 1.0;
+  float k = (r * r) * 0.125;
+  float gv = ndotv / (ndotv * (1.0 - k) + k + 0.0001);
+  float gl = ndotl / (ndotl * (1.0 - k) + k + 0.0001);
+  return gv * gl;
+}
+
+vec3 F_Schlick(float cosTheta, vec3 F0) {
+  return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Roughness-aware Apple Dark-Studio / Dark-Field SEM Environment IBL
+vec3 sampleStudioEnv(vec3 dir, float rough, float semMix) {
   float y = clamp(dir.y, -1.0, 1.0);
-  vec3 env = mix(vec3(0.004, 0.006, 0.011), vec3(0.022, 0.032, 0.052), smoothstep(-0.15, 0.85, y));
-  env += vec3(1.15, 1.12, 1.08) * smoothstep(0.88, 0.98, dot(dir, normalize(vec3(0.32, 0.90, 0.28))));
-  env += vec3(0.38, 0.72, 1.25) * smoothstep(0.84, 0.97, dot(dir, normalize(vec3(-0.78, 0.45, -0.42))));
-  env += vec3(0.95, 0.64, 0.30) * smoothstep(0.88, 0.98, dot(dir, normalize(vec3(0.76, 0.36, -0.54)))) * 0.55;
-  float strip = smoothstep(0.972, 0.996, 1.0 - abs(dir.x * 0.55 - dir.z * 0.83)) * smoothstep(0.28, 0.78, dir.y);
-  env += vec3(0.65, 0.74, 0.86) * strip * 0.48;
+  float sharp = mix(1.0, 0.18, clamp(rough * 1.15, 0.0, 1.0));
+  float widen = mix(0.0, 0.24, rough);
+
+  // Obsidian studio cyclorama gradient
+  vec3 horizonCol = mix(vec3(0.006, 0.009, 0.016), vec3(0.012, 0.017, 0.026), semMix);
+  vec3 zenithCol = mix(vec3(0.022, 0.032, 0.052), vec3(0.032, 0.044, 0.068), semMix);
+  vec3 env = mix(vec3(0.003, 0.004, 0.008), mix(horizonCol, zenithCol, smoothstep(0.0, 0.85, y)), smoothstep(-0.18, 0.45, y));
+
+  // Primary overhead studio softbox (crisp specular band on polished silicon, smooth fill on matte)
+  float dKey = dot(dir, normalize(vec3(0.28, 0.92, 0.26)));
+  float keyBox = smoothstep(0.84 - widen, 0.985, dKey) * (0.45 + 0.95 * sharp);
+  env += vec3(1.22, 1.18, 1.12) * keyBox;
+
+  // Dual elongated Apple-keynote architectural lightbars overhead
+  float barCoord1 = abs(dir.x * 0.62 - dir.z * 0.78 - 0.14);
+  float bar1 = smoothstep(0.095 + widen * 0.65, 0.012, barCoord1) * smoothstep(0.30, 0.78, y);
+  float barCoord2 = abs(dir.x * 0.62 - dir.z * 0.78 + 0.46);
+  float bar2 = smoothstep(0.065 + widen * 0.55, 0.010, barCoord2) * smoothstep(0.36, 0.82, y);
+  env += vec3(0.82, 0.90, 1.02) * bar1 * (0.28 + 0.58 * sharp);
+  env += vec3(0.46, 0.68, 0.98) * bar2 * (0.18 + 0.36 * sharp);
+
+  // Cool platinum-cyan architectural rim reflector (amplified subtly in dark-field SEM depths)
+  float dRim = dot(dir, normalize(vec3(-0.78, 0.44, -0.44)));
+  float rimBox = smoothstep(0.76 - widen, 0.965, dRim) * (0.45 + 0.65 * sharp);
+  env += vec3(0.34, 0.68, 1.24) * rimBox * mix(0.82, 1.18, semMix);
+
+  // Warm tungsten-copper counter-fill softbox
+  float dWarm = dot(dir, normalize(vec3(0.76, 0.34, -0.55)));
+  float warmBox = smoothstep(0.82 - widen, 0.975, dWarm) * (0.35 + 0.55 * sharp);
+  env += vec3(1.02, 0.64, 0.30) * warmBox * mix(0.54, 0.36, semMix);
+
   return env;
 }
 
 vec3 thinFilmSpectral(float ndotv, vec2 pos) {
-  float thickness = 2.15 + sin(pos.x * 0.65 - pos.y * 0.45) * 0.48 + hash12(floor(pos * 1.4)) * 0.35;
-  float phase = thickness * (0.65 + 0.55 * ndotv);
+  float thickness = 2.15 + sin(pos.x * 0.58 - pos.y * 0.42) * 0.44 + hash12(floor(pos * 1.4)) * 0.28;
+  float phase = thickness * (0.64 + 0.56 * ndotv);
   vec3 spectral = 0.5 + 0.5 * cos(6.28318 * (phase + vec3(0.00, 0.33, 0.67)));
-  return mix(vec3(0.025, 0.055, 0.12), spectral * vec3(0.38, 0.54, 0.78), 0.62);
+  return mix(vec3(0.022, 0.052, 0.115), spectral * vec3(0.36, 0.55, 0.82), 0.64);
 }
 
 float sampleShadow(vec4 sc, float ndotl) {
@@ -538,49 +570,59 @@ float sampleShadow(vec4 sc, float ndotl) {
 void main() {
   vec3 p = vWorldPos;
 
-  // Dynamic recessed aperture discard for nested layers (active ONLY after diving into that feature!)
+  // Dynamic recessed aperture discard for nested layers
   if (uHoleBox.z > 0.001 && uHoleMode > 0.5 && uHoleMode < 3.5 && p.y > uHoleMinY) {
     vec2 dHole = abs(p.xz - uHoleBox.xy) - uHoleBox.zw;
     if (max(dHole.x, dHole.y) < 0.0) discard;
   }
 
-  vec3 n = normalize(vNormal);
+  // Machined chamfer edge detector: interpolated normals shorten specifically along 45-degree bevel strips!
+  float rawNormLen = length(vNormal);
+  vec3 n = vNormal / max(rawNormLen, 0.0001);
+  float bevelMask = clamp((0.992 - rawNormLen) * 3.8, 0.0, 1.0);
+
   vec3 toCam = uCamPos - vScaledPos;
   float camDist = length(toCam);
   vec3 v = toCam / max(camDist, 0.0001);
   float ndotv = max(dot(n, v), 0.0);
 
-  // Translucent Volumetric Quantum Probability Cloud Pass (sp3 lobes & 1s2 core halo)
+  // Translucent Volumetric Quantum Probability Cloud Pass (sp3 lobes, 1s2 core, pion field, QCD bag)
   if (uTranslucent > 0.5) {
     float qWave = 0.5 + 0.5 * sin(length(p) * 8.5 - uTime * 3.8 + vExtraA * 6.28);
+    float harmonic = 0.5 + 0.5 * cos(p.x * 6.5 - p.y * 5.2 + p.z * 6.0 + uTime * 2.4);
     float rim = pow(1.0 - ndotv, 1.85);
-    vec3 cloudHue = mix(vec3(0.06, 0.44, 0.98), vec3(0.36, 0.92, 1.10), rim * 0.75 + qWave * 0.25);
+    float outerCrest = pow(1.0 - ndotv, 4.2);
+
+    // Rich sapphire -> electric ice-cyan -> delicate quantum violet crest
+    vec3 cloudHue = mix(vec3(0.05, 0.36, 0.96), vec3(0.32, 0.92, 1.12), rim * 0.74 + qWave * 0.26);
+    cloudHue += vec3(0.28, 0.18, 0.65) * outerCrest * (0.45 + 0.55 * harmonic);
     if (uThermal > 0.5) {
       cloudHue = mix(vec3(0.85, 0.22, 0.42), vec3(1.0, 0.78, 0.24), rim * 0.7 + qWave * 0.3);
     }
     float energy = 0.55 + vLiveEnergy * 0.45;
-    vec3 glow = cloudHue * (0.10 + rim * 0.95 + qWave * 0.14) * energy;
+    vec3 glow = cloudHue * (0.09 + rim * 0.98 + qWave * 0.14 + outerCrest * 0.28) * energy;
     float fogDist = length(vScaledPos);
-    // Keep orbitals vivid at Atom scale (r <= 2.2) while softly receding into deep space at Nucleus scale (r >= 6.5)
-    float fog = exp(-0.016 * fogDist * fogDist);
-    // Smooth near-camera volumetric clearance prevents hard near-plane polygon slices when flying through shells
+    float fog = exp(-0.015 * fogDist * fogDist);
     float nearCam = smoothstep(0.9, 3.2, camDist);
     float fade = fog * nearCam;
-    float alpha = clamp((0.12 + rim * 0.58 + qWave * 0.06) * fade, 0.0, 0.85);
+    float alpha = clamp((0.11 + rim * 0.58 + qWave * 0.06) * fade, 0.0, 0.85);
     fragColor = vec4(max(glow * fade, 0.0), alpha);
     return;
   }
 
   float matId = vMatId;
   float liveEnergy = vLiveEnergy;
+  int ch = int(vChanType + 0.5);
+  vec2 locUV = vLocalAnchor.xz; // [-1..+1] exact local coordinates across any flat top box face!
+  float locBorder = max(abs(locUV.x), abs(locUV.y));
 
   // Per-pixel Unified RAM inner edge bus glow (Channel 8)
-  if (vChanType > 7.5 && vChanType < 8.5) {
+  if (ch == 8) {
     liveEnergy = uMacLoads.w * smoothstep(3.75, 3.44, abs(p.x));
   }
 
   // Per-pixel GAA Nanosheet sweeping cyan inversion-channel wave (Channel 14, tiled per 5.12 cell!)
-  if (vChanType > 13.5 && vChanType < 14.5 && liveEnergy > 0.01) {
+  if (ch == 14 && liveEnergy > 0.01) {
     float localX = mod(p.x + 2.56, 5.12) - 2.56;
     float waveX = mix(-1.85, 1.85, fract(uPulsePhase * 1.4 + vExtraA));
     float hitWave = smoothstep(0.38, 0.08, abs(localX - waveX));
@@ -590,10 +632,9 @@ void main() {
     }
   }
 
-  // Delocalized Bloch Electron Wavepacket Interference propagating through Silicon covalent bonds!
-  // (Replaces cartoon flying marble spheres with real wavepacket conduction along the crystal lattice!)
+  // Delocalized Bloch Electron Wavepacket Interference propagating through Silicon covalent bonds
   float blochGlow = 0.0;
-  if (vChanType > 15.5 && vChanType < 16.5 && vLiveEnergy > 0.85) {
+  if (ch == 16 && vLiveEnergy > 0.85) {
     float kSpeed = 4.2 + uMacLoads.x * 6.5;
     float wave1 = sin(p.x * 2.6 - uTime * kSpeed + p.z * 0.9);
     float wave2 = cos(p.x * 5.2 - uTime * kSpeed * 1.35 - p.y * 1.6);
@@ -601,9 +642,10 @@ void main() {
     blochGlow = env * (0.28 + uMacLoads.x * 0.95);
   }
 
-  // Analytical micro-relief normal perturbation (die lithography lines matching World 1's exact 0.095 grid!)
-  if (uZoom < 0.9 && ((matId > 0.5 && matId < 1.5) || (matId > 3.5 && matId < 4.5)) && n.y > 0.85) {
-    // 0.095 = 1.52 / 16.0 (exact scaled pitch of World 1's SRAM tile grid!)
+  // Analytical micro-relief normal perturbation (die lithography lines matching World 1's 0.095 grid)
+  float dieLithoPattern = 0.0;
+  float dieTraceGlow = 0.0;
+  if (uZoom < 0.95 && ((matId > 0.5 && matId < 1.5) || (matId > 3.5 && matId < 4.5)) && n.y > 0.85) {
     vec2 tileCoord = p.xz / 0.095;
     vec2 tileId = floor(tileCoord + 0.5);
     vec2 tileF = fract(tileCoord + 0.5) - 0.5;
@@ -614,6 +656,58 @@ void main() {
     float railX = smoothstep(0.42, 0.49, abs(tileF.x)) * sign(tileF.x) * 0.14;
     float railZ = smoothstep(0.42, 0.49, abs(tileF.y)) * sign(tileF.y) * 0.14;
     n = normalize(n + vec3(mix(ribSlope, 0.0, horiz) + railX, 0.0, mix(0.0, ribSlope, horiz) + railZ));
+
+    // Architecture-specific procedural die-shot photolithography per functional block!
+    float dieMask = clamp(1.0 - uSemFactor * 1.15, 0.0, 1.0);
+    if (dieMask > 0.01 && ch >= 1 && ch <= 7) {
+      float guardRail = smoothstep(0.87, 0.94, locBorder);
+      if (ch == 1) {
+        // P-Core: Split L1 SRAM bank striations (left) + out-of-order ALU/Decode execution sub-tiles (right)
+        float isCacheHalf = smoothstep(-0.08, 0.04, -locUV.x);
+        float sramCols = smoothstep(0.42, 0.92, abs(sin(locUV.y * 42.0))) * smoothstep(0.15, 0.85, abs(sin(locUV.x * 16.0)));
+        float aluGrid = max(
+          smoothstep(0.76, 0.96, abs(sin(locUV.x * 22.0))),
+          smoothstep(0.76, 0.96, abs(sin(locUV.y * 18.0)))
+        );
+        float splitSeam = smoothstep(0.06, 0.01, abs(locUV.x + 0.04));
+        dieLithoPattern = (mix(aluGrid * 0.72, sramCols * 1.05, isCacheHalf) - splitSeam * 0.35) * dieMask;
+        // Restrained live telemetry: glow travels along core perimeter ring + active internal bus lanes
+        float coreBus = max(guardRail * 0.85, splitSeam * 0.65 + (1.0 - isCacheHalf) * aluGrid * 0.38);
+        dieTraceGlow = coreBus * dieMask;
+      } else if (ch == 2) {
+        // E-Core: Ultra-dense compact execution sub-cells
+        float eCells = smoothstep(0.55, 0.95, abs(sin(locUV.x * 28.0))) * 0.55 +
+                       smoothstep(0.65, 0.96, abs(sin(locUV.y * 24.0))) * 0.45;
+        dieLithoPattern = eCells * dieMask;
+        dieTraceGlow = (guardRail * 0.75 + eCells * 0.25) * dieMask;
+      } else if (ch == 4) {
+        // System-Level Cache (SLC): Iconic dense parallel 6T SRAM macro bank columns + central wordline
+        float bitCols = smoothstep(0.35, 0.92, abs(sin(locUV.x * 36.0)));
+        float subBanks = smoothstep(0.10, 0.02, abs(locUV.y));
+        float bankRows = smoothstep(0.65, 0.96, abs(sin(locUV.y * 28.0)));
+        dieLithoPattern = (bitCols * 0.88 + bankRows * 0.32 - subBanks * 0.40) * dieMask;
+        dieTraceGlow = (guardRail * 0.6 + subBanks * 0.7) * dieMask;
+      } else if (ch == 5) {
+        // GPU Core Array: Symmetric 4-quad TBDR shader execution tiles
+        float quadCross = max(smoothstep(0.07, 0.015, abs(locUV.x)), smoothstep(0.07, 0.015, abs(locUV.y)));
+        float simdLines = smoothstep(0.50, 0.94, abs(sin(locUV.x * 26.0))) * 0.5 +
+                          smoothstep(0.50, 0.94, abs(sin(locUV.y * 26.0))) * 0.5;
+        dieLithoPattern = (simdLines * 0.82 - quadCross * 0.35) * dieMask;
+        dieTraceGlow = (guardRail * 0.78 + quadCross * 0.45) * dieMask;
+      } else if (ch == 6) {
+        // 16-Core Neural Engine: Crisp geometric systolic-array matrix dots
+        vec2 mac = abs(fract(locUV * 4.5 + 0.5) - 0.5);
+        float macTile = 1.0 - smoothstep(0.30, 0.42, max(mac.x, mac.y));
+        dieLithoPattern = macTile * 0.85 * dieMask;
+        dieTraceGlow = (guardRail * 0.55 + macTile * 0.35) * dieMask;
+      } else if (ch == 7) {
+        // Display & ProRes Media Engine: Dual structured video codec pipes
+        float pipeSplit = smoothstep(0.07, 0.015, abs(locUV.y));
+        float codecGrid = smoothstep(0.55, 0.94, abs(sin(locUV.x * 30.0)));
+        dieLithoPattern = (codecGrid * 0.70 - pipeSplit * 0.3) * dieMask;
+        dieTraceGlow = (guardRail * 0.65 + pipeSplit * 0.45) * dieMask;
+      }
+    }
   } else if (matId > 4.5 && matId < 5.5) {
     float g0 = fbmGrain(p.xz * 12.0);
     float gx = fbmGrain((p.xz + vec2(0.03, 0.0)) * 12.0);
@@ -627,77 +721,138 @@ void main() {
   vec3 baseCol = vec3(0.018, 0.022, 0.030);
   float rough = 0.38;
   float metal = 0.45;
+  float clearcoat = 0.0;
   vec3 emissive = vec3(0.0);
+  float studioContactAO = 1.0;
 
   if (matId < 0.5) {
-    float trace = smoothstep(0.75, 0.95, abs(sin(p.z * 32.0))) * step(2.9, abs(p.x)) * step(abs(p.x), 3.6) * step(abs(p.z), 2.2);
-    baseCol = vec3(0.012, 0.017, 0.021) + vec3(0.035, 0.065, 0.050) * trace * (1.0 - uSemFactor);
-    rough = 0.46 - trace * 0.15;
-    metal = 0.25 + trace * 0.45;
-    // Ultra-subtle architectural 10 mm studio scale mat hairlines when zoomed out past Die
-    if (uZoom < -0.15 && p.y < -0.50 && n.y > 0.8) {
-      float macroVis = smoothstep(-0.15, -0.95, uZoom);
-      // 1 unit = 3.5 mm => 10 mm = 2.85714 units; 50 mm major lines = 14.2857 units
-      vec2 g10 = abs(fract(p.xz / 2.85714 + 0.5) - 0.5) * 2.85714;
-      float line10 = 1.0 - smoothstep(0.012, 0.048, min(g10.x, g10.y));
-      vec2 g50 = abs(fract(p.xz / 14.2857 + 0.5) - 0.5) * 14.2857;
-      float line50 = 1.0 - smoothstep(0.018, 0.065, min(g50.x, g50.y));
-      float matFade = exp(-0.00055 * dot(p.xz - uFocusXZ, p.xz - uFocusXZ));
-      float grid = (line10 * 0.35 + line50 * 0.75) * macroVis * matFade;
-      baseCol += vec3(0.028, 0.034, 0.044) * grid;
-      rough = mix(rough, 0.32, grid * 0.5);
+    // Organic Interposer Substrate + Infinite Anodized Obsidian Studio Plinth
+    float isInterposerTop = step(-0.42, p.y) * step(0.8, n.y);
+    // Fine copper micro-via fan-out escape traces from die perimeter -> LPDDR5 memory packages
+    float fanX = step(2.96, abs(p.x)) * step(abs(p.x), 3.68) * step(abs(p.z), 2.38);
+    float fanZ = step(2.42, abs(p.z)) * step(abs(p.z), 2.98) * step(abs(p.x), 3.15);
+    float traceX = smoothstep(0.70, 0.94, abs(sin(p.z * 38.0))) * fanX;
+    float traceZ = smoothstep(0.70, 0.94, abs(sin(p.x * 38.0))) * fanZ;
+    float trace = max(traceX, traceZ) * isInterposerTop * (1.0 - uSemFactor);
+
+    // Subtle organic BGA solder-mask micro-weave on interposer
+    float weave = (noise2D(p.xz * 65.0) - 0.5) * 0.008 * isInterposerTop * (1.0 - uSemFactor);
+    baseCol = vec3(0.011, 0.016, 0.021) + weave + vec3(0.046, 0.068, 0.052) * trace;
+    rough = 0.44 - trace * 0.16;
+    metal = 0.24 + trace * 0.48;
+
+    // Infinite Dark-Studio Plinth beneath package & US Quarter (p.y < -0.50)
+    if (p.y < -0.50 && n.y > 0.8 && uZoom < 0.65) {
+      float plinthMask = smoothstep(0.65, -0.05, uZoom);
+      // Soft analytical contact ambient occlusion beneath the package and US Quarter
+      vec2 dPkg = max(abs(p.xz) - vec2(5.48, 3.50), vec2(0.0));
+      float pkgDist = length(dPkg);
+      float pkgAO = smoothstep(0.0, 1.35, pkgDist);
+
+      float coinDist = max(0.0, length(p.xz - uCoinSpec.xy) - uCoinSpec.z);
+      float coinAO = smoothstep(0.0, 0.95, coinDist);
+
+      studioContactAO = mix(1.0, 0.24 + 0.76 * (pkgAO * coinAO), plinthMask);
+
+      // Subtle anodized slate micro-texture & sleek dark-mirror sheen around hero objects
+      float slateGrain = (noise2D(p.xz * 22.0) - 0.5) * 0.004;
+      float heroGlow = exp(-0.022 * dot(p.xz, p.xz)) * 0.009 + exp(-0.045 * dot(p.xz - uCoinSpec.xy, p.xz - uCoinSpec.xy)) * 0.007;
+      baseCol = vec3(0.009, 0.012, 0.017) + slateGrain + vec3(0.012, 0.018, 0.026) * heroGlow * plinthMask;
+      rough = mix(0.42, 0.25, plinthMask * (0.45 + 0.55 * exp(-0.018 * dot(p.xz, p.xz))));
+      metal = mix(0.24, 0.42, plinthMask);
+
+      // Ultra-subtle architectural 10 mm / 50 mm studio scale mat hairlines when zoomed out past Die
+      if (uZoom < -0.15) {
+        float macroVis = smoothstep(-0.15, -0.95, uZoom);
+        vec2 g10 = abs(fract(p.xz / 2.85714 + 0.5) - 0.5) * 2.85714;
+        float line10 = 1.0 - smoothstep(0.010, 0.042, min(g10.x, g10.y));
+        vec2 g50 = abs(fract(p.xz / 14.2857 + 0.5) - 0.5) * 14.2857;
+        float line50 = 1.0 - smoothstep(0.016, 0.058, min(g50.x, g50.y));
+        float matFade = exp(-0.00055 * dot(p.xz - uFocusXZ, p.xz - uFocusXZ));
+        float grid = (line10 * 0.30 + line50 * 0.72) * macroVis * matFade * pkgAO * coinAO;
+        baseCol += vec3(0.026, 0.034, 0.046) * grid;
+        rough = mix(rough, 0.22, grid * 0.5);
+      }
     }
   } else if (matId < 1.5) {
-    vec3 irid = thinFilmSpectral(ndotv, p.xz);
-    float fineGrid = smoothstep(0.6, 0.95, abs(sin(p.x * 58.0))) * 0.14 + smoothstep(0.6, 0.95, abs(sin(p.z * 58.0))) * 0.10;
-    float sramBank = step(0.5, fract(p.x * 3.1)) * smoothstep(0.3, 0.8, sin(p.z * 96.0)) * 0.12;
-    vec3 macroCol = irid * (0.72 + fineGrid + sramBank);
+    // Iridescent Mirror-Polished Thin-Film Silicon Die + Optical SiO2 Clearcoat
+    vec3 irid = thinFilmSpectral(ndotv, p.xz + vec2(dieLithoPattern * 0.16, -dieLithoPattern * 0.11));
+    float fineGrid = smoothstep(0.6, 0.95, abs(sin(p.x * 58.0))) * 0.12 + smoothstep(0.6, 0.95, abs(sin(p.z * 58.0))) * 0.08;
+    float sramBank = step(0.5, fract(p.x * 3.1)) * smoothstep(0.3, 0.8, sin(p.z * 96.0)) * 0.10;
+    float lithoBoost = 0.72 + fineGrid + sramBank + dieLithoPattern * 0.34;
+    vec3 macroCol = irid * lithoBoost;
     baseCol = mix(macroCol, vec3(0.11, 0.14, 0.19) * (0.85 + fineGrid), uSemFactor);
-    rough = mix(0.15, 0.24, uSemFactor) + fineGrid * 0.08;
-    metal = 0.92;
-    if (liveEnergy > 0.06) {
-      vec3 glowHue = mix(vec3(0.08, 0.58, 0.98), vec3(0.95, 0.52, 0.14), smoothstep(0.35, 0.85, liveEnergy));
-      emissive = glowHue * pow(liveEnergy, 1.35) * 0.88;
+    rough = clamp(mix(0.12, 0.23, uSemFactor) + fineGrid * 0.07 + abs(dieLithoPattern) * 0.05, 0.08, 0.42);
+    metal = 0.93;
+    clearcoat = (1.0 - uSemFactor) * 0.82;
+
+    if (liveEnergy > 0.05) {
+      vec3 glowHue = mix(vec3(0.09, 0.62, 1.02), vec3(0.98, 0.54, 0.16), smoothstep(0.38, 0.88, liveEnergy));
+      // Restrained editorial telemetry: concentrate glow into architectural bus traces & subtle core warmth
+      float traceFactor = (dieTraceGlow > 0.001) ? mix(0.24, 1.28, clamp(dieTraceGlow, 0.0, 1.0)) : 0.88;
+      emissive = glowHue * pow(liveEnergy, 1.38) * 0.76 * traceFactor;
     }
   } else if (matId < 2.5) {
-    float brush = (noise2D(vec2(p.x * 90.0, p.z * 14.0)) - 0.5) * 0.035;
-    baseCol = vec3(0.24, 0.28, 0.35) + brush;
-    rough = 0.20 + abs(brush);
+    // Brushed Titanium / Silicon Crystal / Tungsten-Silver Metal
+    float brush = (noise2D(vec2(p.x * 92.0, p.z * 14.0)) - 0.5) * 0.036;
+    baseCol = vec3(0.25, 0.29, 0.36) + brush;
+    rough = clamp(0.19 + abs(brush) * 1.1, 0.12, 0.34);
     metal = 0.95;
   } else if (matId < 3.5) {
-    float brush = (noise2D(vec2(p.x * 70.0, p.z * 18.0)) - 0.5) * 0.03;
-    baseCol = mix(vec3(0.46, 0.28, 0.11), vec3(0.36, 0.24, 0.12), uSemFactor * 0.35) + brush;
-    rough = 0.22;
-    metal = 0.94;
-    if (liveEnergy > 0.15) emissive = vec3(0.85, 0.48, 0.12) * liveEnergy * 0.24;
+    // Copper Damascene (BEOL) / Bronze-Slate TiN Work-Function Metal / 28Si Neutrons
+    float brush = (noise2D(vec2(p.x * 74.0, p.z * 18.0)) - 0.5) * 0.032;
+    // SerDes serpentine copper micro-traces on World 0 I/O PHY strip (ch == 3)
+    float serdes = (ch == 3 && uZoom < 0.95 && n.y > 0.8)
+      ? smoothstep(0.48, 0.92, abs(sin(locUV.x * 26.0 + sin(locUV.y * 8.0) * 0.8))) * 0.12
+      : 0.0;
+    baseCol = mix(vec3(0.50, 0.30, 0.12), vec3(0.38, 0.25, 0.12), uSemFactor * 0.32) + brush + serdes;
+    rough = 0.20;
+    metal = 0.95;
+    if (liveEnergy > 0.14) {
+      float serdesBoost = (ch == 3) ? (0.45 + serdes * 6.0) : 1.0;
+      emissive = vec3(0.92, 0.50, 0.14) * liveEnergy * 0.24 * serdesBoost;
+    }
   } else if (matId < 4.5) {
-    float stripe = smoothstep(0.2, 0.85, sin(p.z * 110.0)) * 0.03;
-    // Subtle region-aware tint for SRAM/SLC vs GPU vs Logic routing/contacts
-    vec3 regionTint = uRegionKind > 1.5 ? vec3(0.012, 0.018, 0.032) : (uRegionKind > 0.5 ? vec3(0.008, 0.022, 0.024) : vec3(0.0));
-    baseCol = vec3(0.045, 0.058, 0.082) + regionTint + stripe * (1.0 - uSemFactor);
-    rough = 0.28;
-    metal = 0.88;
+    // Dark Gunmetal Tungsten (W) / SLC SRAM Spine / Neural Engine / Covalent Bonds
+    float stripe = smoothstep(0.2, 0.85, sin(p.z * 110.0)) * 0.028;
+    vec3 regionTint = uRegionKind > 1.5
+      ? vec3(0.012, 0.018, 0.032)
+      : (uRegionKind > 0.5 ? vec3(0.008, 0.022, 0.024) : vec3(0.0));
+    baseCol = vec3(0.048, 0.062, 0.088) + regionTint + (stripe + dieLithoPattern * 0.055) * (1.0 - uSemFactor);
+    rough = clamp(0.26 - dieLithoPattern * 0.06, 0.16, 0.36);
+    metal = 0.89;
+    clearcoat = (dieLithoPattern > 0.01) ? (1.0 - uSemFactor) * 0.45 : 0.0;
     if (blochGlow > 0.02) {
-      emissive = vec3(0.09, 0.58, 1.02) * blochGlow * 1.15;
-    } else if (liveEnergy > 0.1 && vChanType < 15.5) {
-      emissive = vec3(0.18, 0.48, 0.92) * liveEnergy * 0.35;
+      emissive = vec3(0.10, 0.62, 1.08) * blochGlow * 1.22;
+    } else if (liveEnergy > 0.08 && ch < 15) {
+      float tBoost = (dieTraceGlow > 0.001) ? mix(0.25, 1.25, clamp(dieTraceGlow, 0.0, 1.0)) : 1.0;
+      emissive = vec3(0.18, 0.52, 0.96) * liveEnergy * 0.36 * tBoost;
     }
   } else if (matId < 5.5) {
+    // Crystalline Granular SEM Silicon Wafer Substrate
     float g = fbmGrain(p.xz * 12.0);
     float sparkle = pow(noise2D(p.xz * 56.0), 6.0) * 0.24;
     baseCol = vec3(0.085, 0.105, 0.135) * (0.55 + g * 0.85) + vec3(0.25, 0.31, 0.40) * sparkle;
-    rough = 0.56;
+    rough = 0.54;
     metal = 0.38;
   } else if (matId < 6.5) {
-    baseCol = vec3(0.14, 0.52, 0.72);
-    rough = 0.16;
+    // Emissive Electric-Cyan Signal / Inversion Wave / QCD Gluon Flux
+    baseCol = vec3(0.14, 0.54, 0.76);
+    rough = 0.15;
     metal = 0.35;
-    emissive = vec3(0.08, 0.62, 0.98) * (0.68 + liveEnergy * 0.58 + 0.12 * sin(uTime * 8.0));
+    emissive = vec3(0.09, 0.66, 1.04) * (0.72 + liveEnergy * 0.62 + 0.12 * sin(uTime * 8.0));
   } else if (matId < 7.5) {
-    baseCol = vec3(0.028, 0.036, 0.052);
-    rough = 0.28;
-    metal = 0.78;
-    if (liveEnergy > 0.05) emissive = vec3(0.14, 0.46, 0.95) * liveEnergy * 0.75;
+    // Matte Satin-Charcoal Unified Memory (LPDDR5) Package with Precision Laser Border & Fiducial
+    float epoxyGrain = (noise2D(p.xz * 82.0) - 0.5) * 0.010;
+    float laserRim = (n.y > 0.85) ? smoothstep(0.86, 0.895, locBorder) * (1.0 - smoothstep(0.915, 0.945, locBorder)) : 0.0;
+    float pin1Dot = (n.y > 0.85) ? (1.0 - smoothstep(0.05, 0.09, length(locUV - vec2(-0.76, -0.78)))) : 0.0;
+    float microRows = (n.y > 0.85) ? smoothstep(0.7, 0.96, abs(sin(locUV.y * 24.0))) * 0.008 : 0.0;
+    baseCol = vec3(0.026, 0.032, 0.044) + epoxyGrain + microRows + vec3(0.045, 0.056, 0.072) * (laserRim * 0.55 + pin1Dot * 0.95);
+    rough = clamp(0.32 - laserRim * 0.10 + abs(epoxyGrain) * 2.0, 0.18, 0.42);
+    metal = 0.68 + laserRim * 0.22;
+    if (liveEnergy > 0.05) {
+      emissive = vec3(0.12, 0.48, 0.98) * liveEnergy * (0.65 + laserRim * 0.45);
+    }
   } else if (matId < 8.5) {
     float qWave = 0.5 + 0.5 * sin(length(p) * 8.5 - uTime * 3.8 + vExtraA * 6.28);
     float rim = pow(1.0 - ndotv, 1.65);
@@ -707,14 +862,16 @@ void main() {
     vec3 cloudHue = mix(vec3(0.06, 0.45, 0.96), vec3(0.32, 0.88, 1.05), rim * 0.75 + qWave * 0.25);
     emissive = cloudHue * (0.16 + rim * 1.05 + qWave * 0.16) * (0.65 + liveEnergy * 0.45);
   } else if (matId < 9.5) {
+    // Sapphire-Blue High-k HfO2 / 28Si Protons / Bridging Oxygen
     float quark = 0.5 + 0.5 * sin(p.x * 14.0 + uTime * 4.5) * cos(p.y * 14.0 - uTime * 3.7) * sin(p.z * 14.0 + uTime * 4.1);
     float rim = pow(1.0 - ndotv, 2.2);
-    baseCol = vec3(0.06, 0.24, 0.52) + vec3(0.08, 0.20, 0.32) * quark;
-    rough = 0.18;
+    baseCol = vec3(0.06, 0.24, 0.54) + vec3(0.08, 0.22, 0.34) * quark;
+    rough = 0.16;
     metal = 0.78;
-    emissive = vec3(0.08, 0.44, 0.98) * (0.18 + rim * 0.55 + quark * 0.28) * max(0.25, liveEnergy);
+    clearcoat = 0.35;
+    emissive = vec3(0.08, 0.46, 1.02) * (0.18 + rim * 0.58 + quark * 0.28) * max(0.25, liveEnergy);
   } else if (matId < 10.5) {
-    // Mat 10: Photorealistic US Quarter Dollar (24.26 mm cupronickel clad over copper core + 119 milled reeds)
+    // Mat 10: Photorealistic US Quarter Dollar (24.26 mm cupronickel clad + 119 milled reeds + copper core)
     vec2 coinD = (p.xz - uCoinSpec.xy) / max(uCoinSpec.z, 0.001);
     float coinAng = atan(coinD.y, coinD.x);
     if (n.y > 0.55) {
@@ -722,27 +879,23 @@ void main() {
       vec4 cAlbedoRough = texture(uCoinTex, coinUv);
       vec4 cRelief = texture(uCoinNormTex, coinUv);
 
-      // Multi-scale tangent-space normal perturbation from photographic bas-relief
       vec2 tn = cRelief.rg * 2.0 - 1.0;
-      float bumpStrength = 1.65;
+      float bumpStrength = 1.72;
       n = normalize(n + vec3(tn.x * bumpStrength, 0.0, tn.y * bumpStrength));
       ndotv = max(dot(n, v), 0.0);
 
-      // Convert sRGB photographic albedo to linear space with warm authentic cupronickel tint
       vec3 linearPhoto = pow(max(cAlbedoRough.rgb, vec3(0.001)), vec3(2.15));
       float texRough = cAlbedoRough.a;
       float cavityAO = cRelief.b;
 
-      // Subtle radial "cartwheel" mint luster that rotates realistically as you orbit in 3D
       vec2 viewXZ = normalize(v.xz + vec2(0.0001));
       vec2 radDir = normalize(coinD + vec2(0.0001));
       float cartwheel = pow(abs(dot(radDir, viewXZ)), 3.4) * (1.0 - texRough * 1.15);
 
-      baseCol = linearPhoto * vec3(1.06, 1.03, 0.97) * (0.86 + cartwheel * 0.24) * mix(0.68, 1.04, cavityAO);
-      rough = clamp(texRough * 0.92, 0.14, 0.46);
-      metal = mix(0.93, 0.78, texRough);
+      baseCol = linearPhoto * vec3(1.06, 1.03, 0.97) * (0.86 + cartwheel * 0.26) * mix(0.66, 1.04, cavityAO);
+      rough = clamp(texRough * 0.88, 0.13, 0.44);
+      metal = mix(0.94, 0.78, texRough);
     } else {
-      // Milled edge: 119 sharpened vertical reeds + authentic copper core sandwich between cupronickel clad
       vec3 tang = normalize(vec3(-coinD.y, 0.0, coinD.x) + vec3(0.0001));
       float reedRaw = sin(coinAng * 119.0);
       float reedTooth = smoothstep(-0.75, 0.75, reedRaw);
@@ -756,8 +909,8 @@ void main() {
       vec3 cladCol = vec3(0.56, 0.545, 0.515) * (0.92 + wearNoise);
       vec3 copperCol = vec3(0.56, 0.21, 0.095) * (0.88 + wearNoise);
       baseCol = mix(cladCol, copperCol, copperCore) * (0.52 + 0.48 * reedTooth);
-      rough = mix(0.20, 0.30, copperCore);
-      metal = 0.93;
+      rough = mix(0.19, 0.29, copperCore);
+      metal = 0.94;
     }
   } else if (matId < 11.5) {
     // Mat 11: QCD Red Up Quark (u)
@@ -765,28 +918,32 @@ void main() {
     baseCol = vec3(0.75, 0.14, 0.10);
     rough = 0.14;
     metal = 0.30;
-    emissive = vec3(1.15, 0.24, 0.12) * (0.55 + rim * 0.85) * max(0.4, liveEnergy);
+    emissive = vec3(1.18, 0.24, 0.12) * (0.55 + rim * 0.88) * max(0.4, liveEnergy);
   } else if (matId < 12.5) {
     // Mat 12: QCD Green Up Quark (u)
     float rim = pow(1.0 - ndotv, 1.8);
     baseCol = vec3(0.10, 0.68, 0.34);
     rough = 0.14;
     metal = 0.30;
-    emissive = vec3(0.14, 1.05, 0.52) * (0.55 + rim * 0.85) * max(0.4, liveEnergy);
+    emissive = vec3(0.14, 1.08, 0.52) * (0.55 + rim * 0.88) * max(0.4, liveEnergy);
   } else if (matId < 13.5) {
     // Mat 13: QCD Blue Down Quark (d)
     float rim = pow(1.0 - ndotv, 1.8);
     baseCol = vec3(0.18, 0.28, 0.88);
     rough = 0.14;
     metal = 0.30;
-    emissive = vec3(0.28, 0.44, 1.25) * (0.55 + rim * 0.85) * max(0.4, liveEnergy);
+    emissive = vec3(0.28, 0.46, 1.28) * (0.55 + rim * 0.88) * max(0.4, liveEnergy);
   } else {
     // Mat 14: Silicon Nitride (SiN) Dielectric Inner Spacer / Interfacial SiO2 Glassy Liner
     float sheen = pow(1.0 - ndotv, 2.6);
-    baseCol = vec3(0.055, 0.088, 0.112) + vec3(0.05, 0.09, 0.12) * sheen;
-    rough = 0.24;
+    baseCol = vec3(0.055, 0.088, 0.115) + vec3(0.055, 0.095, 0.13) * sheen;
+    rough = 0.20;
     metal = 0.18;
+    clearcoat = 0.65;
   }
+
+  // Machined micro-chamfer edge polish: slightly crisper specular & subtle metallic gleam on bevels!
+  rough = mix(rough, max(0.08, rough * 0.58), bevelMask * 0.72);
 
   if (uThermal > 0.5) {
     float heat = clamp(
@@ -799,13 +956,14 @@ void main() {
     vec3 cHot = vec3(1.0, 0.72, 0.16);
     baseCol = heat < 0.5 ? mix(cCold, cMid, heat * 2.0) : mix(cMid, cHot, (heat - 0.5) * 2.0);
     emissive *= 1.15;
+    clearcoat *= 0.25;
   }
 
-  // Analytical Height & Crevice Ambient Occlusion
+  // Analytical Height, Crevice & Plinth Contact Ambient Occlusion
   float hAboveFloor = p.y - uFloorY;
-  float floorAO = mix(0.26, 1.0, smoothstep(-0.04, 0.42, hAboveFloor));
-  float wallAO = mix(0.68, 1.0, clamp(n.y * 0.5 + 0.5, 0.0, 1.0));
-  float ao = clamp(floorAO * wallAO, 0.18, 1.0);
+  float floorAO = mix(mix(0.28, 0.18, uSemFactor), 1.0, smoothstep(-0.04, 0.42, hAboveFloor));
+  float wallAO = mix(mix(0.68, 0.56, uSemFactor), 1.0, clamp(n.y * 0.5 + 0.5, 0.0, 1.0));
+  float ao = clamp(floorAO * wallAO * studioContactAO, 0.14, 1.0);
 
   // Studio 3-Point Key / Rim / Fill Lighting + 5-Tap Hardware PCF Soft Shadows
   vec3 keyDir = normalize(vec3(0.52, 0.84, 0.40));
@@ -815,36 +973,79 @@ void main() {
   float ndotlK = max(dot(n, keyDir), 0.0);
   float sh = sampleShadow(vShadowCoord, ndotlK);
 
-  vec3 f0 = mix(vec3(0.04), baseCol, metal);
-  float fresnel = pow(1.0 - ndotv, 5.0);
-  vec3 F = f0 + (1.0 - f0) * fresnel;
+  vec3 F0 = mix(vec3(0.04), baseCol, metal);
+  vec3 diffAlbedo = baseCol * (1.0 - metal) / PI;
 
+  // Key light (Cook-Torrance GGX)
   vec3 hK = normalize(keyDir + v);
-  float specPow = mix(180.0, 22.0, rough);
-  float specK = pow(max(dot(n, hK), 0.0), specPow) * (specPow * 0.018 + 0.36);
+  float ndothK = max(dot(n, hK), 0.0);
+  float vdothK = max(dot(v, hK), 0.0);
+  vec3 Fk = F_Schlick(vdothK, F0);
+  float Dk = D_GGX(ndothK, rough);
+  float Gk = G_SchlickGGX(ndotv, ndotlK, rough);
+  vec3 specK = (Dk * Gk * Fk) / max(4.0 * ndotv * ndotlK, 0.001);
+  vec3 kDk = (vec3(1.0) - Fk);
 
+  // Optional Optical SiO2 Clearcoat Lobe on key light
+  float ccSpecK = clearcoat > 0.01 ? (D_GGX(ndothK, 0.09) * 0.25 * F_Schlick(vdothK, vec3(0.04)).r * clearcoat) : 0.0;
+
+  // Rim light (Cook-Torrance GGX — crisp dark-field metallic edge separation!)
   float ndotlR = max(dot(n, rimDir), 0.0);
   vec3 hR = normalize(rimDir + v);
-  float specR = pow(max(dot(n, hR), 0.0), specPow * 0.55) * 0.62;
+  float ndothR = max(dot(n, hR), 0.0);
+  float vdothR = max(dot(v, hR), 0.0);
+  vec3 Fr = F_Schlick(vdothR, F0);
+  float Dr = D_GGX(ndothR, max(rough * 0.92, 0.08));
+  float Gr = G_SchlickGGX(ndotv, ndotlR, rough);
+  vec3 specR = (Dr * Gr * Fr) / max(4.0 * ndotv * ndotlR, 0.001);
 
   float ndotlF = max(dot(n, fillDir), 0.0);
 
-  vec3 diff = baseCol * (1.0 - metal * 0.84);
+  vec3 keyTint = mix(vec3(1.05, 1.01, 0.95), vec3(0.96, 1.00, 1.06), uSemFactor * 0.5);
+  vec3 rimTint = mix(vec3(0.42, 0.72, 1.18), vec3(0.56, 0.82, 1.24), uSemFactor);
+
   vec3 direct = vec3(0.0);
-  direct += (diff * ndotlK + F * specK) * vec3(1.04, 1.01, 0.96) * sh * 1.12;
-  direct += (diff * ndotlR + F * specR) * vec3(0.36, 0.68, 1.08) * 0.72;
-  direct += diff * ndotlF * vec3(0.20, 0.26, 0.36) * 0.32;
+  direct += (kDk * diffAlbedo + specK + vec3(ccSpecK)) * keyTint * (ndotlK * 2.85) * sh;
+  direct += ((vec3(1.0) - Fr) * diffAlbedo * 0.65 + specR * 0.88) * rimTint * (ndotlR * mix(1.45, 2.05, uSemFactor));
+  direct += diffAlbedo * ndotlF * vec3(0.24, 0.30, 0.42) * 1.15;
 
+  // Roughness-modulated Studio Environment Reflection + Clearcoat Reflection
   vec3 reflDir = reflect(-v, n);
-  vec3 reflCol = sampleStudioEnv(reflDir);
-  vec3 envReflection = reflCol * F * (1.0 - rough * 0.68) * (0.42 + 0.32 * metal) * ao;
+  vec3 reflCol = sampleStudioEnv(reflDir, rough, uSemFactor);
+  vec3 Fenv = F_Schlick(ndotv, F0);
+  vec3 envReflection = reflCol * Fenv * mix(1.0, 0.28, rough * rough) * (0.58 + 0.42 * metal) * ao;
+  if (clearcoat > 0.01) {
+    vec3 ccEnv = sampleStudioEnv(reflDir, 0.07, uSemFactor);
+    float ccF = 0.04 + 0.96 * pow(1.0 - ndotv, 5.0);
+    envReflection += ccEnv * ccF * clearcoat * 0.85 * ao;
+  }
 
-  vec3 semRim = vec3(0.44, 0.64, 0.92) * pow(1.0 - ndotv, 3.6) * (0.08 + 0.34 * uSemFactor) * ao;
-  vec3 ambient = baseCol * vec3(0.06, 0.08, 0.12) * ao;
+  // Subtle machined chamfer glint catching the overhead softbox
+  vec3 bevelGlint = vec3(0.76, 0.86, 1.02) * bevelMask * pow(1.0 - ndotv, 2.0) * (0.08 + 0.22 * metal) * (0.45 + 0.55 * sh) * ao;
 
-  vec3 col = ambient + direct * ao + envReflection + semRim + emissive;
+  // Dark-Field / SEM Grazing Rim Light
+  vec3 semRim = vec3(0.46, 0.68, 0.96) * pow(1.0 - ndotv, 3.4) * (0.06 + 0.34 * uSemFactor) * ao;
+  vec3 ambient = baseCol * vec3(0.055, 0.075, 0.115) * ao;
 
-  // Razor-sharp 3D selection frame when user clicks a die block or the US Quarter to inspect
+  vec3 col = ambient + direct * ao + envReflection + bevelGlint + semRim + emissive;
+
+  // Whisper-thin Platinum Hover Frame on World 0 die blocks / US Quarter (before clicking!)
+  if (uHoverBox.z > 0.001 && uZoom < 0.85) {
+    float hoverVis = clamp(1.0 - max(uZoom, 0.0) * 1.15, 0.0, 1.0);
+    float sdfH;
+    if (uHoverBox.w < 0.0) {
+      sdfH = length(p.xz - uHoverBox.xy) - abs(uHoverBox.w);
+    } else {
+      vec2 dH = abs(p.xz - uHoverBox.xy) - uHoverBox.zw;
+      sdfH = max(dH.x, dH.y);
+    }
+    float rimH = smoothstep(0.036, 0.006, abs(sdfH)) * (1.0 - smoothstep(0.0, 0.22, sdfH));
+    float insideH = step(sdfH, 0.01);
+    col += vec3(0.72, 0.84, 0.98) * rimH * 0.42 * hoverVis;
+    col += vec3(0.04, 0.06, 0.10) * insideH * 0.28 * hoverVis;
+  }
+
+  // Razor-sharp 3D Selection Frame when user clicks a die block or the US Quarter to inspect
   if (uInspectBox.z > 0.001 && uZoom < 0.85) {
     float inspectVis = clamp(1.0 - max(uZoom, 0.0) * 1.1, 0.0, 1.0);
     float sdf;
@@ -856,10 +1057,10 @@ void main() {
     }
     float edgeDist = abs(sdf);
     float inside = step(sdf, 0.02);
-    float rim = smoothstep(0.048, 0.007, edgeDist) * (1.0 - smoothstep(0.0, 0.25, sdf));
-    float pulse = 0.78 + 0.22 * sin(uTime * 5.0);
-    col += vec3(0.45, 0.88, 1.25) * rim * pulse * inspectVis;
-    col += vec3(0.04, 0.12, 0.22) * inside * 0.45 * inspectVis;
+    float rim = smoothstep(0.046, 0.006, edgeDist) * (1.0 - smoothstep(0.0, 0.25, sdf));
+    float pulse = 0.80 + 0.20 * sin(uTime * 4.5);
+    col += vec3(0.45, 0.90, 1.28) * rim * pulse * inspectVis;
+    col += vec3(0.04, 0.12, 0.22) * inside * 0.42 * inspectVis;
   }
 
   // Smooth infinite studio fog matching our obsidian backdrop
@@ -867,7 +1068,11 @@ void main() {
   float fog = 1.0 - exp(-uFogDensity * fogDist * fogDist);
   col = mix(col, vec3(0.003, 0.005, 0.009), clamp(fog, 0.0, 1.0));
 
-  fragColor = vec4(max(col, 0.0), 1.0);
+  // Pack analytical optical microscope Circle-of-Confusion (CoC) into alpha for zero-overhead DOF!
+  float focalDelta = abs(camDist - uFocusDist) / max(uFocusDist * 0.56, 0.5);
+  float coc = clamp(smoothstep(0.18, 1.15, focalDelta) * uDofStrength, 0.0, 1.0);
+
+  fragColor = vec4(max(col, 0.0), coc);
 }
 `;
 
@@ -900,7 +1105,7 @@ void main() {
     texture(uTex, vUv + vec2( o.x,  o.y)).rgb
   ) * 0.25;
   float lum = max(c.r, max(c.g, c.b));
-  float soft = smoothstep(0.72, 1.45, lum);
+  float soft = smoothstep(0.76, 1.52, lum);
   fragColor = vec4(c * soft, 1.0);
 }
 `;
@@ -946,9 +1151,10 @@ void main() {
 
 /**
  * Final Optical Composite (SINGLE unified 3D scene — zero layer cross-fading!):
+ *   - True depth-aware optical microscope bokeh DOF (using CoC packed in HDR alpha!)
  *   - Subtle velocity-driven radial zoom-blur during rapid dives
  *   - Subtle microscope edge chromatic dispersion
- *   - Creamy Dual-Kawase bloom
+ *   - Creamy Dual-Kawase bloom + subtle 1,800x void-plunge atmosphere
  *   - Studio vignette + ACES Filmic tone mapping + fine SEM film grain
  */
 export const COMPOSITE_FS = `#version 300 es
@@ -961,6 +1167,7 @@ uniform sampler2D uBloomTex;
 uniform vec2 uResolution;
 uniform float uMotion;
 uniform float uTime;
+uniform float uVoidPlunge;
 
 vec3 acesToneMap(vec3 x) {
   const float a = 2.51;
@@ -977,17 +1184,48 @@ float hash12(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
+const vec2 BOKEH_TAPS[8] = vec2[8](
+  vec2( 1.000,  0.000),
+  vec2( 0.707,  0.707),
+  vec2( 0.000,  1.000),
+  vec2(-0.707,  0.707),
+  vec2(-1.000,  0.000),
+  vec2(-0.707, -0.707),
+  vec2( 0.000, -1.000),
+  vec2( 0.707, -0.707)
+);
+
 void main() {
+  vec2 invRes = 1.0 / max(uResolution, vec2(1.0));
   vec2 centered = (vUv - 0.5) * vec2(uResolution.x / uResolution.y, 1.0);
   float rDist = length(centered);
   vec2 dir = normalize(centered + vec2(0.0001));
 
   // Subtle microscope edge chromatic dispersion
-  float ca = smoothstep(0.40, 0.98, rDist) * (0.0012 + uMotion * 0.0018);
+  float ca = smoothstep(0.42, 1.02, rDist) * (0.0010 + uMotion * 0.0018);
+  vec4 centerTex = texture(uTex, vUv);
   vec3 base;
   base.r = texture(uTex, vUv + dir * ca).r;
-  base.g = texture(uTex, vUv).g;
+  base.g = centerTex.g;
   base.b = texture(uTex, vUv - dir * ca).b;
+
+  // Depth-aware Leica / Zeiss macro optical Depth-of-Field (zero cost on sharp center pixels!)
+  float coc = centerTex.a;
+  if (coc > 0.04) {
+    float radiusPx = coc * 4.4;
+    vec3 dofAcc = base;
+    float wSum = 1.0;
+    for (int i = 0; i < 8; i++) {
+      float ringScale = (i % 2 == 0) ? 1.0 : 0.58;
+      vec2 off = BOKEH_TAPS[i] * (radiusPx * ringScale) * invRes;
+      vec4 tap = texture(uTex, clamp(vUv + off, vec2(0.001), vec2(0.999)));
+      // Weight by neighbor CoC so razor-sharp foreground subjects never bleed into soft background!
+      float w = smoothstep(0.02, 0.25, tap.a) * (0.45 + 0.55 * ringScale);
+      dofAcc += tap.rgb * w;
+      wSum += w;
+    }
+    base = mix(base, dofAcc / wSum, smoothstep(0.04, 0.26, coc));
+  }
 
   // Gentle optical radial zoom-blur ONLY when actively zooming fast
   if (uMotion > 0.02) {
@@ -1000,18 +1238,25 @@ void main() {
   }
 
   vec3 bloom = texture(uBloomTex, vUv).rgb;
-  vec3 col = base + bloom * 0.42;
+  vec3 col = base + bloom * 0.40;
+
+  // Subtle luminous optical halation around the central nuclear pinpoint during the 1,800x empty-space plunge
+  if (uVoidPlunge > 0.01) {
+    float coreHalo = exp(-rDist * rDist * 18.0);
+    float outerSweep = exp(-rDist * rDist * 2.8) * (0.5 + 0.5 * sin(rDist * 28.0 - uTime * 7.5));
+    col += (vec3(0.14, 0.56, 1.05) * coreHalo * 0.22 + vec3(0.04, 0.16, 0.36) * outerSweep * 0.08) * uVoidPlunge;
+  }
 
   // Studio optical lens vignette
-  float vig = smoothstep(1.20, 0.32, rDist);
-  col *= (0.44 + 0.56 * vig);
+  float vig = smoothstep(1.24, 0.32, rDist);
+  col *= (0.46 + 0.54 * vig);
 
   // ACES Filmic Tone Map & Gamma
-  col = acesToneMap(col * 0.96);
+  col = acesToneMap(col * 0.98);
   col = pow(col, vec3(1.0 / 2.2));
 
   // Subtle SEM micro-grain (eliminates dark banding)
-  float grain = (hash12(gl_FragCoord.xy + fract(uTime) * 100.0) - 0.5) * 0.012;
+  float grain = (hash12(gl_FragCoord.xy + fract(uTime) * 100.0) - 0.5) * 0.011;
   col = clamp(col + grain, 0.0, 1.0);
 
   fragColor = vec4(col, 1.0);

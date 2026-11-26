@@ -239,6 +239,21 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
   b.addBox(0, -0.21 + yOff, 0, 5.42, 0.13, 3.44, 0.055, 0);
   b.addBox(0, -0.32 + yOff, 0, 5.52, 0.04, 3.54, 0.02, 0);
 
+  // Precision gold/copper Pin-1 corner orientation marker & 4 subtle optical alignment fiducials on interposer corners
+  b.addBox(-5.06, -0.072 + yOff, -3.08, 0.11, 0.008, 0.11, 0.003, 3);
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      if (sx === -1 && sz === -1) continue;
+      b.addCyl(sx * 5.06, -0.072 + yOff, sz * 3.08, 0.068, 0.008, 0.003, 2);
+    }
+  }
+  // Micro-via perimeter stitch along top/bottom organic substrate rails
+  for (let i = -9; i <= 9; i++) {
+    const vx = i * 0.48;
+    b.addCyl(vx, -0.073 + yOff, -3.22, 0.024, 0.006, 0.002, 3);
+    b.addCyl(vx, -0.073 + yOff,  3.22, 0.024, 0.006, 0.002, 3);
+  }
+
   // 4x Unified Memory (LPDDR5) Packages flanking the silicon die (2 stacked per side, authentic M-Max layout!)
   for (const side of [-1, 1]) {
     for (const row of [-1, 1]) {

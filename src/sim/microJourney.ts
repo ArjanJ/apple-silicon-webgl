@@ -1,5 +1,6 @@
 /**
- * Physically accurate logarithmic magnification & scale formatter across zoom [-2.4..9.0]:
+ * Physically accurate logarithmic magnification, calibrated optical scale bar & landmark formatter
+ * across zoom [-2.4..9.0]:
  *  -2.4 => 0.25x    · 26.0 cm   (Wide macro — pocket-size Apple Silicon & Quarter on studio mat)
  *  -1.0 => 1.0x     · 72 mm     (Scale — 1:1 Apple Silicon package next to a 24.26 mm US Quarter)
  *   0.0 => 10x      · 21.0 mm   (Die — live telemetry-accurate Apple Silicon floorplan)
@@ -13,12 +14,54 @@
  *   8.0 => 40T x    · 3.1 fm    (Nucleus — Oblate 28Si Nucleus · 14P + 14N · Pion Field)
  *   9.0 => 150T x   · 0.84 fm   (Quarks — Inside 1 Proton · uud Color-Charge Quarks · Gluons)
  */
+
+function formatPhysicalLength(fm: number): string {
+  const fmt = (v: number) => (v >= 10 || Math.abs(v - Math.round(v)) < 1e-4 ? `${Math.round(v)}` : v.toFixed(1));
+  if (fm >= 1e14) return `${fmt(fm / 1e13)} cm`;
+  if (fm >= 1e12) return `${fmt(fm / 1e12)} mm`;
+  if (fm >= 1e9) return `${fmt(fm / 1e9)} µm`;
+  if (fm >= 1e6) return `${fmt(fm / 1e6)} nm`;
+  if (fm >= 1e3) return `${fmt(fm / 1e3)} pm`;
+  if (fm >= 1) return `${fmt(fm)} fm`;
+  return `${fm.toFixed(1)} fm`;
+}
+
+/**
+ * Compute a calibrated Zeiss/FEI-style optical scale bar on clean 1 / 2 / 5 engineering decades.
+ * Given field-of-view feature span `fovFm` (~420px reference viewport span), picks the cleanest
+ * physical length whose bar renders between 54px and 130px wide and grows smoothly as you zoom!
+ */
+function computeScaleBar(fovFm: number): { label: string; px: number } {
+  const refSpanPx = 380;
+  const targetFm = fovFm * (86 / refSpanPx);
+  const exp10 = Math.floor(Math.log10(Math.max(targetFm, 1e-3)));
+  const base = Math.pow(10, exp10);
+  const candidates = [0.5 * base, 1 * base, 2 * base, 5 * base, 10 * base];
+
+  let bestFm = candidates[1];
+  let bestScore = Infinity;
+  for (const c of candidates) {
+    const px = (c / fovFm) * refSpanPx;
+    if (px >= 48 && px <= 132) {
+      const score = Math.abs(px - 84);
+      if (score < bestScore) {
+        bestScore = score;
+        bestFm = c;
+      }
+    }
+  }
+  const px = Math.max(44, Math.min(136, (bestFm / fovFm) * refSpanPx));
+  return { label: formatPhysicalLength(bestFm), px };
+}
+
 export function formatMagnification(uZoom: number): {
   magText: string;
   sizeText: string;
   dialDeg: number;
   bracketText: string | null;
   bracketOpacity: number;
+  scaleBarLabel: string;
+  scaleBarPx: number;
 } {
   const z = Math.max(-2.4, Math.min(9.0, uZoom));
   const magKnots = [
@@ -34,7 +77,6 @@ export function formatMagnification(uZoom: number): {
     40_000_000_000_000,
     150_000_000_000_000,
   ];
-  // Physical field-of-view feature scale in femtometers (1 nm = 1,000,000 fm; 1 pm = 1,000 fm)
   const fmKnots = [
     72_000_000_000_000, // 72 mm (package + US Quarter)
     21_000_000_000_000, // 21.0 mm (M-Max silicon die)
@@ -92,6 +134,7 @@ export function formatMagnification(uZoom: number): {
   } else {
     const badges: { center: number; half: number; label: string }[] = [
       { center: 1.0, half: 0.36, label: '120 µm · BEOL Global Power & Clock Grid (M12–M16)' },
+      { center: 2.0, half: 0.36, label: '1.2 µm · Copper Damascene Routing (M4–M9) & Vias' },
       { center: 3.0, half: 0.36, label: '120 nm · FEOL Standard-Cell Rows · VDD/VSS · PMOS/NMOS' },
       { center: 4.0, half: 0.38, label: '24 nm · Uniform GAA Nanosheet Cell · TiN/W · SiN Spacers' },
       { center: 5.0, half: 0.38, label: '12 nm Gate · 5 nm GAA Ribbon · HfO₂/SiO₂ High-k · Undoped Si' },
@@ -112,5 +155,14 @@ export function formatMagnification(uZoom: number): {
   }
 
   const dialDeg = (z + 1) * 28.8;
-  return { magText, sizeText, dialDeg, bracketText, bracketOpacity };
+  const bar = computeScaleBar(fm);
+  return {
+    magText,
+    sizeText,
+    dialDeg,
+    bracketText,
+    bracketOpacity,
+    scaleBarLabel: bar.label,
+    scaleBarPx: bar.px,
+  };
 }

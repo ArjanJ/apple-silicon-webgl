@@ -8,8 +8,9 @@ import { formatMagnification } from './sim/microJourney';
 /**
  * Zero-Overhead Vanilla DOM Controller for Apple Silicon 3D Microscope.
  *   - No React reconciliation or virtual DOM during 120 FPS zoom
- *   - Live Native Mach/IOKit telemetry (real GPU %, VRAM, SoC Die Temp, per-core CPU)
- *   - Interactive click-to-inspect on any silicon die block with 3D surface highlight
+ *   - Breathing optical reticle, continuously gliding VisionOS rail indicator, & calibrated scale bar
+ *   - Whisper-quiet hover preview + click-to-inspect + one-click Cinematic Dive (Space)
+ *   - Live Native Mach/IOKit telemetry (real GPU %, VRAM, SoC Die Temp, per-core CPU + sparkline)
  */
 
 const ZOOM_STOPS = [
@@ -41,6 +42,8 @@ const DIAL_TICKS = [
 ];
 
 const ICONS = {
+  play: `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 4 20 12 6 20 6 4"/></svg>`,
+  stop: `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>`,
   activity: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
   zap: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
   flame: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>`,
@@ -63,7 +66,7 @@ function buildReticleSvg(): string {
     const x2 = (270 + Math.cos(ang) * r).toFixed(2);
     const y2 = (270 + Math.sin(ang) * r).toFixed(2);
     ticks += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${
-      isMajor ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.08)'
+      isMajor ? 'rgba(255,255,255,0.24)' : 'rgba(255,255,255,0.08)'
     }" stroke-width="${isMajor ? '0.9' : '0.5'}"/>`;
   }
 
@@ -72,32 +75,52 @@ function buildReticleSvg(): string {
     const rad = ((tk.deg - 90) * Math.PI) / 180;
     const tx = (270 + Math.cos(rad) * (r + 16)).toFixed(2);
     const ty = (270 + Math.sin(rad) * (r + 16)).toFixed(2);
-    labels += `<text x="${tx}" y="${ty}" fill="rgba(245, 245, 247, 0.28)" font-size="7" font-family="'JetBrains Mono', monospace" font-weight="500" text-anchor="middle" dominant-baseline="middle">${tk.label}</text>`;
+    labels += `<text x="${tx}" y="${ty}" fill="rgba(245, 245, 247, 0.32)" font-size="7" font-family="'JetBrains Mono', monospace" font-weight="500" text-anchor="middle" dominant-baseline="middle">${tk.label}</text>`;
   }
 
   return `
     <svg class="reticle-svg" viewBox="0 0 540 540">
-      <circle cx="270" cy="270" r="${r}" fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="0.75" />
+      <circle cx="270" cy="270" r="${r}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="0.75" />
       <circle
         id="reticle-arc"
         cx="270"
         cy="270"
         r="${r}"
         fill="none"
-        stroke="rgba(245, 245, 247, 0.34)"
+        stroke="rgba(245, 245, 247, 0.38)"
         stroke-width="1.25"
         stroke-dasharray="${(circ * 0.04).toFixed(2)} ${circ.toFixed(2)}"
         stroke-linecap="round"
         transform="rotate(-234 270 270)"
       />
       <g id="reticle-dial">${ticks}</g>
-      <line x1="259" y1="270" x2="265" y2="270" stroke="rgba(255,255,255,0.16)" stroke-width="0.7" />
-      <line x1="275" y1="270" x2="281" y2="270" stroke="rgba(255,255,255,0.16)" stroke-width="0.7" />
-      <line x1="270" y1="259" x2="270" y2="265" stroke="rgba(255,255,255,0.16)" stroke-width="0.7" />
-      <line x1="270" y1="275" x2="270" y2="281" stroke="rgba(255,255,255,0.16)" stroke-width="0.7" />
+      <line x1="259" y1="270" x2="265" y2="270" stroke="rgba(255,255,255,0.18)" stroke-width="0.7" />
+      <line x1="275" y1="270" x2="281" y2="270" stroke="rgba(255,255,255,0.18)" stroke-width="0.7" />
+      <line x1="270" y1="259" x2="270" y2="265" stroke="rgba(255,255,255,0.18)" stroke-width="0.7" />
+      <line x1="270" y1="275" x2="270" y2="281" stroke="rgba(255,255,255,0.18)" stroke-width="0.7" />
       ${labels}
     </svg>
   `;
+}
+
+function conciseHoverMetric(hit: DieInspectHit, t: LiveMacTelemetry): string {
+  if (hit.id.startsWith('pcore-')) {
+    const idx = Number(hit.id.slice(6)) || 0;
+    const pCount = Math.max(2, Math.min(12, t.pCoreCount || 8));
+    const eOff = Math.min(t.eCoreCount, Math.max(0, t.coreLoads.length - pCount));
+    const load = t.coreLoads[eOff + idx] ?? t.pCoreAvg;
+    return `${Math.round(load * 100)}%`;
+  }
+  if (hit.id === 'ecores') return `${Math.round(t.eCoreAvg * 100)}%`;
+  if (hit.id === 'gpu') return `${Math.round(t.gpuEst * 100)}%`;
+  if (hit.id === 'slc') return '48 MB SRAM';
+  if (hit.id === 'ane') return '16C Matrix';
+  if (hit.id === 'media') return 'ProRes';
+  if (hit.id === 'io-phy') return t.netKBps >= 1024 ? `${(t.netKBps / 1024).toFixed(1)} MB/s` : `${t.netKBps.toFixed(0)} KB/s`;
+  if (hit.id.startsWith('ram-')) return `${t.memUsedGB.toFixed(0)}/${t.memTotalGB} GB`;
+  if (hit.id === 'us-quarter') return '24.26 mm · 1:1';
+  if (hit.id === 'smd-caps') return '0.72 V';
+  return '';
 }
 
 function mountApp(): void {
@@ -108,13 +131,20 @@ function mountApp(): void {
     <div class="apple-stage">
       <div id="gpu-mount" class="raymarch-mount"></div>
 
-      <div class="reticle-layer" aria-hidden="true">
+      <div id="reticle-layer" class="reticle-layer" aria-hidden="true">
         ${buildReticleSvg()}
         <div id="nm-bracket" class="nm-bracket" style="opacity:0;pointer-events:none;display:none;">
           <div class="nm-line"></div>
           <div id="nm-label" class="nm-label">12 nm Gate · 5 nm GAA Ribbon</div>
           <div class="nm-line"></div>
         </div>
+      </div>
+
+      <!-- Whisper-Quiet Hover Preview Pill -->
+      <div id="hover-pill" class="hover-pill" aria-hidden="true">
+        <span id="hover-title" class="hover-title"></span>
+        <span class="hover-sep">·</span>
+        <span id="hover-val" class="hover-val"></span>
       </div>
 
       <button id="restore-hud-btn" class="restore-hud-btn obsidian-glass" title="Show Interface (H)" style="display:none;">
@@ -133,6 +163,10 @@ function mountApp(): void {
           </div>
 
           <div class="tool-capsule obsidian-glass">
+            <button id="btn-tour" class="glass-btn" title="Cinematic Dive from US Quarter down to Quarks (Space)">
+              <span id="btn-tour-icon">${ICONS.play}</span><span id="btn-tour-lbl">Dive</span>
+            </button>
+            <div class="capsule-divider"></div>
             <button id="btn-activity" class="glass-btn" title="Inspect per-core CPU, GPU, and die thermal telemetry">
               ${ICONS.activity}<span>Activity</span>
             </button>
@@ -158,6 +192,23 @@ function mountApp(): void {
             <span id="sheet-fps">120 FPS · LIVE</span>
           </div>
           <div id="tick-meter" class="tick-meter" title="Live per-core CPU utilization"></div>
+          <div class="sparkline-box">
+            <div class="sparkline-legend">
+              <span>CPU / GPU TREND</span>
+              <span id="spark-readout">—</span>
+            </div>
+            <svg class="sparkline-svg" viewBox="0 0 220 28" preserveAspectRatio="none">
+              <defs>
+                <linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="rgba(245, 245, 247, 0.22)" />
+                  <stop offset="100%" stop-color="rgba(245, 245, 247, 0.0)" />
+                </linearGradient>
+              </defs>
+              <polygon id="spark-cpu-area" fill="url(#sparkFill)" points="" />
+              <polyline id="spark-gpu-line" fill="none" stroke="rgba(125, 212, 255, 0.52)" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" points="" />
+              <polyline id="spark-cpu-line" fill="none" stroke="rgba(245, 245, 247, 0.88)" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" points="" />
+            </svg>
+          </div>
           <div id="gpu-thermal-row" class="sheet-hw-row">
             <div class="hw-metric">
               <span class="hw-lbl" id="hw-gpu-lbl">GPU</span>
@@ -190,8 +241,16 @@ function mountApp(): void {
         </div>
 
         <div class="hud-bottom">
-          <div id="scale-caption" class="floating-scale-caption">21 mm · 10×</div>
+          <div class="scale-hud-row">
+            <div class="scale-bar-wrap" title="Calibrated physical optical scale bar">
+              <div id="scale-bar-rule" class="scale-bar-rule"></div>
+              <span id="scale-bar-label" class="scale-bar-label">5 mm</span>
+            </div>
+            <div class="scale-sep"></div>
+            <div id="scale-caption" class="floating-scale-caption">21 mm · 10×</div>
+          </div>
           <div id="zoom-rail" class="zoom-rail obsidian-glass">
+            <div id="rail-indicator" class="rail-indicator"></div>
             ${ZOOM_STOPS.map(
               (st, idx) =>
                 `<button class="rail-stop ${st.z === 0 ? 'active' : ''}" data-idx="${idx}" data-z="${st.z}">${st.label}</button>`
@@ -204,12 +263,20 @@ function mountApp(): void {
 
   // Direct DOM references (zero virtual DOM overhead!)
   const gpuMount = document.getElementById('gpu-mount')!;
+  const reticleLayer = document.getElementById('reticle-layer')!;
   const reticleArc = document.getElementById('reticle-arc')!;
   const reticleDial = document.getElementById('reticle-dial')!;
   const nmBracket = document.getElementById('nm-bracket')!;
   const nmLabel = document.getElementById('nm-label')!;
   const scaleCaption = document.getElementById('scale-caption')!;
+  const scaleBarRule = document.getElementById('scale-bar-rule')!;
+  const scaleBarLabel = document.getElementById('scale-bar-label')!;
+  const railIndicator = document.getElementById('rail-indicator')!;
   const railButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#zoom-rail .rail-stop'));
+
+  const hoverPill = document.getElementById('hover-pill')!;
+  const hoverTitleEl = document.getElementById('hover-title')!;
+  const hoverValEl = document.getElementById('hover-val')!;
 
   const livePulseEl = document.getElementById('live-pulse')!;
   const chipNameEl = document.getElementById('chip-name')!;
@@ -217,6 +284,9 @@ function mountApp(): void {
   const hudChromeEl = document.getElementById('hud-chrome')!;
   const restoreHudBtn = document.getElementById('restore-hud-btn')!;
 
+  const btnTour = document.getElementById('btn-tour')!;
+  const btnTourIcon = document.getElementById('btn-tour-icon')!;
+  const btnTourLbl = document.getElementById('btn-tour-lbl')!;
   const btnActivity = document.getElementById('btn-activity')!;
   const btnBurst = document.getElementById('btn-burst')!;
   const btnBurstLbl = document.getElementById('btn-burst-lbl')!;
@@ -228,6 +298,10 @@ function mountApp(): void {
   const sheetCoresEl = document.getElementById('sheet-cores')!;
   const sheetFpsEl = document.getElementById('sheet-fps')!;
   const tickMeterEl = document.getElementById('tick-meter')!;
+  const sparkReadoutEl = document.getElementById('spark-readout')!;
+  const sparkCpuLine = document.getElementById('spark-cpu-line')!;
+  const sparkCpuArea = document.getElementById('spark-cpu-area')!;
+  const sparkGpuLine = document.getElementById('spark-gpu-line')!;
   const hwGpuLbl = document.getElementById('hw-gpu-lbl')!;
   const hwGpuVal = document.getElementById('hw-gpu-val')!;
   const hwVramVal = document.getElementById('hw-vram-val')!;
@@ -244,14 +318,70 @@ function mountApp(): void {
 
   let telemetry: LiveMacTelemetry = { ...DEFAULT_TELEMETRY };
   let activeInspect: DieInspectHit | null = null;
+  let activeHover: DieInspectHit | null = null;
   let showActivity = false;
   let pureView = false;
   let bursting = false;
   let lastZoomRendered = -99;
   let lastActiveStop = 1;
   let lastCaption = '';
+  let lastScaleBarLabel = '';
+  let lastScaleBarPx = -1;
   let lastFpsUpdate = 0;
   let currentFps = 120;
+
+  // Rolling 32-sample telemetry history for crisp Activity micro-sparkline
+  const SPARK_MAX = 32;
+  const cpuHistory: number[] = Array(SPARK_MAX).fill(0.16);
+  const gpuHistory: number[] = Array(SPARK_MAX).fill(0.18);
+
+  // Cached button layout geometry for zero-reflow continuously gliding rail indicator
+  let railMetrics: { x: number; w: number }[] = [];
+  const measureRail = () => {
+    railMetrics = railButtons.map((btn) => ({ x: btn.offsetLeft, w: btn.offsetWidth }));
+    updateRailIndicator(lastZoomRendered === -99 ? 0 : lastZoomRendered);
+  };
+
+  const updateRailIndicator = (z: number) => {
+    if (railMetrics.length !== ZOOM_STOPS.length) return;
+    const pos = Math.max(0, Math.min(ZOOM_STOPS.length - 1, z + 1));
+    const i0 = Math.floor(pos);
+    const i1 = Math.min(ZOOM_STOPS.length - 1, i0 + 1);
+    const f = pos - i0;
+    const m0 = railMetrics[i0];
+    const m1 = railMetrics[i1];
+    const x = m0.x + (m1.x - m0.x) * f;
+    const w = m0.w + (m1.w - m0.w) * f;
+    railIndicator.style.transform = `translate3d(${x.toFixed(1)}px, 0, 0)`;
+    railIndicator.style.width = `${w.toFixed(1)}px`;
+  };
+
+  window.addEventListener('resize', measureRail);
+  if (document.fonts && document.fonts.ready) {
+    void document.fonts.ready.then(measureRail);
+  }
+  measureRail();
+
+  // Breathing reticle engagement controller (whisper-quiet at rest, crisp during zoom/drag/dive)
+  let reticleEngaged = false;
+  let reticleRestTimer: number | null = null;
+  const engageReticle = (sustained: boolean) => {
+    if (!reticleEngaged) {
+      reticleEngaged = true;
+      reticleLayer.classList.add('engaged');
+    }
+    if (reticleRestTimer !== null) {
+      window.clearTimeout(reticleRestTimer);
+      reticleRestTimer = null;
+    }
+    if (!sustained) {
+      reticleRestTimer = window.setTimeout(() => {
+        reticleEngaged = false;
+        reticleLayer.classList.remove('engaged');
+        reticleRestTimer = null;
+      }, 1050);
+    }
+  };
 
   const r = 242;
   const circ = 2 * Math.PI * r;
@@ -270,6 +400,20 @@ function mountApp(): void {
     inspectDive.textContent = `Dive to ${stopName} →`;
   };
 
+  const renderHoverPill = (hit: DieInspectHit | null, cx: number, cy: number) => {
+    activeHover = hit;
+    if (!hit || pureView || (activeInspect && activeInspect.id === hit.id)) {
+      hoverPill.classList.remove('visible');
+      return;
+    }
+    hoverTitleEl.textContent = hit.title(telemetry);
+    hoverValEl.textContent = conciseHoverMetric(hit, telemetry);
+    const clampedX = Math.max(16, Math.min(window.innerWidth - 220, cx + 16));
+    const clampedY = Math.max(16, Math.min(window.innerHeight - 54, cy - 32));
+    hoverPill.style.transform = `translate3d(${clampedX.toFixed(0)}px, ${clampedY.toFixed(0)}px, 0)`;
+    hoverPill.classList.add('visible');
+  };
+
   const telemetryModeBadge = () =>
     telemetry.nativeTelemetry
       ? 'IOKIT'
@@ -280,7 +424,7 @@ function mountApp(): void {
           : 'WEB SIM';
 
   const engine = new SiliconEngine(gpuMount, {
-    onZoomFrame: (z, fps) => {
+    onZoomFrame: (z, fps, motion, interacting) => {
       currentFps = fps;
       const now = performance.now();
       if (showActivity && now - lastFpsUpdate > 350) {
@@ -288,10 +432,15 @@ function mountApp(): void {
         sheetFpsEl.textContent = `${currentFps} FPS · ${telemetryModeBadge()}`;
       }
 
+      if (interacting || motion > 0.03) {
+        engageReticle(interacting);
+      }
+
       if (Math.abs(z - lastZoomRendered) < 0.0005) return;
       lastZoomRendered = z;
 
-      const { magText, sizeText, dialDeg, bracketText, bracketOpacity } = formatMagnification(z);
+      const { magText, sizeText, dialDeg, bracketText, bracketOpacity, scaleBarLabel: barLbl, scaleBarPx } =
+        formatMagnification(z);
       const frac = Math.max(0.015, Math.min(0.8, ((z + 1) / 10) * 0.8));
       reticleArc.setAttribute('stroke-dasharray', `${(circ * frac).toFixed(1)} ${circ.toFixed(1)}`);
       reticleDial.setAttribute('transform', `rotate(${(-dialDeg * 0.55).toFixed(2)} 270 270)`);
@@ -312,6 +461,18 @@ function mountApp(): void {
         scaleCaption.textContent = cap;
       }
 
+      if (barLbl !== lastScaleBarLabel) {
+        lastScaleBarLabel = barLbl;
+        scaleBarLabel.textContent = barLbl;
+      }
+      const roundedPx = Math.round(scaleBarPx * 2) / 2;
+      if (roundedPx !== lastScaleBarPx) {
+        lastScaleBarPx = roundedPx;
+        scaleBarRule.style.width = `${roundedPx.toFixed(1)}px`;
+      }
+
+      updateRailIndicator(z);
+
       const stopIdx = Math.max(0, Math.min(ZOOM_STOPS.length - 1, Math.round(z) + 1));
       if (stopIdx !== lastActiveStop) {
         railButtons[lastActiveStop]?.classList.remove('active');
@@ -321,7 +482,21 @@ function mountApp(): void {
     },
     onInspect: (hit) => {
       activeInspect = hit;
+      if (hit && activeHover && activeHover.id === hit.id) {
+        hoverPill.classList.remove('visible');
+      }
       renderInspectCard();
+    },
+    onHover: (hit, clientX, clientY) => {
+      renderHoverPill(hit, clientX, clientY);
+    },
+    onTourChange: (active) => {
+      btnTour.classList.toggle('active', active);
+      btnTourIcon.innerHTML = active ? ICONS.stop : ICONS.play;
+      btnTourLbl.textContent = active ? 'Stop' : 'Dive';
+      if (!active && reticleEngaged) {
+        engageReticle(false);
+      }
     },
   });
 
@@ -329,7 +504,6 @@ function mountApp(): void {
   inspectDive.addEventListener('click', () => {
     if (!activeInspect) return;
     const z = activeInspect.diveZoom;
-    // Dive directly into the inspected die block's exact physical (cx, cz) coordinates!
     const targetXZ: [number, number] | undefined =
       activeInspect.id !== 'us-quarter' ? [activeInspect.box[0], activeInspect.box[1]] : undefined;
     engine.clearInspect();
@@ -344,8 +518,24 @@ function mountApp(): void {
     });
   }
 
-  // Render Activity Sheet bars, real GPU/Thermal metrics & process list only when open
+  // Render Activity Sheet bars, micro-sparkline, real GPU/Thermal metrics & process list only when open
   let tickCols: { fill: HTMLDivElement; lbl: HTMLSpanElement }[] = [];
+  const renderSparkline = () => {
+    const w = 220;
+    const h = 26;
+    const stepX = w / (SPARK_MAX - 1);
+    const toPts = (arr: number[]) =>
+      arr
+        .map((v, i) => `${(i * stepX).toFixed(1)},${(h - Math.max(0.03, Math.min(1, v)) * (h - 3) - 1).toFixed(1)}`)
+        .join(' ');
+    const cpuPts = toPts(cpuHistory);
+    const gpuPts = toPts(gpuHistory);
+    sparkCpuLine.setAttribute('points', cpuPts);
+    sparkGpuLine.setAttribute('points', gpuPts);
+    sparkCpuArea.setAttribute('points', `0,${h} ${cpuPts} ${w},${h}`);
+    sparkReadoutEl.textContent = `${Math.round(telemetry.cpuTotal * 100)}% / ${Math.round(telemetry.gpuEst * 100)}%`;
+  };
+
   const renderActivitySheet = () => {
     if (!showActivity) return;
     sheetCoresEl.textContent = `${telemetry.pCoreCount}P + ${telemetry.eCoreCount}E CORES`;
@@ -385,6 +575,8 @@ function mountApp(): void {
       tickCols[i].fill.style.opacity = (0.35 + load * 0.65).toFixed(2);
     }
 
+    renderSparkline();
+
     const procs = telemetry.topProcs.slice(0, 3);
     procListEl.innerHTML = procs
       .map(
@@ -395,6 +587,11 @@ function mountApp(): void {
   };
 
   // Wire top-right tool capsule controls
+  btnTour.addEventListener('click', () => {
+    engine.toggleTour();
+    btnTour.blur();
+  });
+
   btnActivity.addEventListener('click', () => {
     showActivity = !showActivity;
     btnActivity.classList.toggle('active', showActivity);
@@ -416,6 +613,7 @@ function mountApp(): void {
     pureView = next;
     hudChromeEl.classList.toggle('hidden', pureView);
     restoreHudBtn.style.display = pureView ? 'inline-flex' : 'none';
+    if (pureView) hoverPill.classList.remove('visible');
   };
 
   btnPure.addEventListener('click', () => setPure(true));
@@ -425,8 +623,12 @@ function mountApp(): void {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'h' || e.key === 'H') {
       setPure(!pureView);
-    } else if (e.key === 'Escape' && activeInspect) {
-      engine.clearInspect();
+    } else if (e.code === 'Space' && !(e.target instanceof HTMLButtonElement)) {
+      e.preventDefault();
+      engine.toggleTour();
+    } else if (e.key === 'Escape') {
+      if (engine.isTourActive) engine.stopTour();
+      if (activeInspect) engine.clearInspect();
     }
   });
 
@@ -467,6 +669,11 @@ function mountApp(): void {
     telemetry = data;
     engine.setTelemetry(data);
 
+    cpuHistory.push(data.cpuTotal);
+    if (cpuHistory.length > SPARK_MAX) cpuHistory.shift();
+    gpuHistory.push(data.gpuEst);
+    if (gpuHistory.length > SPARK_MAX) gpuHistory.shift();
+
     livePulseEl.classList.toggle('sim', !data.live);
     chipNameEl.textContent = data.chipName;
     const cpuPct = Math.round(data.cpuTotal * 100);
@@ -480,6 +687,9 @@ function mountApp(): void {
     }
     renderActivitySheet();
     if (activeInspect) renderInspectCard();
+    if (activeHover && hoverPill.classList.contains('visible')) {
+      hoverValEl.textContent = conciseHoverMetric(activeHover, telemetry);
+    }
   };
 
   let useBrowserMode = false;
@@ -496,8 +706,6 @@ function mountApp(): void {
     pollTimer = window.setInterval(tick, 450);
   };
 
-  // Use native Mach/IOKit middleware when running locally (npm run dev);
-  // automatically fall back to zero-install hybrid browser telemetry on static hosts (GitHub Pages / preview).
   const isLocalHost =
     import.meta.env.DEV ||
     window.location.hostname === '127.0.0.1' ||

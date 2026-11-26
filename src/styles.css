@@ -53,14 +53,14 @@ body,
 /* High-Speed Obsidian Glass (Zero backdrop-filter compositor readback tax!) */
 .obsidian-glass,
 .liquid-glass {
-  background: linear-gradient(180deg, rgba(28, 29, 35, 0.86) 0%, rgba(13, 14, 18, 0.90) 100%);
+  background: linear-gradient(180deg, rgba(28, 29, 36, 0.86) 0%, rgba(12, 13, 17, 0.92) 100%);
   border: 0.5px solid rgba(255, 255, 255, 0.13);
   box-shadow:
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.22),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.24),
     0 14px 38px rgba(0, 0, 0, 0.58);
 }
 
-/* Circular Optical Microscope Reticle (Whisper-Thin Monochrome Platinum) */
+/* Breathing Circular Optical Microscope Reticle (Whisper-quiet at rest, crisps while zooming/orbiting) */
 .reticle-layer {
   position: absolute;
   inset: 0;
@@ -74,7 +74,14 @@ body,
 .reticle-svg {
   width: min(76vh, 76vw);
   height: min(76vh, 76vw);
-  opacity: 0.82;
+  opacity: 0.20;
+  transition: opacity 0.65s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity;
+}
+
+.reticle-layer.engaged .reticle-svg {
+  opacity: 0.78;
+  transition: opacity 0.16s ease-out;
 }
 
 .nm-bracket {
@@ -100,6 +107,7 @@ body,
 
 .nm-label {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 0.02em;
@@ -109,6 +117,53 @@ body,
   background: linear-gradient(180deg, rgba(24, 25, 30, 0.88), rgba(11, 12, 16, 0.92));
   border: 0.5px solid rgba(255, 255, 255, 0.16);
   white-space: nowrap;
+}
+
+/* Whisper-Quiet Floating Die Hover Preview Pill */
+.hover-pill {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 18;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(26, 28, 35, 0.90), rgba(12, 13, 18, 0.94));
+  border: 0.5px solid rgba(255, 255, 255, 0.18);
+  box-shadow:
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.22),
+    0 10px 26px rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transition: opacity 0.14s ease;
+  will-change: transform, opacity;
+  white-space: nowrap;
+}
+
+.hover-pill.visible {
+  opacity: 1;
+}
+
+.hover-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+
+.hover-sep {
+  color: var(--tertiary);
+  font-size: 10px;
+}
+
+.hover-val {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: rgba(135, 224, 255, 0.92);
 }
 
 /* Fade Wrapper for Pure View (H key) */
@@ -121,7 +176,7 @@ body,
   pointer-events: none;
 }
 
-/* Top Bar: Bare Editorial Typography (Left) + Monochrome Liquid Glass Capsule (Right) */
+/* Top Bar: Bare Editorial Typography (Left) + Monochrome Obsidian Glass Capsule (Right) */
 .hud-top {
   position: absolute;
   top: 24px;
@@ -140,9 +195,11 @@ body,
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
   text-shadow:
-    0 1px 4px rgba(0, 0, 0, 0.9),
-    0 4px 24px rgba(0, 0, 0, 0.85);
+    0 1px 3px rgba(0, 0, 0, 0.96),
+    0 2px 14px rgba(0, 0, 0, 0.92),
+    0 6px 28px rgba(0, 0, 0, 0.85);
 }
 
 .editorial-title-row {
@@ -187,11 +244,13 @@ body,
 
 .editorial-meta {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   font-weight: 400;
   letter-spacing: -0.01em;
-  color: var(--secondary);
+  color: rgba(245, 245, 247, 0.72);
   padding-left: 16px;
+  white-space: nowrap;
 }
 
 /* Top-Right Monochrome Glass Capsule */
@@ -208,7 +267,7 @@ body,
   appearance: none;
   outline: none;
   height: 30px;
-  padding: 0 12px;
+  padding: 0 11px;
   border-radius: 999px;
   border: none;
   background: transparent;
@@ -254,12 +313,12 @@ body,
   position: absolute;
   top: 72px;
   right: 28px;
-  width: 248px;
+  width: 254px;
   padding: 14px 16px;
   border-radius: 20px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 11px;
   z-index: 22;
   animation: sheetIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -280,6 +339,7 @@ body,
   align-items: center;
   justify-content: space-between;
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 10px;
   letter-spacing: 0.04em;
   color: var(--secondary);
@@ -292,7 +352,7 @@ body,
   justify-content: space-between;
   gap: 6px;
   height: 44px;
-  padding: 6px 4px 2px 4px;
+  padding: 6px 4px 4px 4px;
   border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -329,6 +389,33 @@ body,
   color: var(--tertiary);
 }
 
+/* Live Monochrome Telemetry Sparkline inside Activity Sheet */
+.sparkline-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 9px;
+  border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
+}
+
+.sparkline-legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  color: var(--tertiary);
+}
+
+.sparkline-svg {
+  width: 100%;
+  height: 28px;
+  display: block;
+  overflow: visible;
+}
+
 .proc-list {
   display: flex;
   flex-direction: column;
@@ -352,6 +439,7 @@ body,
 
 .proc-cpu {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 10.5px;
   color: var(--secondary);
   flex-shrink: 0;
@@ -381,6 +469,7 @@ body,
 
 .hw-val {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 11.5px;
   font-weight: 600;
   color: var(--text);
@@ -446,6 +535,7 @@ body,
 
 .inspect-metric {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 11.5px;
   font-weight: 600;
   color: rgba(125, 224, 255, 0.96);
@@ -482,7 +572,7 @@ body,
   opacity: 0.86;
 }
 
-/* Bottom Single-Row 44px VisionOS Floating Rail */
+/* Bottom Calibrated Optical Scale Bar + Single-Row 44px VisionOS Gliding Rail */
 .hud-bottom {
   position: absolute;
   left: 24px;
@@ -491,21 +581,60 @@ body,
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   pointer-events: none;
   z-index: 20;
 }
 
+.scale-hud-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.85);
+}
+
+.scale-bar-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.scale-bar-rule {
+  height: 5px;
+  width: 78px;
+  border-left: 1px solid rgba(245, 245, 247, 0.72);
+  border-right: 1px solid rgba(245, 245, 247, 0.72);
+  border-bottom: 1px solid rgba(245, 245, 247, 0.72);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+  will-change: width;
+}
+
+.scale-bar-label {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: rgba(245, 245, 247, 0.82);
+}
+
+.scale-sep {
+  width: 0.5px;
+  height: 11px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
 .floating-scale-caption {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.01em;
   color: rgba(245, 245, 247, 0.72);
-  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.85);
 }
 
 .zoom-rail {
+  position: relative;
   pointer-events: auto;
   height: 44px;
   padding: 4px;
@@ -515,7 +644,26 @@ body,
   gap: 2px;
 }
 
+/* Continuously Gliding VisionOS Glass Vernier Pill */
+.rail-indicator {
+  position: absolute;
+  top: 4px;
+  left: 0;
+  height: 36px;
+  width: 44px;
+  border-radius: 999px;
+  background: var(--text);
+  box-shadow:
+    0 2px 14px rgba(0, 0, 0, 0.42),
+    0 0 1px rgba(255, 255, 255, 0.65);
+  pointer-events: none;
+  z-index: 0;
+  will-change: transform, width;
+}
+
 .rail-stop {
+  position: relative;
+  z-index: 1;
   appearance: none;
   outline: none;
   height: 36px;
@@ -529,20 +677,18 @@ body,
   font-weight: 500;
   letter-spacing: -0.015em;
   cursor: pointer;
-  transition: background 0.16s ease, color 0.16s ease;
+  transition: color 0.16s ease, background 0.16s ease;
   white-space: nowrap;
 }
 
-.rail-stop:hover {
+.rail-stop:hover:not(.active) {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .rail-stop.active {
-  background: var(--text);
   color: #000000;
   font-weight: 600;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
 }
 
 /* Tiny Pure-View Restore Pill (only visible when HUD is hidden) */
@@ -587,7 +733,7 @@ body,
     right: 16px;
   }
   .rail-stop {
-    padding: 0 11px;
-    font-size: 11.5px;
+    padding: 0 9px;
+    font-size: 11px;
   }
 }
