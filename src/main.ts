@@ -8,8 +8,8 @@ import { formatMagnification } from './sim/microJourney';
 /**
  * Zero-Overhead Vanilla DOM Controller for Apple Silicon 3D Microscope.
  *   - No React reconciliation or virtual DOM during 120 FPS zoom
- *   - Breathing optical reticle, continuously gliding VisionOS rail indicator, & calibrated scale bar
- *   - Whisper-quiet hover preview + click-to-inspect + one-click Cinematic Dive (Space)
+ *   - Breathing optical reticle & continuously gliding VisionOS rail indicator
+ *   - Whisper-quiet hover preview + click-to-inspect
  *   - Live Native Mach/IOKit telemetry (real GPU %, VRAM, SoC Die Temp, per-core CPU + sparkline)
  */
 
@@ -42,12 +42,8 @@ const DIAL_TICKS = [
 ];
 
 const ICONS = {
-  play: `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 4 20 12 6 20 6 4"/></svg>`,
-  stop: `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>`,
   activity: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
   zap: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
-  flame: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>`,
-  orbit: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.466 7.5C15.643 4.237 13.952 2 12 2 9.239 2 7 6.477 7 12s2.239 10 5 10c.342 0 .677-.069 1-.2"/><path d="m15.194 13.707 3.814 1.86-1.86 3.814"/><path d="M19 15.57c-1.804.885-4.274 1.43-7 1.43-5.523 0-10-2.239-10-5s4.477-5 10-5c4.838 0 8.873 1.718 9.8 4"/></svg>`,
   eyeOff: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>`,
   eye: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`,
   close: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
@@ -135,7 +131,7 @@ function mountApp(): void {
         ${buildReticleSvg()}
         <div id="nm-bracket" class="nm-bracket" style="opacity:0;pointer-events:none;display:none;">
           <div class="nm-line"></div>
-          <div id="nm-label" class="nm-label liquid-glass">12 nm Gate · 5 nm GAA Ribbon</div>
+          <div id="nm-label" class="nm-label">12 nm Gate · 5 nm GAA Ribbon</div>
           <div class="nm-line"></div>
         </div>
       </div>
@@ -148,7 +144,7 @@ function mountApp(): void {
       </div>
 
       <!-- Whisper-Quiet Hover Preview Pill -->
-      <div id="hover-pill" class="hover-pill liquid-glass" aria-hidden="true">
+      <div id="hover-pill" class="hover-pill" aria-hidden="true">
         <span id="hover-title" class="hover-title"></span>
         <span class="hover-sep">·</span>
         <span id="hover-val" class="hover-val"></span>
@@ -161,19 +157,12 @@ function mountApp(): void {
 
       <div id="hud-chrome" class="hud-chrome intro-staging">
         <div class="hud-top">
-          <div id="editorial-brand" class="editorial-brand liquid-glass" title="Replay Entrance (R)">
-            <div class="editorial-title-row">
-              <span id="live-pulse" class="live-pulse"></span>
-              <span id="chip-name" class="editorial-name">Apple Silicon</span>
-            </div>
-            <div id="editorial-meta" class="editorial-meta">Initializing silicon telemetry…</div>
+          <div id="editorial-brand" class="editorial-brand" title="Replay Entrance (R)">
+            <span id="chip-name" class="editorial-name">Apple Silicon</span>
+            <div id="editorial-meta" class="editorial-meta">Initializing…</div>
           </div>
 
           <div class="tool-capsule liquid-glass">
-            <button id="btn-tour" class="glass-btn" title="Cinematic Dive from US Quarter down to Quarks (Space)">
-              <span id="btn-tour-icon">${ICONS.play}</span><span id="btn-tour-lbl">Dive</span>
-            </button>
-            <div class="capsule-divider"></div>
             <button id="btn-activity" class="glass-btn" title="Inspect per-core CPU, GPU, and die thermal telemetry">
               ${ICONS.activity}<span>Activity</span>
             </button>
@@ -181,12 +170,6 @@ function mountApp(): void {
               ${ICONS.zap}<span id="btn-burst-lbl">Burst</span>
             </button>
             <div class="capsule-divider"></div>
-            <button id="btn-thermal" class="glass-btn" title="Infrared Thermal Vision">
-              ${ICONS.flame}<span>Thermal</span>
-            </button>
-            <button id="btn-orbit" class="glass-btn" title="Toggle 3D Orbit">
-              ${ICONS.orbit}<span>Orbit</span>
-            </button>
             <button id="btn-pure" class="glass-btn icon-only" title="Pure View — Hide UI (H)">
               ${ICONS.eyeOff}
             </button>
@@ -248,14 +231,6 @@ function mountApp(): void {
         </div>
 
         <div class="hud-bottom">
-          <div class="scale-hud-row liquid-glass">
-            <div class="scale-bar-wrap" title="Calibrated physical optical scale bar">
-              <div id="scale-bar-rule" class="scale-bar-rule"></div>
-              <span id="scale-bar-label" class="scale-bar-label">5 mm</span>
-            </div>
-            <div class="scale-sep"></div>
-            <div id="scale-caption" class="floating-scale-caption">21 mm · 10×</div>
-          </div>
           <div id="zoom-rail" class="zoom-rail liquid-glass">
             <div id="rail-indicator" class="rail-indicator"></div>
             ${ZOOM_STOPS.map(
@@ -275,21 +250,16 @@ function mountApp(): void {
   const reticleDial = document.getElementById('reticle-dial')!;
   const nmBracket = document.getElementById('nm-bracket')!;
   const nmLabel = document.getElementById('nm-label')!;
-  const scaleCaption = document.getElementById('scale-caption')!;
-  const scaleBarRule = document.getElementById('scale-bar-rule')!;
-  const scaleBarLabel = document.getElementById('scale-bar-label')!;
   const railIndicator = document.getElementById('rail-indicator')!;
   const zoomRailEl = document.getElementById('zoom-rail')!;
   const railButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#zoom-rail .rail-stop'));
   const toolCapsuleEl = document.querySelector<HTMLElement>('.tool-capsule')!;
-  const scaleHudRowEl = document.querySelector<HTMLElement>('.scale-hud-row')!;
   const toolButtons = Array.from(toolCapsuleEl.querySelectorAll<HTMLButtonElement>('.glass-btn'));
 
   const hoverPill = document.getElementById('hover-pill')!;
   const hoverTitleEl = document.getElementById('hover-title')!;
   const hoverValEl = document.getElementById('hover-val')!;
 
-  const livePulseEl = document.getElementById('live-pulse')!;
   const editorialBrandEl = document.getElementById('editorial-brand')!;
   const chipNameEl = document.getElementById('chip-name')!;
   const introTitleEl = document.getElementById('intro-title')!;
@@ -298,14 +268,9 @@ function mountApp(): void {
   const hudChromeEl = document.getElementById('hud-chrome')!;
   const restoreHudBtn = document.getElementById('restore-hud-btn')!;
 
-  const btnTour = document.getElementById('btn-tour')!;
-  const btnTourIcon = document.getElementById('btn-tour-icon')!;
-  const btnTourLbl = document.getElementById('btn-tour-lbl')!;
   const btnActivity = document.getElementById('btn-activity')!;
   const btnBurst = document.getElementById('btn-burst')!;
   const btnBurstLbl = document.getElementById('btn-burst-lbl')!;
-  const btnThermal = document.getElementById('btn-thermal')!;
-  const btnOrbit = document.getElementById('btn-orbit')!;
   const btnPure = document.getElementById('btn-pure')!;
 
   const activitySheet = document.getElementById('activity-sheet')!;
@@ -338,9 +303,6 @@ function mountApp(): void {
   let bursting = false;
   let lastZoomRendered = -99;
   let lastActiveStop = 1;
-  let lastCaption = '';
-  let lastScaleBarLabel = '';
-  let lastScaleBarPx = -1;
   let lastFpsUpdate = 0;
   let currentFps = 120;
 
@@ -353,8 +315,6 @@ function mountApp(): void {
   let railMetrics: { x: number; w: number }[] = [];
   let railViewportRect = { left: 0, top: 0 };
   let railIndicatorBox = { cx: 0, cy: 0, hw: 0, hh: 18 };
-  let hoverPillBox = { cx: 0, cy: 0, hw: 0, hh: 0, visible: false };
-  let nmLabelBox = { cx: 0, cy: 0, hw: 0, hh: 0, opacity: 0 };
 
   type GlassReg = {
     cx: number;
@@ -443,29 +403,14 @@ function mountApp(): void {
     activeHover = hit;
     if (!hit || pureView || (activeInspect && activeInspect.id === hit.id)) {
       hoverPill.classList.remove('visible');
-      if (hoverPillBox.visible) {
-        hoverPillBox.visible = false;
-        pushGlassToEngine();
-      }
       return;
     }
-    const nextTitle = hit.title(telemetry);
-    const nextVal = conciseHoverMetric(hit, telemetry);
-    const textChanged = hoverTitleEl.textContent !== nextTitle || hoverValEl.textContent !== nextVal;
-    hoverTitleEl.textContent = nextTitle;
-    hoverValEl.textContent = nextVal;
+    hoverTitleEl.textContent = hit.title(telemetry);
+    hoverValEl.textContent = conciseHoverMetric(hit, telemetry);
     const clampedX = Math.max(16, Math.min(window.innerWidth - 220, cx + 16));
     const clampedY = Math.max(16, Math.min(window.innerHeight - 54, cy - 32));
     hoverPill.style.transform = `translate3d(${clampedX.toFixed(0)}px, ${clampedY.toFixed(0)}px, 0)`;
     hoverPill.classList.add('visible');
-    if (textChanged || !hoverPillBox.visible || hoverPillBox.hw < 1) {
-      hoverPillBox.hw = hoverPill.offsetWidth * 0.5;
-      hoverPillBox.hh = hoverPill.offsetHeight * 0.5;
-    }
-    hoverPillBox.cx = clampedX + hoverPillBox.hw;
-    hoverPillBox.cy = clampedY + hoverPillBox.hh;
-    hoverPillBox.visible = true;
-    pushGlassToEngine();
   };
 
   const telemetryModeBadge = () =>
@@ -509,7 +454,6 @@ function mountApp(): void {
         reticleLayer.classList.add('intro-hidden');
         hudChromeEl.classList.add('intro-staging');
         nmBracket.style.display = 'none';
-        nmLabelBox.opacity = 0;
         pushGlassToEngine();
       }
     } else if (elapsed < 2.2) {
@@ -571,47 +515,19 @@ function mountApp(): void {
       if (Math.abs(z - lastZoomRendered) < 0.0005) return;
       lastZoomRendered = z;
 
-      const { magText, sizeText, dialDeg, bracketText, bracketOpacity, scaleBarLabel: barLbl, scaleBarPx } =
-        formatMagnification(z);
+      const { dialDeg, bracketText, bracketOpacity } = formatMagnification(z);
       const frac = Math.max(0.015, Math.min(0.8, ((z + 1) / 10) * 0.8));
       reticleArc.setAttribute('stroke-dasharray', `${(circ * frac).toFixed(1)} ${circ.toFixed(1)}`);
       reticleDial.setAttribute('transform', `rotate(${(-dialDeg * 0.55).toFixed(2)} 270 270)`);
 
       if (!introActive && bracketText && bracketOpacity > 0.01) {
-        const wasHidden = nmBracket.style.display === 'none';
         nmBracket.style.display = 'flex';
         nmBracket.style.opacity = bracketOpacity.toFixed(3);
-        const textChanged = nmLabel.textContent !== bracketText;
-        if (textChanged) {
+        if (nmLabel.textContent !== bracketText) {
           nmLabel.textContent = bracketText;
         }
-        if (wasHidden || textChanged || nmLabelBox.hw < 1) {
-          const rNm = nmLabel.getBoundingClientRect();
-          nmLabelBox.cx = rNm.left + rNm.width * 0.5;
-          nmLabelBox.cy = rNm.top + rNm.height * 0.5;
-          nmLabelBox.hw = rNm.width * 0.5;
-          nmLabelBox.hh = rNm.height * 0.5;
-        }
-        nmLabelBox.opacity = bracketOpacity;
       } else if (nmBracket.style.display !== 'none') {
         nmBracket.style.display = 'none';
-        nmLabelBox.opacity = 0;
-      }
-
-      const cap = `${sizeText} · ${magText}`;
-      if (cap !== lastCaption) {
-        lastCaption = cap;
-        scaleCaption.textContent = cap;
-      }
-
-      if (barLbl !== lastScaleBarLabel) {
-        lastScaleBarLabel = barLbl;
-        scaleBarLabel.textContent = barLbl;
-      }
-      const roundedPx = Math.round(scaleBarPx * 2) / 2;
-      if (roundedPx !== lastScaleBarPx) {
-        lastScaleBarPx = roundedPx;
-        scaleBarRule.style.width = `${roundedPx.toFixed(1)}px`;
       }
 
       updateRailIndicator(z);
@@ -632,15 +548,6 @@ function mountApp(): void {
     },
     onHover: (hit, clientX, clientY) => {
       renderHoverPill(hit, clientX, clientY);
-    },
-    onTourChange: (active) => {
-      btnTour.classList.toggle('active', active);
-      btnTourIcon.innerHTML = active ? ICONS.stop : ICONS.play;
-      btnTourLbl.textContent = active ? 'Stop' : 'Dive';
-      if (!active && reticleEngaged) {
-        engageReticle(false);
-      }
-      syncGlassLayout();
     },
   });
 
@@ -679,32 +586,6 @@ function mountApp(): void {
       const g = staticGlassBase[i];
       out.push(hudAlpha < 0.999 ? { ...g, alpha: g.alpha * hudAlpha } : g);
     }
-    if (hoverPillBox.visible && hoverPillBox.hw > 1) {
-      out.push({
-        cx: hoverPillBox.cx,
-        cy: hoverPillBox.cy,
-        hw: hoverPillBox.hw,
-        hh: hoverPillBox.hh,
-        radius: hoverPillBox.hh,
-        bevel: 0.24,
-        frost: 1.2,
-        style: 0,
-        alpha: hudAlpha,
-      });
-    }
-    if (nmLabelBox.opacity > 0.01 && nmLabelBox.hw > 1) {
-      out.push({
-        cx: nmLabelBox.cx,
-        cy: nmLabelBox.cy,
-        hw: nmLabelBox.hw,
-        hh: nmLabelBox.hh,
-        radius: nmLabelBox.hh,
-        bevel: 0.24,
-        frost: 1.1,
-        style: 0,
-        alpha: nmLabelBox.opacity * hudAlpha,
-      });
-    }
     // Elevated crystal droplet lenses rendered in Stage 1 so they refract Stage 0 glass + scene!
     if (!pureView && railIndicatorBox.hw > 1) {
       out.push({
@@ -734,12 +615,8 @@ function mountApp(): void {
       const restore = rectToGlass(restoreHudBtn, 999, 0.24, 1.3, 0, 1.0);
       if (restore) base.push(restore);
     } else {
-      const brand = rectToGlass(editorialBrandEl, 22, 0.22, 1.5, 0, 1.0);
-      if (brand) base.push(brand);
       const tools = rectToGlass(toolCapsuleEl, 999, 0.25, 1.3, 0, 1.0);
       if (tools) base.push(tools);
-      const scaleRow = rectToGlass(scaleHudRowEl, 999, 0.26, 1.1, 0, 1.0);
-      if (scaleRow) base.push(scaleRow);
       const rail = rectToGlass(zoomRailEl, 999, 0.25, 1.3, 0, 1.0);
       if (rail) base.push(rail);
 
@@ -774,9 +651,7 @@ function mountApp(): void {
       measureRail();
       syncGlassLayout();
     });
-    ro.observe(editorialBrandEl);
     ro.observe(toolCapsuleEl);
-    ro.observe(scaleHudRowEl);
     ro.observe(zoomRailEl);
     ro.observe(activitySheet);
     ro.observe(inspectCard);
@@ -889,28 +764,11 @@ function mountApp(): void {
   };
 
   // Wire top-right tool capsule controls
-  btnTour.addEventListener('click', () => {
-    engine.toggleTour();
-    btnTour.blur();
-  });
-
   btnActivity.addEventListener('click', () => {
     showActivity = !showActivity;
     btnActivity.classList.toggle('active', showActivity);
     activitySheet.style.display = showActivity ? 'flex' : 'none';
     if (showActivity) renderActivitySheet();
-    syncGlassLayout();
-  });
-
-  btnThermal.addEventListener('click', () => {
-    engine.thermal = !engine.thermal;
-    btnThermal.classList.toggle('active', engine.thermal);
-    syncGlassLayout();
-  });
-
-  btnOrbit.addEventListener('click', () => {
-    engine.autoOrbit = !engine.autoOrbit;
-    btnOrbit.classList.toggle('active', engine.autoOrbit);
     syncGlassLayout();
   });
 
@@ -920,7 +778,6 @@ function mountApp(): void {
     restoreHudBtn.style.display = pureView ? 'inline-flex' : 'none';
     if (pureView) {
       hoverPill.classList.remove('visible');
-      hoverPillBox.visible = false;
     }
     syncGlassLayout();
   };
@@ -953,12 +810,8 @@ function mountApp(): void {
       }
       introPhase = 'idle';
       engine.startIntro();
-    } else if (e.code === 'Space' && !(e.target instanceof HTMLButtonElement)) {
-      e.preventDefault();
-      engine.toggleTour();
     } else if (e.key === 'Escape') {
       if (engine.isIntroActive) engine.skipIntro();
-      if (engine.isTourActive) engine.stopTour();
       if (activeInspect) engine.clearInspect();
     }
   });
@@ -1007,18 +860,12 @@ function mountApp(): void {
     gpuHistory.push(data.gpuEst);
     if (gpuHistory.length > SPARK_MAX) gpuHistory.shift();
 
-    livePulseEl.classList.toggle('sim', !data.live);
     chipNameEl.textContent = data.chipName;
     introChipNameEl.textContent = data.chipName;
     const cpuPct = Math.round(data.cpuTotal * 100);
     const gpuPct = Math.round(data.gpuEst * 100);
     const tempPart = data.socTempC !== null ? `${data.socTempC.toFixed(0)}°C · ` : '';
-    if (data.live) {
-      editorialMetaEl.textContent = `${tempPart}${cpuPct}% CPU · ${gpuPct}% GPU · ${data.memUsedGB}/${data.memTotalGB} GB`;
-    } else {
-      const modeTag = data.pressureState ? `PRESSURE ${data.thermalState.toUpperCase()}` : 'WEB SIM';
-      editorialMetaEl.textContent = `${tempPart}${cpuPct}% CPU · ${gpuPct}% GPU · ${data.totalCores}C · ${modeTag}`;
-    }
+    editorialMetaEl.textContent = `${tempPart}${cpuPct}% CPU · ${gpuPct}% GPU`;
     renderActivitySheet();
     if (activeInspect) renderInspectCard();
     if (activeHover && hoverPill.classList.contains('visible')) {
