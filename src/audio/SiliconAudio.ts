@@ -15,7 +15,17 @@ function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
-export type AudioIntroPhase = 'idle' | 'hidden' | 'title' | 'dissolve' | 'lock' | 'hud' | 'settle' | 'done';
+export type AudioIntroPhase =
+  | 'idle'
+  | 'off'
+  | 'power'
+  | 'fabric'
+  | 'cores'
+  | 'dissolve'
+  | 'lock'
+  | 'hud'
+  | 'settle'
+  | 'done';
 
 /** Modal chassis ring frequencies for each of the 11 objective turret stops */
 const TURRET_MODAL_HZ = [
@@ -740,7 +750,12 @@ export class SiliconAudio {
   }
 
   /**
-   * Synchronized "First Light" entrance: precision mechanical iris + optical prism lock + rail calibration.
+   * Synchronized "Cold Boot" power-on acoustics:
+   *   - power:  precision PMIC micro-relay engage + subtle V_DD rail capacitor charge swell
+   *   - fabric: crystal clock-lock double ping + coherent bus sweep
+   *   - cores:  staggered silicon core relay bring-up cascade
+   *   - lock:   iconic Leica/Zeiss optical reticle lock
+   *   - hud:    crisp dual-detent rail calibration ticks
    */
   public onIntroPhase(phase: AudioIntroPhase): void {
     if (!this.ctx || !this.isActive()) return;
@@ -748,26 +763,58 @@ export class SiliconAudio {
     const now = ctx.currentTime;
     const out = this.routeOut(0, 0.9);
 
-    if (phase === 'title') {
-      // Smooth mechanical optical iris opening sweep
+    if (phase === 'power') {
+      // Solid PMIC power-rail relay engage (*snick-THOCK*) + subtle capacitive V_DD charge rise
+      this.triggerStrike(now, 3600, 2.6, 0.009, 0.28, out);
+      this.triggerThock(now + 0.016, 250, 74, 0.056, 0.32, out, 'triangle');
+      this.triggerMetalRing(now + 0.016, 540, 1.54, 0.14, 0.08, out);
+
+      const cap = ctx.createOscillator();
+      cap.type = 'sine';
+      cap.frequency.setValueAtTime(118, now + 0.02);
+      cap.frequency.exponentialRampToValueAtTime(248, now + 0.62);
+      const cg = ctx.createGain();
+      cg.gain.setValueAtTime(0.0001, now + 0.02);
+      cg.gain.linearRampToValueAtTime(0.048, now + 0.18);
+      cg.gain.exponentialRampToValueAtTime(0.0001, now + 0.68);
+      cap.connect(cg);
+      cg.connect(out);
+      cap.start(now + 0.02);
+      cap.stop(now + 0.72);
+    } else if (phase === 'fabric') {
+      // Quartz oscillator clock-lock ping + subtle brushed fabric sweep
+      this.triggerStrike(now, 4300, 3.6, 0.007, 0.19, out);
+      this.triggerMetalRing(now, 1320, 1.50, 0.15, 0.068, out);
+      this.triggerMetalRing(now + 0.055, 1980, 1.50, 0.12, 0.052, out);
+
       const src = ctx.createBufferSource();
       src.buffer = this.brushedNoiseBuf;
       src.loop = true;
       const bp = ctx.createBiquadFilter();
       bp.type = 'bandpass';
-      bp.Q.setValueAtTime(2.2, now);
-      bp.frequency.setValueAtTime(220, now);
-      bp.frequency.exponentialRampToValueAtTime(1100, now + 1.15);
-      bp.frequency.exponentialRampToValueAtTime(340, now + 1.9);
+      bp.Q.setValueAtTime(2.6, now);
+      bp.frequency.setValueAtTime(340, now);
+      bp.frequency.exponentialRampToValueAtTime(1280, now + 0.55);
+      bp.frequency.exponentialRampToValueAtTime(480, now + 0.92);
       const ng = ctx.createGain();
       ng.gain.setValueAtTime(0.0001, now);
-      ng.gain.linearRampToValueAtTime(0.11, now + 0.75);
-      ng.gain.exponentialRampToValueAtTime(0.0001, now + 1.95);
+      ng.gain.linearRampToValueAtTime(0.085, now + 0.25);
+      ng.gain.exponentialRampToValueAtTime(0.0001, now + 0.96);
       src.connect(bp);
       bp.connect(ng);
       ng.connect(out);
       src.start(now);
-      src.stop(now + 2.0);
+      src.stop(now + 1.0);
+    } else if (phase === 'cores') {
+      // Subtle staggered silicon cluster relay ticks (E-cores -> P-cores -> GPU)
+      const offsets = [0.0, 0.24, 0.34, 0.44, 0.54, 0.72];
+      offsets.forEach((dt, idx) => {
+        const t = now + dt;
+        const hz = 2900 + idx * 240;
+        const outPan = this.routeOut(-0.22 + idx * 0.09, 0.65);
+        this.triggerStrike(t, hz, 3.8, 0.005, 0.12 + idx * 0.01, outPan);
+        this.triggerThock(t, 360 + idx * 28, 150, 0.016, 0.085, outPan, 'triangle');
+      });
     } else if (phase === 'lock') {
       // Iconic mechanical Leica/Zeiss prism & reticle lock (*snick-CLACK!*)
       this.triggerStrike(now, 4500, 3.0, 0.008, 0.28, out);

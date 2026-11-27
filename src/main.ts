@@ -159,7 +159,7 @@ function mountApp(): void {
 
       <div id="hud-chrome" class="hud-chrome intro-staging">
         <div class="hud-top">
-          <div id="editorial-brand" class="editorial-brand" title="Replay Entrance (R)">
+          <div id="editorial-brand" class="editorial-brand" title="Replay Power-On (R)">
             <span id="chip-name" class="editorial-name">Apple Silicon</span>
             <div id="editorial-meta" class="editorial-meta">Initializing…</div>
           </div>
@@ -442,13 +442,19 @@ function mountApp(): void {
 
   let introActive = false;
   let introHudAlpha = 1.0;
-  let introPhase: 'idle' | 'hidden' | 'title' | 'dissolve' | 'lock' | 'hud' | 'settle' | 'done' = 'idle';
+  let introPhase: 'idle' | 'off' | 'power' | 'fabric' | 'cores' | 'dissolve' | 'lock' | 'hud' | 'settle' | 'done' =
+    'idle';
 
   const syncIntroUi = (active: boolean, elapsed: number) => {
     introActive = active;
     if (!active) {
       if (introPhase === 'done' && introHudAlpha >= 0.999) return;
-      const wasEarlySkip = introPhase === 'hidden' || introPhase === 'title' || introPhase === 'dissolve';
+      const wasEarlySkip =
+        introPhase === 'off' ||
+        introPhase === 'power' ||
+        introPhase === 'fabric' ||
+        introPhase === 'cores' ||
+        introPhase === 'dissolve';
       introPhase = 'done';
       introHudAlpha = 1.0;
       introTitleEl.classList.remove('visible');
@@ -460,13 +466,13 @@ function mountApp(): void {
       return;
     }
 
-    const nextHudAlpha = elapsed < 4.20 ? 0.0 : Math.min(1.0, (elapsed - 4.20) / 0.85);
+    const nextHudAlpha = elapsed < 4.45 ? 0.0 : Math.min(1.0, (elapsed - 4.45) / 0.82);
     const alphaChanged = Math.abs(nextHudAlpha - introHudAlpha) > 0.008;
     introHudAlpha = nextHudAlpha;
 
-    if (elapsed < 0.95) {
-      if (introPhase !== 'hidden') {
-        introPhase = 'hidden';
+    if (elapsed < 0.90) {
+      if (introPhase !== 'off') {
+        introPhase = 'off';
         introTitleEl.classList.remove('visible', 'exiting', 'skipped');
         reticleLayer.classList.remove('intro-lock', 'engaged');
         reticleLayer.classList.add('intro-hidden');
@@ -474,20 +480,34 @@ function mountApp(): void {
         nmBracket.style.display = 'none';
         pushGlassToEngine();
       }
-    } else if (elapsed < 2.95) {
-      if (introPhase !== 'title') {
-        introPhase = 'title';
+    } else if (elapsed < 1.38) {
+      if (introPhase !== 'power') {
+        introPhase = 'power';
         introTitleEl.classList.remove('exiting', 'skipped');
         introTitleEl.classList.add('visible');
-        audio.onIntroPhase('title');
+        audio.onIntroPhase('power');
       }
-    } else if (elapsed < 3.85) {
+    } else if (elapsed < 2.20) {
+      if (introPhase !== 'fabric') {
+        introPhase = 'fabric';
+        introTitleEl.classList.remove('exiting', 'skipped');
+        introTitleEl.classList.add('visible');
+        audio.onIntroPhase('fabric');
+      }
+    } else if (elapsed < 3.55) {
+      if (introPhase !== 'cores') {
+        introPhase = 'cores';
+        introTitleEl.classList.remove('exiting', 'skipped');
+        introTitleEl.classList.add('visible');
+        audio.onIntroPhase('cores');
+      }
+    } else if (elapsed < 4.15) {
       if (introPhase !== 'dissolve') {
         introPhase = 'dissolve';
         introTitleEl.classList.remove('visible', 'skipped');
         introTitleEl.classList.add('exiting');
       }
-    } else if (elapsed < 4.20) {
+    } else if (elapsed < 4.45) {
       if (introPhase !== 'lock') {
         introPhase = 'lock';
         introTitleEl.classList.remove('visible', 'skipped');
@@ -496,7 +516,7 @@ function mountApp(): void {
         reticleLayer.classList.add('intro-lock');
         audio.onIntroPhase('lock');
       }
-    } else if (elapsed < 4.95) {
+    } else if (elapsed < 5.15) {
       if (introPhase !== 'hud') {
         introPhase = 'hud';
         reticleLayer.classList.remove('intro-hidden');

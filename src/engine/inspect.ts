@@ -154,10 +154,10 @@ export function pickDieRegion(
   }
 
   // 8) I/O & Network PHY (bottom-left)
-  if (wx >= -2.72 && wx <= -0.64 && wz >= 1.28 && wz <= 2.14) {
+  if (wx >= -2.76 && wx <= -0.60 && wz >= 1.28 && wz <= 2.14) {
     return {
       id: 'io-phy',
-      box: [-1.68, 1.70, 1.04, 0.42],
+      box: [-1.68, 1.70, 1.08, 0.42],
       diveZoom: 2.0,
       regionKind: 0,
       title: () => 'I/O & Thunderbolt 4 PHY',
@@ -175,7 +175,7 @@ export function pickDieRegion(
   if (nearTB || nearLR) {
     return {
       id: 'smd-caps',
-      box: [0, 0, 3.38, 2.94],
+      box: [0, 0, 3.42, 2.95],
       diveZoom: 1.0,
       regionKind: 0,
       title: () => 'SMD Decoupling Capacitor Ring',

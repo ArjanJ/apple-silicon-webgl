@@ -136,13 +136,11 @@ export const MAX_ZOOM = 9.0;
 const STAGE_FLOOR_Y = [-0.598, -0.26, -0.14, -0.075, -0.35, -6.0, -6.0, -6.0, -6.0, -6.0];
 const WORLD0_GRID_STEP = WORLD1_PITCH / STAGE_RATIOS[0]; // 0.095 (exact World 1 grid pitch on World 0!)
 
-/** "First Light" Mysterious Monolith -> Hero Silicon Reveal choreography constants */
+/** "Cold Boot" Powered-Off -> Staged Silicon Power-On choreography constants */
 const INTRO_DURATION = 5.4;
-const INTRO_START_ZOOM = 0.52;
-const INTRO_START_PITCH = 0.16;
-const INTRO_START_YAW = -1.14;
-const INTRO_START_LOOK_X = -0.78;
-const INTRO_START_LOOK_Z = -0.34;
+const INTRO_START_ZOOM = -0.27;
+const INTRO_START_PITCH = 0.76;
+const INTRO_START_YAW = -0.05;
 const HERO_ZOOM = 0.0;
 const HERO_PITCH = 0.86;
 const HERO_YAW = 0.0;
@@ -295,13 +293,19 @@ export class SiliconEngine {
   // Parity (+1 or -1) of the currently selected Silicon atom in World 6 (rotates World 7 by 90° Y for B-sublattice!)
   private atomParity: 1 | -1 = 1;
 
-  // Interactive click-to-inspect & whisper-quiet hover preview state
+  // Interactive click-to-inspect & whisper-quiet hover preview state (with smooth optical fade)
   private inspectBox: [number, number, number, number] = [0, 0, 0, 0];
   private inspectId: string | null = null;
   private hasInspect = false;
+  private renderInspectBox: [number, number, number, number] = [0, 0, 0, 0];
+  private renderInspectIsRing = 0;
+  private inspectAlpha = 0;
   private hoverBox: [number, number, number, number] = [0, 0, 0, 0];
   private hoverId: string | null = null;
   private hasHover = false;
+  private renderHoverBox: [number, number, number, number] = [0, 0, 0, 0];
+  private renderHoverIsRing = 0;
+  private hoverAlpha = 0;
   private downX = 0;
   private downY = 0;
 
@@ -310,20 +314,23 @@ export class SiliconEngine {
   private tourElapsed = 0;
   private tourBaseYaw = -0.14;
 
-  // "First Light" Apple Keynote entrance state
+  // "Cold Boot" Powered-Off -> Staged Silicon Power-On state
   private introActive = false;
   private introElapsed = 0;
   private introLightSweep = 1.0;
   private introKeyIntensity = 1.0;
   private introRimBoost = 1.0;
-  private introWakePulse = 0.0;
-  private introBladePos = 0.0;
-  private introBladeStrength = 0.0;
   private introFogBoost = 0.0;
-  private introLookX = 0.0;
-  private introLookZ = 0.0;
   private introExposure = 1.0;
   private introDofBoost = 0.0;
+  private bootPwrRails = 1.0;
+  private bootFabricLock = 1.0;
+  private bootMemTrain = 1.0;
+  private bootEcoreWake = 1.0;
+  private bootPcoreWake = 1.0;
+  private bootGpuWake = 1.0;
+  private bootAuxWake = 1.0;
+  private bootActive = 0.0;
 
   // Camera & snappy zoom state
   public zoom = HERO_ZOOM;
@@ -986,8 +993,10 @@ export class SiliconEngine {
       'uRegionKind',
       'uInspectBox',
       'uHoverBox',
+      'uHighlightFade',
       'uIntroLight',
-      'uIntroBlade',
+      'uBootA',
+      'uBootB',
     ]);
 
     this.uPrefilter = grab(this.prefilterProg, ['uTex', 'uTexelSize']);
@@ -1325,7 +1334,7 @@ export class SiliconEngine {
     return this.introActive;
   }
 
-  /** Play (or replay) the "First Light" Apple Keynote entrance animation */
+  /** Play (or replay) the "Cold Boot" powered-off -> staged silicon power-on entrance */
   public startIntro(): void {
     this.stopTour();
     this.clearInspect();
@@ -1354,17 +1363,22 @@ export class SiliconEngine {
     this.yaw = INTRO_START_YAW;
     this.targetYaw = INTRO_START_YAW;
 
-    this.introLightSweep = 0.0;
-    this.introKeyIntensity = 0.015;
-    this.introRimBoost = 2.6;
-    this.introWakePulse = 0.0;
-    this.introBladePos = -4.2;
-    this.introBladeStrength = 1.0;
-    this.introFogBoost = 0.036;
-    this.introLookX = INTRO_START_LOOK_X;
-    this.introLookZ = INTRO_START_LOOK_Z;
+    // Chip rests visibly "off" in deep blackout studio lighting, completely dead electrically
+    this.introLightSweep = 0.32;
+    this.introKeyIntensity = 0.042;
+    this.introRimBoost = 0.42;
+    this.introFogBoost = 0.032;
     this.introExposure = 0.0;
-    this.introDofBoost = 0.72;
+    this.introDofBoost = 0.22;
+
+    this.bootPwrRails = 0.0;
+    this.bootFabricLock = 0.0;
+    this.bootMemTrain = 0.0;
+    this.bootEcoreWake = 0.0;
+    this.bootPcoreWake = 0.0;
+    this.bootGpuWake = 0.0;
+    this.bootAuxWake = 0.0;
+    this.bootActive = 1.0;
     this.hooks.onIntroFrame?.({ active: true, progress: 0, elapsed: 0 });
   }
 
@@ -1962,9 +1976,22 @@ export class SiliconEngine {
       this.introLightSweep,
       this.introKeyIntensity,
       this.introRimBoost,
-      this.introWakePulse
+      0.0
     );
-    gl.uniform2f(this.uScene.uIntroBlade, this.introBladePos, this.introBladeStrength);
+    gl.uniform4f(
+      this.uScene.uBootA,
+      this.bootPwrRails,
+      this.bootFabricLock,
+      this.bootMemTrain,
+      this.bootEcoreWake
+    );
+    gl.uniform4f(
+      this.uScene.uBootB,
+      this.bootPcoreWake,
+      this.bootGpuWake,
+      this.bootAuxWake,
+      this.bootActive
+    );
 
     for (let i = 0; i < activeStages.length; i++) {
       const { idx, scale } = activeStages[i];
@@ -1980,28 +2007,37 @@ export class SiliconEngine {
             : 0.0;
       gl.uniform1f(this.uScene.uLensClearance, lensClearance);
 
-      if (idx === 0 && this.hasInspect) {
+      const showInspect = idx === 0 && this.inspectAlpha > 0.004 && this.renderInspectBox[2] > 0.001;
+      const showHover = idx === 0 && this.hoverAlpha > 0.004 && this.renderHoverBox[2] > 0.001;
+      if (showInspect) {
         gl.uniform4f(
           this.uScene.uInspectBox,
-          this.inspectBox[0],
-          this.inspectBox[1],
-          this.inspectBox[2],
-          this.inspectBox[3]
+          this.renderInspectBox[0],
+          this.renderInspectBox[1],
+          this.renderInspectBox[2],
+          this.renderInspectBox[3]
         );
       } else {
         gl.uniform4f(this.uScene.uInspectBox, 0, 0, 0, 0);
       }
-      if (idx === 0 && this.hasHover && (!this.hasInspect || this.hoverId !== this.inspectId)) {
+      if (showHover) {
         gl.uniform4f(
           this.uScene.uHoverBox,
-          this.hoverBox[0],
-          this.hoverBox[1],
-          this.hoverBox[2],
-          this.hoverBox[3]
+          this.renderHoverBox[0],
+          this.renderHoverBox[1],
+          this.renderHoverBox[2],
+          this.renderHoverBox[3]
         );
       } else {
         gl.uniform4f(this.uScene.uHoverBox, 0, 0, 0, 0);
       }
+      gl.uniform4f(
+        this.uScene.uHighlightFade,
+        showHover ? this.hoverAlpha : 0.0,
+        showInspect ? this.inspectAlpha : 0.0,
+        this.renderHoverIsRing,
+        this.renderInspectIsRing
+      );
       this.drawOpaqueStage(stage);
     }
 
@@ -2021,6 +2057,7 @@ export class SiliconEngine {
       gl.uniform1f(this.uScene.uLensClearance, 0.0);
       gl.uniform4f(this.uScene.uInspectBox, 0, 0, 0, 0);
       gl.uniform4f(this.uScene.uHoverBox, 0, 0, 0, 0);
+      gl.uniform4f(this.uScene.uHighlightFade, 0, 0, 0, 0);
 
       for (let i = 0; i < activeStages.length; i++) {
         const { idx, scale } = activeStages[i];
@@ -2102,7 +2139,7 @@ export class SiliconEngine {
     this.smoothCamShiftY *= shiftDecay;
     this.smoothCamShiftZ *= shiftDecay;
 
-    // "First Light" Mysterious Monolith -> Hero Reveal choreography (5.4s, C2 quintic, instantly interruptible)
+    // "Cold Boot" Powered-Off -> Staged Silicon Power-On choreography (5.4s, instantly interruptible)
     const prevZ = this.zoom;
     const prevYaw = this.yaw;
     if (this.introActive) {
@@ -2110,38 +2147,41 @@ export class SiliconEngine {
       const t = this.introElapsed;
       const progress = clamp(t / INTRO_DURATION, 0, 1);
 
-      // Act I (0-1.8s): slow hypnotic skim across the dark chamfered silicon corridors
-      // Act II-III (1.6-5.2s): grand pullback & crane rise revealing the full Apple Silicon die
-      const uDrift = this.smootherstep(0.0, 2.2, t);
-      const uYaw = this.smootherstep(0.35, 5.15, t);
-      const uPitch = this.smootherstep(1.35, 5.20, t);
-      const uZoom = this.smootherstep(1.50, 5.30, t);
-      const uLook = this.smootherstep(1.40, 4.75, t);
-
-      this.yaw = INTRO_START_YAW + 0.14 * uDrift + (HERO_YAW - (INTRO_START_YAW + 0.14)) * uYaw;
-      this.pitch = INTRO_START_PITCH + (HERO_PITCH - INTRO_START_PITCH) * uPitch;
-      this.zoom = INTRO_START_ZOOM + (HERO_ZOOM - INTRO_START_ZOOM) * uZoom;
-      this.introLookX = INTRO_START_LOOK_X * (1.0 - uLook);
-      this.introLookZ = INTRO_START_LOOK_Z * (1.0 - uLook);
+      // Starts slightly pulled back so the ENTIRE chip package + 4x LPDDR5 are visible in the dark,
+      // then slowly pushes forward into the hero framing as the silicon powers up!
+      const uCam = this.smootherstep(1.05, 5.15, t);
+      this.yaw = INTRO_START_YAW + (HERO_YAW - INTRO_START_YAW) * uCam;
+      this.pitch = INTRO_START_PITCH + (HERO_PITCH - INTRO_START_PITCH) * uCam;
+      this.zoom = INTRO_START_ZOOM + (HERO_ZOOM - INTRO_START_ZOOM) * uCam;
       this.targetYaw = this.yaw;
       this.targetPitch = this.pitch;
       this.targetZoom = this.zoom;
 
-      // Silky emergence from pure obsidian black, knife-edge studio slit blade sweeping through shadow,
-      // ghostly sub-surface cobalt trace pulse, then full cleanroom softbox reveal as camera cranes out!
-      this.introExposure = this.smoothstep(0.0, 0.85, t);
-      this.introLightSweep = this.smootherstep(0.50, 4.30, t);
-      this.introKeyIntensity = 0.015 + 0.985 * this.smootherstep(1.85, 4.40, t);
-      this.introRimBoost = 2.60 - 1.60 * this.smootherstep(2.20, 4.50, t);
+      // Deep blackout start (0.0 -> 0.90s), stays dark while power rails & fabric blaze through shadow,
+      // then sweeps the overhead cleanroom softbox dramatically open as the core arrays wake!
+      const fadeInOff = this.smoothstep(0.0, 0.55, t) * 0.68;
+      const earlyHint = this.smootherstep(0.95, 2.65, t) * 0.11;
+      const studioReveal = this.smootherstep(2.35, 4.65, t);
+      this.introExposure = fadeInOff + 0.32 * this.smootherstep(1.25, 4.45, t);
+      this.introLightSweep = 0.32 + 0.68 * this.smootherstep(1.40, 4.75, t);
+      this.introKeyIntensity = 0.042 + earlyHint + (1.0 - 0.042 - 0.11) * studioReveal;
+      this.introRimBoost = 0.42 + 0.58 * this.smootherstep(1.20, 4.20, t);
+      this.introFogBoost = 0.032 * (1.0 - this.smootherstep(2.15, 4.55, t));
+      this.introDofBoost = 0.22 * (1.0 - this.smootherstep(2.10, 4.60, t));
 
-      const uBlade = this.smoothstep(0.15, 3.65, t);
-      this.introBladePos = -4.2 + 9.4 * uBlade;
-      this.introBladeStrength =
-        this.smoothstep(0.05, 0.55, t) * (1.0 - this.smootherstep(2.60, 4.15, t));
-
-      this.introWakePulse = t >= 1.55 && t <= 3.65 ? clamp((t - 1.55) / 2.10, 0, 1) : 0.0;
-      this.introFogBoost = 0.036 * (1.0 - this.smootherstep(1.75, 4.25, t));
-      this.introDofBoost = 0.72 * (1.0 - this.smootherstep(2.10, 4.55, t));
+      // Staged hardware power-on sequence (completely dark & dead 0.0 -> 0.90s):
+      //   Stage 1 (0.90-1.68s): V_DD perimeter MLCC decoupling caps & ABF power rails blaze amber
+      //   Stage 2 (1.38-2.25s): Coherent fabric spines & 48 MB SLC clock-lock outward from center
+      //   Stage 3 (1.85-2.78s): 45° ABF escape buses train all 4x LPDDR5 Unified Memory packages
+      //   Stage 4 (2.20-4.05s): E-Cores (Boot ROM) -> P-Cores P0..P7 -> GPU Array -> ANE / Media / I/O PHY
+      this.bootPwrRails = clamp((t - 0.90) / 0.78, 0, 1);
+      this.bootFabricLock = clamp((t - 1.38) / 0.87, 0, 1);
+      this.bootMemTrain = clamp((t - 1.85) / 0.93, 0, 1);
+      this.bootEcoreWake = clamp((t - 2.20) / 0.64, 0, 1);
+      this.bootPcoreWake = clamp((t - 2.48) / 0.98, 0, 1);
+      this.bootGpuWake = clamp((t - 2.88) / 0.92, 0, 1);
+      this.bootAuxWake = clamp((t - 3.22) / 0.80, 0, 1);
+      this.bootActive = 1.0 - this.smootherstep(4.25, 5.20, t);
 
       if (t >= INTRO_DURATION) {
         this.introActive = false;
@@ -2151,33 +2191,40 @@ export class SiliconEngine {
         this.introLightSweep = 1.0;
         this.introKeyIntensity = 1.0;
         this.introRimBoost = 1.0;
-        this.introWakePulse = 0.0;
-        this.introBladePos = 0.0;
-        this.introBladeStrength = 0.0;
         this.introFogBoost = 0.0;
-        this.introLookX = 0.0;
-        this.introLookZ = 0.0;
         this.introExposure = 1.0;
         this.introDofBoost = 0.0;
+        this.bootPwrRails = 1.0;
+        this.bootFabricLock = 1.0;
+        this.bootMemTrain = 1.0;
+        this.bootEcoreWake = 1.0;
+        this.bootPcoreWake = 1.0;
+        this.bootGpuWake = 1.0;
+        this.bootAuxWake = 1.0;
+        this.bootActive = 0.0;
         this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
       } else {
         this.hooks.onIntroFrame?.({ active: true, progress, elapsed: t });
       }
     } else {
-      // Smoothly settle any interrupted intro lighting/fog/offset back to steady state (zero harsh flash on skip!)
-      const settle = 1 - Math.exp(-7.5 * dt);
+      // Smoothly settle any interrupted intro lighting/boot rails back to live steady state (zero harsh snap on skip!)
+      const settle = 1 - Math.exp(-8.5 * dt);
       this.introLightSweep += (1.0 - this.introLightSweep) * settle;
       this.introKeyIntensity += (1.0 - this.introKeyIntensity) * settle;
       this.introRimBoost += (1.0 - this.introRimBoost) * settle;
-      this.introBladeStrength += (0.0 - this.introBladeStrength) * settle;
       this.introFogBoost += (0.0 - this.introFogBoost) * settle;
-      this.introLookX += (0.0 - this.introLookX) * settle;
-      this.introLookZ += (0.0 - this.introLookZ) * settle;
       this.introExposure += (1.0 - this.introExposure) * settle;
       this.introDofBoost += (0.0 - this.introDofBoost) * settle;
-      if (this.introWakePulse > 0.001) {
-        this.introWakePulse = Math.min(1.0, this.introWakePulse + dt * 1.4);
-        if (this.introWakePulse >= 0.999) this.introWakePulse = 0.0;
+      this.bootPwrRails += (1.0 - this.bootPwrRails) * settle;
+      this.bootFabricLock += (1.0 - this.bootFabricLock) * settle;
+      this.bootMemTrain += (1.0 - this.bootMemTrain) * settle;
+      this.bootEcoreWake += (1.0 - this.bootEcoreWake) * settle;
+      this.bootPcoreWake += (1.0 - this.bootPcoreWake) * settle;
+      this.bootGpuWake += (1.0 - this.bootGpuWake) * settle;
+      this.bootAuxWake += (1.0 - this.bootAuxWake) * settle;
+      this.bootActive += (0.0 - this.bootActive) * settle;
+      if (this.bootActive < 0.002) {
+        this.bootActive = 0.0;
       }
 
       // Cinematic Dive keyframed choreography (Scale -> Hottest P-Core -> BEOL -> FEOL -> Gate -> Lattice -> Atom -> Nucleus -> Quarks)
@@ -2253,6 +2300,56 @@ export class SiliconEngine {
       this.clearHover();
     }
 
+    // Smooth optical focus & corner-bracket fade transitions (zero jarring snap on hover/inspect)
+    const targetInspectAlpha = this.hasInspect ? 1.0 : 0.0;
+    const inspectRate = this.hasInspect ? 12.0 : 10.0;
+    if (this.hasInspect) {
+      const nextRing = this.inspectId === 'smd-caps' ? 1 : 0;
+      const sameShape =
+        this.inspectAlpha > 0.02 &&
+        (this.inspectBox[3] < 0) === (this.renderInspectBox[3] < 0) &&
+        nextRing === this.renderInspectIsRing;
+      this.renderInspectIsRing = nextRing;
+      if (sameShape) {
+        const kBox = 1.0 - Math.exp(-18.0 * dt);
+        for (let c = 0; c < 4; c++) {
+          this.renderInspectBox[c] += (this.inspectBox[c] - this.renderInspectBox[c]) * kBox;
+        }
+      } else {
+        this.renderInspectBox[0] = this.inspectBox[0];
+        this.renderInspectBox[1] = this.inspectBox[1];
+        this.renderInspectBox[2] = this.inspectBox[2];
+        this.renderInspectBox[3] = this.inspectBox[3];
+      }
+    }
+    this.inspectAlpha += (targetInspectAlpha - this.inspectAlpha) * (1.0 - Math.exp(-inspectRate * dt));
+    if (this.inspectAlpha < 0.002 && !this.hasInspect) this.inspectAlpha = 0.0;
+
+    const hoverDistinct = this.hasHover && (!this.hasInspect || this.hoverId !== this.inspectId);
+    const targetHoverAlpha = hoverDistinct ? 1.0 : 0.0;
+    const hoverRate = hoverDistinct ? 16.0 : 11.0;
+    if (hoverDistinct) {
+      const nextRing = this.hoverId === 'smd-caps' ? 1 : 0;
+      const sameShape =
+        this.hoverAlpha > 0.02 &&
+        (this.hoverBox[3] < 0) === (this.renderHoverBox[3] < 0) &&
+        nextRing === this.renderHoverIsRing;
+      this.renderHoverIsRing = nextRing;
+      if (sameShape) {
+        const kBox = 1.0 - Math.exp(-26.0 * dt);
+        for (let c = 0; c < 4; c++) {
+          this.renderHoverBox[c] += (this.hoverBox[c] - this.renderHoverBox[c]) * kBox;
+        }
+      } else {
+        this.renderHoverBox[0] = this.hoverBox[0];
+        this.renderHoverBox[1] = this.hoverBox[1];
+        this.renderHoverBox[2] = this.hoverBox[2];
+        this.renderHoverBox[3] = this.hoverBox[3];
+      }
+    }
+    this.hoverAlpha += (targetHoverAlpha - this.hoverAlpha) * (1.0 - Math.exp(-hoverRate * dt));
+    if (this.hoverAlpha < 0.002 && !hoverDistinct) this.hoverAlpha = 0.0;
+
     // Smooth camera framing:
     //   - At Die (z = 0) and Scale (z < 0), stays centered on the chip package (with the US Quarter off to the side)
     //   - As you dive into an inspected die block (z: 0.02 -> 0.68), glides monotonically onto anchor[0] without overshoot
@@ -2261,15 +2358,12 @@ export class SiliconEngine {
     const outT = Math.max(0.0, -this.zoom);
     const macroOut = this.smoothstep(0.0, -0.85, this.zoom);
     const diveFocus = this.smoothstep(0.02, 0.68, this.zoom);
-    const heroFrameMask =
-      (1.0 - diveFocus) *
-      (1.0 - macroOut) *
-      (this.introActive ? this.smootherstep(1.5, 5.2, this.introElapsed) : 1.0);
+    const heroFrameMask = (1.0 - diveFocus) * (1.0 - macroOut);
     const heroLookZ = 0.72 * heroFrameMask;
 
-    const lookX = -this.effOffsets[0][0] * (1.0 - diveFocus) + this.smoothCamShiftX + this.introLookX;
+    const lookX = -this.effOffsets[0][0] * (1.0 - diveFocus) + this.smoothCamShiftX;
     const lookY = this.smoothCamShiftY;
-    const lookZ = -this.effOffsets[0][2] * (1.0 - diveFocus) + this.smoothCamShiftZ + this.introLookZ + heroLookZ;
+    const lookZ = -this.effOffsets[0][2] * (1.0 - diveFocus) + this.smoothCamShiftZ + heroLookZ;
 
     const aspectBoost = Math.max(1.0, 1.62 / Math.max(0.85, aspect));
     const subatomicBackoff = this.smoothstep(7.6, 8.2, this.zoom);

@@ -195,17 +195,17 @@ body,
     transform 1.1s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* "First Light" Enigmatic Whisper Title (Floats quietly above dark silhouette, dissolves before reveal) */
+/* "Cold Boot" Whisper Title (Floats quietly in the obsidian margin above the chip, dissolves before HUD reveal) */
 .intro-title {
   position: absolute;
-  top: 28%;
+  top: clamp(42px, 8.2%, 78px);
   left: 50%;
   z-index: 16;
   pointer-events: none;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 11px;
+  gap: 7px;
   text-align: center;
   opacity: 0;
   transform: translate3d(-50%, calc(-50% + 10px), 0) scale(1.025);
@@ -251,7 +251,7 @@ body,
 }
 
 .intro-chip-name {
-  font-size: clamp(30px, 4.4vw, 48px);
+  font-size: clamp(24px, 3.2vw, 38px);
   font-weight: 500;
   letter-spacing: 0.03em;
   line-height: 1.08;
