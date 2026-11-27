@@ -492,7 +492,7 @@ uniform float uHoleMinY;
 uniform float uHoleMode;
 uniform float uHoleOpen;
 uniform float uStageReveal;
-uniform vec4 uIntroLight; // (lightSweep 0..1, keyIntensity 0..1, rimBoost 1..2.5, unused)
+uniform vec4 uIntroLight; // (lightSweep 0..1, keyIntensity 0..1, rimBoost 0.15..2.5, beatPulse 0..1.5)
 uniform vec4 uBootA;      // (pwrRails, fabricLock, memTrain, ecoreWake) — all 1.0 when steady
 uniform vec4 uBootB;      // (pcoreWake, gpuWake, auxWake, bootActive)   — (1,1,1,0) when steady
 
@@ -1070,10 +1070,10 @@ ${holeDiscardBlock}
         bootGate = smoothstep(0.05, 0.55, mLocal);
         bootFlash = exp(-pow((mLocal - 0.28) / 0.18, 2.0)) * smoothstep(0.0, 0.07, mLocal) * uBootB.w * 1.15;
       } else if (ch == 0) {
-        // Main die seal ring catches a crisp perimeter power-good pulse as fabric locks
+        // Main die seal ring catches a crisp perimeter power-good pulse strictly after fabric ignition begins
         float fabP = uBootA.y;
-        float ringWave = exp(-pow((fabP - 0.45) / 0.22, 2.0)) * smoothstep(0.935, 0.985, locBorder);
-        bootFlash = ringWave * uBootB.w * 0.95;
+        float ringWave = exp(-pow((fabP - 0.45) / 0.22, 2.0)) * smoothstep(0.0, 0.08, fabP) * smoothstep(0.935, 0.985, locBorder);
+        bootFlash = ringWave * uBootB.w * 1.15;
       }
     }
 
@@ -1291,11 +1291,13 @@ ${holeDiscardBlock}
       if (ch == 8 && uBootB.w > 0.001 && uZoom < 0.85) {
         float memP = uBootA.z;
         ramGate = smoothstep(0.22, 0.82, memP);
-        // Subtle twin link-training pulse strictly along the inner bottom fillet facing the die
-        float innerEdge = smoothstep(3.85, 3.45, abs(p.x));
-        float pulseA = exp(-pow((memP - 0.36) / 0.11, 2.0));
-        float pulseB = exp(-pow((memP - 0.60) / 0.12, 2.0)) * 0.72;
-        ramFlash = (pulseA + pulseB) * innerEdge * uBootB.w;
+        if (memP > 0.001) {
+          // Subtle twin link-training pulse strictly along the inner bottom fillet facing the die
+          float innerEdge = smoothstep(3.85, 3.45, abs(p.x));
+          float pulseA = exp(-pow((memP - 0.36) / 0.11, 2.0));
+          float pulseB = exp(-pow((memP - 0.60) / 0.12, 2.0)) * 0.72;
+          ramFlash = (pulseA + pulseB) * smoothstep(0.0, 0.06, memP) * innerEdge * uBootB.w;
+        }
       }
       if (liveEnergy > 0.05 && ramGate > 0.002) {
         emissive = vec3(0.10, 0.44, 0.94) * liveEnergy * (0.04 + 0.34 * baseFillet) * ramGate;
@@ -1500,16 +1502,18 @@ ${holeDiscardBlock}
 
   float introKey = clamp(uIntroLight.y, 0.0, 1.0);
   float introRim = clamp(uIntroLight.z, 0.15, 2.5);
+  float introPulse = clamp(uIntroLight.w, 0.0, 1.5);
 
   // Deep blackout studio while unpowered: minimal softbox & dark-mirror reflection so chip silhouette whispers out of shadow
+  // Musical beatPulse breathes crisp sapphire/platinum grazing light along machined chamfers strictly on bass thumps!
   float localKey = introKey;
-  float envLift = mix(0.032, 1.0, pow(introKey, 0.85));
-  float localRim = mix(introRim, 1.0, introKey);
+  float envLift = mix(0.022 + introPulse * 0.022, 1.0, pow(introKey, 0.88));
+  float localRim = mix(introRim + introPulse * 0.82, 1.0 + introPulse * 0.35, introKey);
 
   vec3 direct = vec3(0.0);
   direct += (kDk * diffAlbedo + specK + vec3(ccSpecK)) * keyTint * (ndotlK * 2.65) * sh * localKey;
   direct += ((vec3(1.0) - Fr) * diffAlbedo * 0.60 + specR * 0.82) * rimTint * (ndotlR * mix(1.38, 1.95, uSemFactor)) * localRim;
-  direct += diffAlbedo * ndotlF * vec3(0.24, 0.30, 0.42) * 1.10 * mix(0.035, 1.0, introKey);
+  direct += diffAlbedo * ndotlF * vec3(0.24, 0.30, 0.42) * 1.10 * mix(0.03, 1.0, introKey);
 
   // Prefiltered HDR Studio Softbox + Negative-Fill Environment Reflection + Clearcoat Reflection
   vec3 reflDir = reflect(-v, n);
@@ -1525,13 +1529,15 @@ ${holeDiscardBlock}
     envReflection += ccEnv * ccF * clearcoat * 0.68 * ao * envLift;
   }
 
-  // Machined chamfer glint along precision beveled silicon & metal edges
-  vec3 bevelGlint = vec3(0.80, 0.89, 1.04) * bevelMask * pow(1.0 - ndotv, 1.85) * (0.06 + 0.24 * metal) * (0.42 + 0.58 * sh) * ao * mix(0.32, 1.0, introKey);
+  // Machined chamfer glint along precision beveled silicon & metal edges (pulses with bass thumps & ignition!)
+  float bevelPulse = mix(0.24 + introPulse * 0.88, 1.0 + introPulse * 0.38, introKey);
+  vec3 bevelGlint = vec3(0.80, 0.89, 1.04) * bevelMask * pow(1.0 - ndotv, 1.85) * (0.06 + 0.24 * metal) * (0.42 + 0.58 * sh) * ao * bevelPulse;
 
   // Dark-Field / SEM Grazing Rim Light
-  vec3 semRim = vec3(0.46, 0.68, 0.96) * pow(1.0 - ndotv, 3.4) * (0.04 + 0.32 * uSemFactor) * ao * localRim;
+  float darkBeatRim = introPulse * (1.0 - introKey * 0.72) * 0.18 * (0.35 + 0.65 * metal);
+  vec3 semRim = vec3(0.46, 0.68, 0.96) * pow(1.0 - ndotv, 3.2) * (0.045 + 0.32 * uSemFactor + darkBeatRim) * ao * localRim;
   vec3 envDiff = (metal < 0.92) ? sampleStudioEnvUv(envDirToUv(n), 0.95, uSemFactor) : vec3(0.10);
-  vec3 ambient = baseCol * (vec3(0.042, 0.056, 0.084) + envDiff * (1.0 - metal) * 0.16) * ao * mix(0.04, 1.0, introKey);
+  vec3 ambient = baseCol * (vec3(0.042, 0.056, 0.084) + envDiff * (1.0 - metal) * 0.16) * ao * mix(0.032, 1.0, introKey);
 
   // Subtle localized self-illumination bounce in the dark studio as V_DD rails & fabric ignite!
   vec3 bootBounce = vec3(0.0);
@@ -1821,8 +1827,8 @@ void main() {
   float bottomScrim = mix(0.32, 1.0, smoothstep(0.0, 0.16, vUv.y));
   col *= mix(1.0, bottomScrim, clamp(uIntroExposure, 0.0, 1.0));
 
-  // ACES Filmic Tone Map & Gamma (with silky fade-in from pure #000 on launch)
-  col = acesToneMap(col * 1.02 * clamp(uIntroExposure, 0.0, 1.0));
+  // ACES Filmic Tone Map & Gamma (with silky fade-in from pure #000 and subtle major-beat bloom on launch)
+  col = acesToneMap(col * 1.02 * clamp(uIntroExposure, 0.0, 1.12));
   col = pow(col, vec3(1.0 / 2.2));
 
   // Fine SEM micro-grain (eliminates dark banding without muddying crisp micro-detail)
@@ -1951,10 +1957,11 @@ void main() {
 
   // Soft liquidGL elevation shadow outside glass boundary
   if (inShape < 1.0) {
-    float shD = udRoundBox(originalPoint - vec2(0.0, (style == 2) ? -2.0 : -6.0), b_px, radius);
-    float amb = exp(-max(shD, 0.0) * ((style == 2) ? 0.22 : 0.095));
+    bool isDroplet = (style >= 2);
+    float shD = udRoundBox(originalPoint - vec2(0.0, isDroplet ? -2.0 : -6.0), b_px, radius);
+    float amb = exp(-max(shD, 0.0) * (isDroplet ? 0.20 : 0.095));
     float contact = exp(-max(dmask, 0.0) * 0.55);
-    float shA = (amb * ((style == 2) ? 0.22 : 0.32) + contact * 0.14) * (1.0 - inShape) * alpha;
+    float shA = (amb * (isDroplet ? 0.24 : 0.32) + contact * 0.14) * (1.0 - inShape) * alpha;
     col *= (1.0 - shA);
   }
 
@@ -1963,20 +1970,35 @@ void main() {
     return;
   }
 
-  float refraction = (style == 2) ? 0.022 : (style == 1 ? 0.015 : 0.014);
-  float bevelDepth = (style == 2) ? 0.062 : (style == 1 ? 0.088 : 0.068);
+  bool isMagnifier = (style == 3);
+  bool isDroplet   = (style >= 2);
+
+  float refraction = isMagnifier ? 0.030 : (style == 2 ? 0.022 : (style == 1 ? 0.015 : 0.014));
+  float bevelDepth = isMagnifier ? 0.088 : (style == 2 ? 0.062 : (style == 1 ? 0.088 : 0.068));
   float bevelWidth = uGlassParams.y;
-  float aberration = (style == 2) ? 0.95  : (style == 1 ? 0.65  : 0.72);
-  float magnify    = (style == 2) ? 1.10  : (style == 1 ? 1.03  : 1.045);
+  float aberration = isMagnifier ? 1.25  : (style == 2 ? 0.95  : (style == 1 ? 0.65  : 0.72));
+  float magnify    = isMagnifier ? 1.15  : (style == 2 ? 1.10  : (style == 1 ? 1.03  : 1.045));
   float frost      = uGlassParams.z;
 
   vec2 lensUV = (p_px + b_px) / boxSize;
   vec2 pNorm = p_px / max(boxSize.y, 1.0);
 
   float edge = edgeFactor(p_px, b_px, radius, bevelWidth, boxSize);
-  float offsetAmt = edge * refraction + pow(edge, 10.0) * bevelDepth;
-  float centreBlend = smoothstep(0.12, 0.44, length(pNorm));
-  vec2 refractDir = cornerNormal(p_px, b_px, radius, normalize(pNorm + vec2(1e-6)));
+  float offsetAmt = isMagnifier
+    ? (pow(edge, 1.85) * refraction + pow(edge, 5.2) * bevelDepth)
+    : (edge * refraction + pow(edge, 10.0) * bevelDepth);
+  float centreBlend = isMagnifier ? 1.0 : smoothstep(0.12, 0.44, length(pNorm));
+
+  vec2 refractDir;
+  if (isMagnifier) {
+    // Exact analytical rounded-capsule SDF normal so text & scene bend smoothly around the rounded glass rim!
+    float eps = 0.75;
+    float gx = udRoundBox(p_px + vec2(eps, 0.0), b_px, radius) - udRoundBox(p_px - vec2(eps, 0.0), b_px, radius);
+    float gy = udRoundBox(p_px + vec2(0.0, eps), b_px, radius) - udRoundBox(p_px - vec2(0.0, eps), b_px, radius);
+    refractDir = normalize(vec2(gx, gy) + vec2(1e-6));
+  } else {
+    refractDir = cornerNormal(p_px, b_px, radius, normalize(pNorm + vec2(1e-6)));
+  }
   vec2 offset = refractDir * offsetAmt * centreBlend;
 
   vec2 aspectScale = vec2(min(cssSize.x, cssSize.y)) / cssSize;
@@ -2013,6 +2035,15 @@ void main() {
       }
     }
     refrCol = acc * 0.1;
+  } else if (isMagnifier) {
+    // Razor-sharp optical magnifier sampling (tight sub-texel AA preserves crisp typography + vivid RGB bevel dispersion!)
+    vec2 sub = (0.32) / max(uResolution, vec2(1.0));
+    vec3 g0 = texture(uTex, clamp(sampleUV, vec2(0.001), vec2(0.999))).rgb;
+    vec3 g1 = texture(uTex, clamp(sampleUV + vec2( sub.x,  sub.y), vec2(0.001), vec2(0.999))).rgb;
+    vec3 g2 = texture(uTex, clamp(sampleUV + vec2(-sub.x, -sub.y), vec2(0.001), vec2(0.999))).rgb;
+    refrCol = g0 * 0.5 + (g1 + g2) * 0.25;
+    refrCol.r = texture(uTex, clamp(sampleUV - chroma, vec2(0.001), vec2(0.999))).r;
+    refrCol.b = texture(uTex, clamp(sampleUV + chroma, vec2(0.001), vec2(0.999))).b;
   } else {
     // Pure crystal-clear liquidGL droplet lens (5-tap micro-AA + razor-sharp RGB dispersion!)
     vec2 texel = 1.0 / max(uResolution, vec2(1.0));
@@ -2026,10 +2057,14 @@ void main() {
     refrCol.b = texture(uTex, clamp(sampleUV + chroma, vec2(0.001), vec2(0.999))).b;
   }
 
-  refrCol = saturateSrgb(refrCol, (style == 2) ? 1.18 : 1.15);
+  refrCol = saturateSrgb(refrCol, isDroplet ? 1.18 : 1.15);
 
   float luma = dot(refrCol, vec3(0.2126, 0.7152, 0.0722));
-  if (style == 2) {
+  if (isMagnifier) {
+    // Keep white text inside the magnifier pill brilliant & crisp while giving dark backgrounds subtle optical glass body
+    float brightPreserve = mix(1.04, 0.99, smoothstep(0.55, 0.98, luma));
+    refrCol = refrCol * brightPreserve + vec3(0.068, 0.076, 0.094) * (1.0 - 0.78 * luma);
+  } else if (style == 2) {
     float brightTame = mix(1.04, 0.74, smoothstep(0.45, 0.95, luma));
     refrCol = refrCol * brightTame + vec3(0.075, 0.082, 0.098) * (1.0 - 0.55 * luma);
   } else if (style == 1) {
@@ -2043,15 +2078,15 @@ void main() {
   vec2 lp1 = vec2(sin(uTime * 0.20), cos(uTime * 0.30)) * 0.6 + 0.5;
   vec2 lp2 = vec2(sin(uTime * -0.40 + 1.5), cos(uTime * 0.25 - 0.5)) * 0.6 + 0.5;
   float sheen = 0.0;
-  sheen += smoothstep(0.42, 0.0, distance(lensUV, lp1)) * ((style == 2) ? 0.085 : 0.055);
-  sheen += smoothstep(0.52, 0.0, distance(lensUV, lp2)) * ((style == 2) ? 0.065 : 0.042);
+  sheen += smoothstep(0.42, 0.0, distance(lensUV, lp1)) * (isDroplet ? 0.085 : 0.055);
+  sheen += smoothstep(0.52, 0.0, distance(lensUV, lp2)) * (isDroplet ? 0.065 : 0.042);
   refrCol += vec3(sheen);
 
   float distIn = max(-dmask, 0.0);
   float rimLine = exp(-pow(distIn / 0.88, 2.0));
   float keyCatch = pow(max(dot(refractDir, normalize(vec2(-0.55, 0.84))), 0.0), 1.9);
   float bncCatch = pow(max(dot(refractDir, normalize(vec2( 0.55,-0.84))), 0.0), 2.1);
-  float rimAmt = (0.10 + 0.68 * keyCatch + 0.36 * bncCatch) * ((style == 2) ? 0.58 : 0.38);
+  float rimAmt = (0.10 + 0.68 * keyCatch + 0.36 * bncCatch) * (isDroplet ? 0.60 : 0.38);
 
   float ptrDist = length(pGl - ptrGl);
   float ptrEdge = exp(-(ptrDist * ptrDist) / (115.0 * 115.0)) * rimLine * 0.28;
@@ -2059,5 +2094,62 @@ void main() {
   refrCol += vec3(0.95, 0.98, 1.0) * (rimLine * rimAmt + ptrEdge);
 
   fragColor = vec4(mix(col, clamp(refrCol, 0.0, 1.0), inShape * alpha), 1.0);
+}
+`;
+
+export const VERNIER_STRIP_VS = `#version 300 es
+precision highp float;
+
+uniform vec2 uCssSize;
+uniform vec4 uVernierRect; // (cx, cy, halfW, halfH) in DOM CSS px (top-left origin)
+
+out vec2 vLocalUv;
+
+void main() {
+  vec2 c = vec2((gl_VertexID & 1) == 0 ? -1.0 : 1.0, (gl_VertexID & 2) == 0 ? -1.0 : 1.0);
+  vec2 cssSize = max(uCssSize, vec2(1.0));
+  vec2 centerGl = vec2(uVernierRect.x, cssSize.y - uVernierRect.y);
+  vec2 halfExt = max(uVernierRect.zw, vec2(1.0));
+  vec2 posGl = centerGl + c * halfExt;
+  vec2 uv = posGl / cssSize;
+  vLocalUv = c * 0.5 + 0.5;
+  gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+}
+`;
+
+export const VERNIER_STRIP_FS = `#version 300 es
+precision highp float;
+
+in vec2 vLocalUv;
+out vec4 fragColor;
+
+uniform sampler2D uTex;
+uniform vec4 uVernierRect;  // (cx, cy, halfW, halfH) in CSS px
+uniform vec4 uTexParams;    // (originCss, pitchCss, texWidthCss, zoom)
+uniform vec4 uFadeParams;   // (loupeHalfW, alpha, 0, 0)
+
+void main() {
+  float alpha = uFadeParams.y;
+  if (alpha < 0.005) discard;
+
+  float halfW = max(uVernierRect.z, 1.0);
+  float xLocal = (vLocalUv.x - 0.5) * (halfW * 2.0);
+  float texX = uTexParams.x + uTexParams.w * uTexParams.y + xLocal;
+  float u = texX / max(uTexParams.z, 1.0);
+  if (u <= 0.001 || u >= 0.999) discard;
+
+  float v = 1.0 - vLocalUv.y;
+  vec4 texCol = texture(uTex, vec2(u, v));
+  if (texCol.a < 0.003) discard;
+
+  // Soft open-air horizontal dissolve at left/right ends
+  float edgeFade = smoothstep(0.0, 0.18, vLocalUv.x) * smoothstep(1.0, 0.82, vLocalUv.x);
+  // Subtle optical prominence under/inside the center Liquid Glass pill vs whisper-quiet neighboring stops
+  float loupeHalfW = max(uFadeParams.x, 22.0);
+  float centerFocus = 1.0 - smoothstep(loupeHalfW * 0.78, loupeHalfW * 1.52, abs(xLocal));
+  float focusAlpha = mix(0.66, 1.0, centerFocus);
+
+  float mask = edgeFade * focusAlpha * alpha;
+  fragColor = texCol * mask; // Premultiplied RGBA -> zero dark halo when magnified!
 }
 `;

@@ -23,19 +23,54 @@ import { RECORDED_TRACES, RecordedTracePlayer, TraceCaptureId } from './sim/reco
  *   - Live Native Mach/IOKit telemetry (real GPU %, VRAM, SoC Die Temp, per-core CPU + sparkline)
  */
 
-const ZOOM_STOPS = [
-  { z: -1.0, label: 'Scale' },
-  { z: 0.0, label: 'Die' },
-  { z: 1.0, label: 'Power' },
-  { z: 2.0, label: 'Routing' },
-  { z: 3.0, label: 'Rows' },
-  { z: 4.0, label: 'Cell' },
-  { z: 5.0, label: 'Gate' },
-  { z: 6.0, label: 'Lattice' },
-  { z: 7.0, label: 'Atom' },
-  { z: 8.0, label: 'Nucleus' },
-  { z: 9.0, label: 'Quarks' },
+type RealmId = 'macro' | 'beol' | 'feol' | 'quantum';
+
+interface ZoomStopMeta {
+  z: number;
+  label: string;
+  size: string;
+  mag: string;
+  realm: RealmId;
+}
+
+const ZOOM_STOPS: readonly ZoomStopMeta[] = [
+  { z: -1.0, label: 'Scale', size: '72 mm', mag: '1×', realm: 'macro' },
+  { z: 0.0, label: 'Die', size: '21 mm', mag: '10×', realm: 'macro' },
+  { z: 1.0, label: 'Power', size: '120 µm', mag: '1K×', realm: 'beol' },
+  { z: 2.0, label: 'Routing', size: '1.2 µm', mag: '100K×', realm: 'beol' },
+  { z: 3.0, label: 'Rows', size: '120 nm', mag: '1M×', realm: 'feol' },
+  { z: 4.0, label: 'Cell', size: '24 nm', mag: '5M×', realm: 'feol' },
+  { z: 5.0, label: 'Gate', size: '12 nm', mag: '25M×', realm: 'feol' },
+  { z: 6.0, label: 'Lattice', size: '0.54 nm', mag: '250M×', realm: 'quantum' },
+  { z: 7.0, label: 'Atom', size: '111 pm', mag: '1.2B×', realm: 'quantum' },
+  { z: 8.0, label: 'Nucleus', size: '3.1 fm', mag: '40T×', realm: 'quantum' },
+  { z: 9.0, label: 'Quarks', size: '0.84 fm', mag: '150T×', realm: 'quantum' },
 ];
+
+const DEPTH_REALMS: readonly { id: RealmId; title: string; range: string }[] = [
+  { id: 'macro', title: 'MACRO', range: 'mm' },
+  { id: 'beol', title: 'INTERCONNECT', range: 'µm' },
+  { id: 'feol', title: 'TRANSISTOR', range: 'nm' },
+  { id: 'quantum', title: 'QUANTUM', range: 'pm → fm' },
+];
+
+const VERNIER_MIN_Z = -2.4;
+const VERNIER_MAX_Z = 9.0;
+const VERNIER_SUBDIVS = 5; // 5 intervals per stop => micro-ticks every 0.2 zoom units
+
+const REALM_ACCENTS: Record<RealmId, { color: string; glow: string }> = {
+  macro: { color: '#dce6f5', glow: 'rgba(220, 230, 245, 0.55)' },
+  beol: { color: '#f3b172', glow: 'rgba(243, 177, 114, 0.58)' },
+  feol: { color: '#7fe2ff', glow: 'rgba(127, 226, 255, 0.62)' },
+  quantum: { color: '#c4a1ff', glow: 'rgba(196, 161, 255, 0.65)' },
+};
+
+function realmForZoom(z: number): RealmId {
+  if (z < 0.5) return 'macro';
+  if (z < 2.5) return 'beol';
+  if (z < 5.5) return 'feol';
+  return 'quantum';
+}
 
 const DIAL_TICKS = [
   { deg: -144, label: '1×' },
@@ -62,7 +97,58 @@ const ICONS = {
   replay: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>`,
   close: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
   power: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/></svg>`,
+  chevronUp: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>`,
 };
+
+function buildVernierTapeHtml(): string {
+  // Build engraved ticks from z = -2.4 to z = 9.0 in steps of 0.2 (5 subdivisions per landmark)
+  const startStep = Math.round(VERNIER_MIN_Z * VERNIER_SUBDIVS); // -12
+  const endStep = Math.round(VERNIER_MAX_Z * VERNIER_SUBDIVS);   // 45
+  let ticks = '';
+  for (let s = startStep; s <= endStep; s++) {
+    const zVal = s / VERNIER_SUBDIVS;
+    const isMajor = s % VERNIER_SUBDIVS === 0 && zVal >= -1.0;
+    const isHalf = Math.abs(s % VERNIER_SUBDIVS) === 2 || Math.abs(s % VERNIER_SUBDIVS) === 3;
+    const realm = realmForZoom(zVal);
+    const kind = isMajor ? 'major' : isHalf ? 'mid' : 'minor';
+    ticks += `<span class="vernier-tick ${kind} realm-${realm}" data-z="${zVal.toFixed(1)}" style="--tick-z:${zVal.toFixed(1)}"></span>`;
+  }
+
+  const labels = ZOOM_STOPS.map((st, idx) => {
+    const chars = Array.from(st.label)
+      .map((ch) => `<span class="vc">${ch}</span>`)
+      .join('');
+    return `<button type="button" class="vernier-stop realm-${st.realm} ${st.z === 0 ? 'active' : ''}" data-idx="${idx}" data-z="${st.z}" style="--stop-z:${st.z}">${chars}</button>`;
+  }).join('');
+
+  return `${ticks}${labels}`;
+}
+
+function buildDepthSheetHtml(): string {
+  return DEPTH_REALMS.map((realm) => {
+    const stops = ZOOM_STOPS.filter((s) => s.realm === realm.id);
+    return `
+      <div class="depth-realm realm-${realm.id}">
+        <div class="depth-realm-head">
+          <span class="depth-realm-dot" aria-hidden="true"></span>
+          <span class="depth-realm-title">${realm.title}</span>
+          <span class="depth-realm-range">${realm.range}</span>
+        </div>
+        <div class="depth-grid cols-${stops.length}">
+          ${stops
+            .map(
+              (st) => `
+              <button type="button" class="depth-tile realm-${st.realm} ${st.z === 0 ? 'active' : ''}" data-z="${st.z}">
+                <span class="depth-tile-name">${st.label}</span>
+                <span class="depth-tile-meta">${st.size} · ${st.mag}</span>
+              </button>`
+            )
+            .join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
 
 function buildReticleSvg(): string {
   const r = 242;
@@ -345,13 +431,60 @@ function mountApp(): void {
           </div>
         </div>
 
+        <!-- 1-Tap Liquid Glass Depth Map Sheet (Opens from Vernier Readout) -->
+        <div id="depth-sheet" class="depth-sheet liquid-glass liquid-glass-sheet" style="display:none;" role="dialog" aria-label="Microscope Depth Map">
+          <div class="sheet-header">
+            <span>DEPTH MAP</span>
+            <span>72 mm → 0.84 fm</span>
+          </div>
+          <div class="depth-realms">
+            ${buildDepthSheetHtml()}
+          </div>
+        </div>
+
+        <!-- Calibrated Zeiss/FEI Optical Scale Bar (Desktop bottom-right) -->
+        <div id="zeiss-scale" class="zeiss-scale" aria-hidden="true">
+          <div id="zeiss-scale-lbl" class="zeiss-scale-lbl">10 mm</div>
+          <div id="zeiss-scale-bar" class="zeiss-scale-bar" style="width:84px;"></div>
+        </div>
+
         <div class="hud-bottom">
-          <div id="zoom-rail" class="zoom-rail liquid-glass">
-            <div id="rail-indicator" class="rail-indicator"></div>
-            ${ZOOM_STOPS.map(
-              (st, idx) =>
-                `<button class="rail-stop ${st.z === 0 ? 'active' : ''}" data-idx="${idx}" data-z="${st.z}">${st.label}</button>`
-            ).join('')}
+          <div id="vernier-dock" class="vernier-dock" data-realm="macro">
+            <button
+              id="vernier-readout"
+              class="vernier-readout"
+              type="button"
+              aria-expanded="false"
+              aria-controls="depth-sheet"
+              title="Open 1-tap Depth Map (G)"
+            >
+              <span class="vernier-realm-dot" aria-hidden="true"></span>
+              <span id="vernier-mag" class="vernier-mag">10×</span>
+              <span class="vernier-sep" aria-hidden="true">·</span>
+              <span id="vernier-size" class="vernier-size">21 mm</span>
+              <span class="vernier-chev" aria-hidden="true">${ICONS.chevronUp}</span>
+            </button>
+
+            <div
+              id="vernier-capsule"
+              class="vernier-capsule"
+              role="slider"
+              aria-label="Microscope Magnification Dial"
+              aria-valuemin="${VERNIER_MIN_Z}"
+              aria-valuemax="${VERNIER_MAX_Z}"
+              aria-valuenow="0"
+              tabindex="0"
+            >
+              <div id="vernier-loupe" class="vernier-loupe" aria-hidden="true"></div>
+              <div class="vernier-hairline" aria-hidden="true">
+                <span class="vernier-pip"></span>
+              </div>
+              <div class="vernier-viewport">
+                <div id="vernier-tape" class="vernier-tape">
+                  ${buildVernierTapeHtml()}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -365,9 +498,21 @@ function mountApp(): void {
   const reticleDial = document.getElementById('reticle-dial')!;
   const nmBracket = document.getElementById('nm-bracket')!;
   const nmLabel = document.getElementById('nm-label')!;
-  const railIndicator = document.getElementById('rail-indicator')!;
-  const zoomRailEl = document.getElementById('zoom-rail')!;
-  const railButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#zoom-rail .rail-stop'));
+
+  const vernierDockEl = document.getElementById('vernier-dock')!;
+  const vernierReadoutBtn = document.getElementById('vernier-readout') as HTMLButtonElement;
+  const vernierMagEl = document.getElementById('vernier-mag')!;
+  const vernierSizeEl = document.getElementById('vernier-size')!;
+  const vernierCapsuleEl = document.getElementById('vernier-capsule')!;
+  const vernierLoupeEl = document.getElementById('vernier-loupe')!;
+  const vernierTapeEl = document.getElementById('vernier-tape')!;
+  const vernierStopButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#vernier-tape .vernier-stop'));
+  const vernierTickEls = Array.from(document.querySelectorAll<HTMLElement>('#vernier-tape .vernier-tick'));
+  const depthSheet = document.getElementById('depth-sheet')!;
+  const depthTileButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#depth-sheet .depth-tile'));
+  const zeissScaleBarEl = document.getElementById('zeiss-scale-bar')!;
+  const zeissScaleLblEl = document.getElementById('zeiss-scale-lbl')!;
+
   const toolCapsuleEl = document.querySelector<HTMLElement>('.tool-capsule')!;
   const toolButtons = Array.from(toolCapsuleEl.querySelectorAll<HTMLButtonElement>('.glass-btn'));
 
@@ -435,6 +580,7 @@ function mountApp(): void {
   let activeHover: DieInspectHit | null = null;
   let showActivity = false;
   let showSoundSheet = false;
+  let showDepthSheet = false;
   let pureView = false;
   let bursting = false;
   let activeSource: 'live' | TraceCaptureId = 'live';
@@ -444,6 +590,7 @@ function mountApp(): void {
   let lastRawSample: LiveMacTelemetry | null = null;
   let lastZoomRendered = -99;
   let lastActiveStop = 1;
+  let lastActiveRealm: RealmId = 'macro';
   let lastFpsUpdate = 0;
   let currentFps = 120;
 
@@ -452,13 +599,33 @@ function mountApp(): void {
   const cpuHistory: number[] = Array(SPARK_MAX).fill(0.16);
   const gpuHistory: number[] = Array(SPARK_MAX).fill(0.18);
 
-  // Cached button layout geometry for zero-reflow continuously gliding (and mobile-scrollable) rail indicator
-  let railMetrics: { x: number; w: number }[] = [];
-  let railViewportRect = { left: 0, top: 0, right: 0 };
-  let railIndicatorHeight = 36;
-  let railIndicatorBox = { cx: 0, cy: 0, hw: 0, hh: 18 };
-  let railUserScrolling = false;
-  let railScrollIdleTimer: number | null = null;
+  // Optical Vernier Dial state (zero-reflow 120 FPS tape translation + morphing glass pill + optical refraction!)
+  let vernierPitch = 84;
+  let vernierCoastRaf = 0;
+  let vernierScrubbing = false;
+
+  interface VernierCharMetric {
+    el: HTMLSpanElement;
+    stopZ: number;
+    localX: number;
+    warped: boolean;
+  }
+  interface VernierTickMetric {
+    el: HTMLElement;
+    z: number;
+    warped: boolean;
+  }
+  let vernierChars: VernierCharMetric[] = [];
+  const vernierTicks: VernierTickMetric[] = vernierTickEls.map((el) => ({
+    el,
+    z: Number(el.dataset.z ?? 0),
+    warped: false,
+  }));
+  let vernierStopPillWidths: number[] = ZOOM_STOPS.map(() => 64);
+  let loupeAnchor = { cx: 0, cy: 0, baseH: 34 };
+  let loupeGlassBox = { cx: 0, cy: 0, hw: 0, hh: 17 };
+  let lastLoupeW = 0;
+  let lastLoupeH = 0;
 
   type GlassReg = {
     cx: number;
@@ -488,88 +655,245 @@ function mountApp(): void {
   const audio = new SiliconAudio(syncSoundButton);
   let suppressNextInspectCloseAudio = false;
 
-  const centerRailStop = (idx: number, smooth = true) => {
-    if (zoomRailEl.scrollWidth <= zoomRailEl.clientWidth + 2) return;
-    const m = railMetrics[idx];
-    if (!m) return;
-    const targetLeft = m.x + m.w * 0.5 - zoomRailEl.clientWidth * 0.5;
-    const maxScroll = Math.max(0, zoomRailEl.scrollWidth - zoomRailEl.clientWidth);
-    const clamped = Math.max(0, Math.min(maxScroll, targetLeft));
-    zoomRailEl.scrollTo({ left: clamped, behavior: smooth ? 'smooth' : 'auto' });
-  };
-
-  const measureRail = () => {
-    railMetrics = railButtons.map((btn) => ({ x: btn.offsetLeft, w: btn.offsetWidth }));
-    const rr = zoomRailEl.getBoundingClientRect();
-    railViewportRect = { left: rr.left, top: rr.top, right: rr.right };
-    railIndicatorHeight = railIndicator.offsetHeight || 36;
-    if (!railUserScrolling) {
-      centerRailStop(lastActiveStop, false);
+  const setDepthSheetOpen = (open: boolean, playSound = true) => {
+    if (showDepthSheet === open) return;
+    showDepthSheet = open;
+    if (open) {
+      if (showActivity) {
+        showActivity = false;
+        btnActivity.classList.remove('active');
+        activitySheet.style.display = 'none';
+      }
+      if (showSoundSheet) {
+        showSoundSheet = false;
+        btnVibe.classList.remove('active');
+        soundSheet.style.display = 'none';
+      }
+      if (activeInspect && window.innerWidth <= 1080) {
+        suppressNextInspectCloseAudio = true;
+        engine.clearInspect();
+      }
     }
-    updateRailIndicator(lastZoomRendered === -99 ? 0 : lastZoomRendered);
+    depthSheet.style.display = showDepthSheet ? 'flex' : 'none';
+    vernierReadoutBtn.classList.toggle('open', showDepthSheet);
+    vernierReadoutBtn.setAttribute('aria-expanded', showDepthSheet ? 'true' : 'false');
+    reticleLayer.classList.toggle('depth-open', showDepthSheet);
+    if (playSound) audio.playUiTap(showDepthSheet);
+    refreshGlassLayout();
   };
 
-  const updateRailIndicator = (z: number) => {
-    if (railMetrics.length !== ZOOM_STOPS.length) return;
-    const pos = Math.max(0, Math.min(ZOOM_STOPS.length - 1, z + 1));
+  const computeVernierPitch = (): number => {
+    if (window.innerHeight <= 500) return 76;
+    if (window.innerWidth <= 720) return 82;
+    return 90;
+  };
+
+  const computeMorphingLoupeSize = (clampedZ: number): { w: number; h: number } => {
+    const pos = Math.max(0, Math.min(ZOOM_STOPS.length - 1, clampedZ + 1));
     const i0 = Math.floor(pos);
     const i1 = Math.min(ZOOM_STOPS.length - 1, i0 + 1);
     const f = pos - i0;
-    const m0 = railMetrics[i0];
-    const m1 = railMetrics[i1];
-    const x = m0.x + (m1.x - m0.x) * f;
-    const w = m0.w + (m1.w - m0.w) * f;
-    railIndicator.style.transform = `translate3d(${x.toFixed(1)}px, 0, 0)`;
-    railIndicator.style.width = `${w.toFixed(1)}px`;
-
-    const scrollLeft = zoomRailEl.scrollLeft;
-    const rawLeft = railViewportRect.left + x - scrollLeft;
-    const rawRight = rawLeft + w;
-    const clipLeft = railViewportRect.left + 4;
-    const clipRight = railViewportRect.right - 4;
-    const visLeft = Math.max(clipLeft, rawLeft);
-    const visRight = Math.min(clipRight, rawRight);
-    const visW = Math.max(0, visRight - visLeft);
-    const hh = railIndicatorHeight * 0.5;
-    railIndicatorBox =
-      visW > 4
-        ? {
-            cx: (visLeft + visRight) * 0.5,
-            cy: railViewportRect.top + 4 + hh,
-            hw: visW * 0.5,
-            hh,
-          }
-        : { cx: 0, cy: 0, hw: 0, hh };
-    pushGlassToEngine();
+    const s = f * f * (3 - 2 * f);
+    const w0 = vernierStopPillWidths[i0] ?? 64;
+    const w1 = vernierStopPillWidths[i1] ?? 64;
+    // Subtle liquid surface-tension swell while bridging between words or actively scrubbing
+    const midBridge = Math.sin(f * Math.PI);
+    const scrubBoost = vernierScrubbing ? 1.0 : 0.0;
+    const w = w0 + (w1 - w0) * s + midBridge * 4.5 + scrubBoost * 4.0;
+    const h = loupeAnchor.baseH + scrubBoost * 2.0 + midBridge * 0.8;
+    return { w, h };
   };
 
-  zoomRailEl.addEventListener(
-    'scroll',
-    () => {
-      updateRailIndicator(lastZoomRendered === -99 ? 0 : lastZoomRendered);
-    },
-    { passive: true }
-  );
-  zoomRailEl.addEventListener(
-    'pointerdown',
-    () => {
-      railUserScrolling = true;
-      if (railScrollIdleTimer !== null) {
-        window.clearTimeout(railScrollIdleTimer);
-        railScrollIdleTimer = null;
+  const applyVernierOpticalRefraction = (clampedZ: number, loupeHalfW: number) => {
+    const R = Math.max(24, loupeHalfW);
+
+    // 1. Per-character cylindrical glass refraction: convex magnification inside + squeeze & RGB dispersion on curved rim!
+    for (let i = 0; i < vernierChars.length; i++) {
+      const ch = vernierChars[i];
+      const rawX = (ch.stopZ - clampedZ) * vernierPitch + ch.localX;
+      const u = rawX / R;
+      const au = Math.abs(u);
+
+      if (au >= 1.32) {
+        if (ch.warped) {
+          ch.el.style.transform = '';
+          ch.el.style.textShadow = '';
+          ch.warped = false;
+        }
+        continue;
       }
-    },
-    { passive: true }
-  );
-  const endRailScrollInteraction = () => {
-    if (railScrollIdleTimer !== null) window.clearTimeout(railScrollIdleTimer);
-    railScrollIdleTimer = window.setTimeout(() => {
-      railUserScrolling = false;
-      railScrollIdleTimer = null;
-    }, 650);
+
+      const dome = au < 1.0 ? Math.cos(au * Math.PI * 0.5) : 0.0;
+      const rim = Math.exp(-Math.pow((au - 0.93) / 0.20, 2));
+      const sx = 1.0 + 0.11 * dome - 0.27 * rim;
+      const sy = 1.0 + 0.11 * dome + 0.16 * rim;
+      const sign = rawX >= 0 ? 1 : -1;
+      const shiftX = rawX * 0.085 * dome - sign * 4.2 * rim;
+      const shiftY = -0.65 * dome;
+
+      ch.el.style.transform = `translate3d(${shiftX.toFixed(2)}px, ${shiftY.toFixed(2)}px, 0) scale(${sx.toFixed(3)}, ${sy.toFixed(3)})`;
+      if (rim > 0.14) {
+        const cOff = (1.55 * rim).toFixed(2);
+        const aC = (0.72 * rim).toFixed(2);
+        const aW = (0.60 * rim).toFixed(2);
+        ch.el.style.textShadow = `${(-sign * Number(cOff)).toFixed(2)}px 0 1px rgba(108, 224, 255, ${aC}), ${(sign * Number(cOff)).toFixed(2)}px 0 1px rgba(255, 148, 112, ${aW}), 0 1px 6px rgba(0, 0, 0, 0.88)`;
+      } else if (ch.warped) {
+        ch.el.style.textShadow = '';
+      }
+      ch.warped = true;
+    }
+
+    // 2. Subtle optical swell on the engraved ruler ticks passing above the center glass pill
+    for (let i = 0; i < vernierTicks.length; i++) {
+      const tk = vernierTicks[i];
+      const rawX = (tk.z - clampedZ) * vernierPitch;
+      const au = Math.abs(rawX) / (R * 1.15);
+      if (au >= 1.25) {
+        if (tk.warped) {
+          tk.el.style.transform = '';
+          tk.warped = false;
+        }
+        continue;
+      }
+      const dome = au < 1.0 ? Math.cos(au * Math.PI * 0.5) : 0.0;
+      const sy = 1.0 + 0.34 * dome;
+      const shiftX = rawX * 0.05 * dome;
+      tk.el.style.transform = `translate3d(calc(-50% + ${shiftX.toFixed(2)}px), 0, 0) scaleY(${sy.toFixed(3)})`;
+      tk.warped = true;
+    }
   };
-  zoomRailEl.addEventListener('pointerup', endRailScrollInteraction, { passive: true });
-  zoomRailEl.addEventListener('pointercancel', endRailScrollInteraction, { passive: true });
+
+  const updateVernierDial = (z: number, magText?: string, sizeText?: string, scaleBarLabel?: string, scaleBarPx?: number) => {
+    const clampedZ = Math.max(VERNIER_MIN_Z, Math.min(VERNIER_MAX_Z, z));
+    vernierTapeEl.style.transform = `translate3d(${(-clampedZ * vernierPitch).toFixed(2)}px, 0, 0)`;
+
+    const realm = realmForZoom(clampedZ);
+    if (realm !== lastActiveRealm) {
+      lastActiveRealm = realm;
+      vernierDockEl.dataset.realm = realm;
+      const accent = REALM_ACCENTS[realm];
+      vernierDockEl.style.setProperty('--realm-accent', accent.color);
+      vernierDockEl.style.setProperty('--realm-glow', accent.glow);
+    }
+
+    // Morph the single floating center Liquid Glass pill smoothly to hug the current word
+    const { w: loupeW, h: loupeH } = computeMorphingLoupeSize(clampedZ);
+    if (Math.abs(loupeW - lastLoupeW) > 0.15 || Math.abs(loupeH - lastLoupeH) > 0.15) {
+      lastLoupeW = loupeW;
+      lastLoupeH = loupeH;
+      vernierLoupeEl.style.width = `${loupeW.toFixed(1)}px`;
+      vernierLoupeEl.style.height = `${loupeH.toFixed(1)}px`;
+      if (loupeAnchor.cx > 1) {
+        loupeGlassBox = {
+          cx: loupeAnchor.cx,
+          cy: loupeAnchor.cy,
+          hw: loupeW * 0.5,
+          hh: loupeH * 0.5,
+        };
+        pushGlassToEngine();
+      }
+    }
+
+    // Smooth proximity emphasis on neighboring stop words + real optical refraction inside/across glass pill
+    for (let i = 0; i < ZOOM_STOPS.length; i++) {
+      const btn = vernierStopButtons[i];
+      if (!btn) continue;
+      const dist = Math.abs(clampedZ - ZOOM_STOPS[i].z);
+      const focus = Math.max(0, 1 - dist * 0.44);
+      const op = 0.42 + focus * 0.58;
+      btn.style.opacity = op.toFixed(2);
+    }
+    applyVernierOpticalRefraction(clampedZ, loupeW * 0.5);
+
+    const stopIdx = Math.max(0, Math.min(ZOOM_STOPS.length - 1, Math.round(clampedZ) + 1));
+    if (stopIdx !== lastActiveStop) {
+      vernierStopButtons[lastActiveStop]?.classList.remove('active');
+      vernierStopButtons[stopIdx]?.classList.add('active');
+      depthTileButtons[lastActiveStop]?.classList.remove('active');
+      depthTileButtons[stopIdx]?.classList.add('active');
+      lastActiveStop = stopIdx;
+      vernierCapsuleEl.setAttribute('aria-valuetext', `${ZOOM_STOPS[stopIdx].label} (${ZOOM_STOPS[stopIdx].mag})`);
+    }
+    vernierCapsuleEl.setAttribute('aria-valuenow', clampedZ.toFixed(2));
+
+    if (magText !== undefined && vernierMagEl.textContent !== magText) {
+      vernierMagEl.textContent = magText;
+    }
+    if (sizeText !== undefined && vernierSizeEl.textContent !== sizeText) {
+      vernierSizeEl.textContent = sizeText;
+    }
+    if (scaleBarLabel !== undefined && zeissScaleLblEl.textContent !== scaleBarLabel) {
+      zeissScaleLblEl.textContent = scaleBarLabel;
+    }
+    if (scaleBarPx !== undefined) {
+      zeissScaleBarEl.style.width = `${scaleBarPx.toFixed(1)}px`;
+    }
+  };
+
+  const measureVernier = () => {
+    vernierPitch = computeVernierPitch();
+    vernierCapsuleEl.style.setProperty('--vernier-pitch', `${vernierPitch}px`);
+
+    // Reset character warps momentarily to measure exact natural glyph offsets & word widths
+    for (let i = 0; i < vernierChars.length; i++) {
+      vernierChars[i].el.style.transform = '';
+      vernierChars[i].el.style.textShadow = '';
+      vernierChars[i].warped = false;
+    }
+
+    const padX = window.innerWidth <= 720 ? 30 : 32;
+    const minPillW = window.innerWidth <= 720 ? 58 : 56;
+    const nextChars: VernierCharMetric[] = [];
+    const nextWidths: number[] = [];
+
+    for (let i = 0; i < vernierStopButtons.length; i++) {
+      const btn = vernierStopButtons[i];
+      const st = ZOOM_STOPS[i];
+      const spans = Array.from(btn.querySelectorAll<HTMLSpanElement>('.vc'));
+      const btnRect = btn.getBoundingClientRect();
+      const btnCenter = btnRect.left + btnRect.width * 0.5;
+      let minL = Infinity;
+      let maxR = -Infinity;
+      for (const sp of spans) {
+        const sr = sp.getBoundingClientRect();
+        if (sr.left < minL) minL = sr.left;
+        if (sr.right > maxR) maxR = sr.right;
+        nextChars.push({
+          el: sp,
+          stopZ: st.z,
+          localX: sr.left + sr.width * 0.5 - btnCenter,
+          warped: false,
+        });
+      }
+      const textW = Number.isFinite(minL) && Number.isFinite(maxR) ? maxR - minL : btnRect.width;
+      nextWidths.push(Math.max(minPillW, textW + padX));
+    }
+
+    vernierChars = nextChars;
+    vernierStopPillWidths = nextWidths;
+
+    const baseH = window.innerHeight <= 500 ? 30 : window.innerWidth <= 720 ? 38 : 34;
+    vernierLoupeEl.style.height = `${baseH}px`;
+    const lr = vernierLoupeEl.getBoundingClientRect();
+    loupeAnchor = {
+      cx: lr.left + lr.width * 0.5,
+      cy: lr.top + lr.height * 0.5,
+      baseH,
+    };
+    lastLoupeW = 0;
+    lastLoupeH = 0;
+
+    const z = lastZoomRendered === -99 ? 0 : lastZoomRendered;
+    const fmt = formatMagnification(z);
+    updateVernierDial(z, fmt.magText, fmt.sizeText, fmt.scaleBarLabel, fmt.scaleBarPx);
+  };
+
+  const cancelVernierCoast = () => {
+    if (vernierCoastRaf) {
+      cancelAnimationFrame(vernierCoastRaf);
+      vernierCoastRaf = 0;
+    }
+  };
 
   // Breathing reticle engagement controller (whisper-quiet at rest, crisp during zoom/drag/dive)
   let reticleEngaged = false;
@@ -715,6 +1039,7 @@ function mountApp(): void {
 
   const syncIntroUi = (active: boolean, elapsed: number) => {
     introActive = active;
+    const cues = audio.getVibe().introCues;
     if (awaitingPowerOn && active) {
       introHudAlpha = 0.0;
       reticleLayer.classList.remove('intro-lock', 'engaged');
@@ -732,7 +1057,7 @@ function mountApp(): void {
         introPhase === 'title' ||
         introPhase === 'dissolve' ||
         introPhase === 'boot';
-      if (wasEarlySkip || elapsed < 6.90) {
+      if (wasEarlySkip || elapsed < cues.durationSec - 0.15) {
         audio.stopIntroScore(0.32);
       }
       introPhase = 'done';
@@ -746,16 +1071,22 @@ function mountApp(): void {
       return;
     }
 
-    const rawHudU = elapsed < 6.08 ? 0.0 : Math.min(1.0, (elapsed - 6.08) / 0.82);
+    if (introPhase === 'idle') {
+      audio.startIntroScore(elapsed);
+    }
+
+    const rawHudU = elapsed < cues.hudSec ? 0.0 : Math.min(1.0, (elapsed - cues.hudSec) / 0.78);
     // Cubic ease-out matches CSS `.hud-chrome` transition so Liquid Glass & DOM text emerge as one object!
     const nextHudAlpha = 1.0 - Math.pow(1.0 - rawHudU, 3);
     const alphaChanged = Math.abs(nextHudAlpha - introHudAlpha) > 0.005;
     introHudAlpha = nextHudAlpha;
 
-    if (elapsed < 0.08) {
+    const titleDissolveSec = Math.max(0.85, cues.revealSec - 0.18);
+    const settleSec = Math.min(cues.durationSec - 0.18, cues.hudSec + 0.62);
+
+    if (elapsed < 0.06) {
       if (introPhase !== 'black') {
         introPhase = 'black';
-        audio.startIntroScore(elapsed);
         introTitleEl.classList.remove('visible', 'exiting', 'skipped');
         reticleLayer.classList.remove('intro-lock', 'engaged');
         reticleLayer.classList.add('intro-hidden');
@@ -763,9 +1094,8 @@ function mountApp(): void {
         nmBracket.style.display = 'none';
         pushGlassToEngine();
       }
-    } else if (elapsed < 1.22) {
+    } else if (elapsed < titleDissolveSec) {
       if (introPhase !== 'title') {
-        if (introPhase === 'idle') audio.startIntroScore(elapsed);
         introPhase = 'title';
         introTitleEl.classList.remove('exiting', 'skipped');
         introTitleEl.classList.add('visible');
@@ -775,19 +1105,19 @@ function mountApp(): void {
         nmBracket.style.display = 'none';
         pushGlassToEngine();
       }
-    } else if (elapsed < 2.45) {
+    } else if (elapsed < cues.dropSec) {
       if (introPhase !== 'dissolve') {
         introPhase = 'dissolve';
         introTitleEl.classList.remove('visible', 'skipped');
         introTitleEl.classList.add('exiting');
       }
-    } else if (elapsed < 5.78) {
+    } else if (elapsed < cues.lockSec) {
       if (introPhase !== 'boot') {
         introPhase = 'boot';
         introTitleEl.classList.remove('visible', 'skipped');
         introTitleEl.classList.add('exiting');
       }
-    } else if (elapsed < 6.08) {
+    } else if (elapsed < cues.hudSec) {
       if (introPhase !== 'lock') {
         introPhase = 'lock';
         introTitleEl.classList.remove('visible', 'skipped');
@@ -795,7 +1125,7 @@ function mountApp(): void {
         reticleLayer.classList.remove('intro-hidden');
         reticleLayer.classList.add('intro-lock');
       }
-    } else if (elapsed < 6.75) {
+    } else if (elapsed < settleSec) {
       if (introPhase !== 'hud') {
         introPhase = 'hud';
         reticleLayer.classList.remove('intro-hidden');
@@ -817,6 +1147,8 @@ function mountApp(): void {
 
   const engine = new SiliconEngine(gpuMount, {
     deferIntroStart: true,
+    introCues: audio.getVibe().introCues,
+    getIntroClockSec: () => audio.getIntroClockSec(),
     onIntroFrame: ({ active, elapsed }) => {
       syncIntroUi(active, elapsed);
     },
@@ -837,7 +1169,8 @@ function mountApp(): void {
       if (Math.abs(z - lastZoomRendered) < 0.0005) return;
       lastZoomRendered = z;
 
-      const { dialDeg, bracketText, bracketOpacity } = formatMagnification(z);
+      const { dialDeg, bracketText, bracketOpacity, magText, sizeText, scaleBarLabel, scaleBarPx } =
+        formatMagnification(z);
       const frac = Math.max(0.015, Math.min(0.8, ((z + 1) / 10) * 0.8));
       reticleArc.setAttribute('stroke-dasharray', `${(circ * frac).toFixed(1)} ${circ.toFixed(1)}`);
       reticleDial.setAttribute('transform', `rotate(${(-dialDeg * 0.55).toFixed(2)} 270 270)`);
@@ -852,23 +1185,16 @@ function mountApp(): void {
         nmBracket.style.display = 'none';
       }
 
-      updateRailIndicator(z);
-
-      const stopIdx = Math.max(0, Math.min(ZOOM_STOPS.length - 1, Math.round(z) + 1));
-      if (stopIdx !== lastActiveStop) {
-        railButtons[lastActiveStop]?.classList.remove('active');
-        railButtons[stopIdx]?.classList.add('active');
-        lastActiveStop = stopIdx;
-        if (!railUserScrolling) {
-          centerRailStop(stopIdx, true);
-        }
-      }
+      updateVernierDial(z, magText, sizeText, scaleBarLabel, scaleBarPx);
     },
     onInspect: (hit) => {
       const prevId = activeInspect?.id ?? null;
       const nextId = hit?.id ?? null;
       activeInspect = hit;
-      // On narrow mobile screens, close open right sheets when opening an Inspect Card so sheets never collide
+      // Close colliding sheets when opening an Inspect Card on compact screens
+      if (hit && window.innerWidth <= 1080 && showDepthSheet) {
+        setDepthSheetOpen(false, false);
+      }
       if (hit && window.innerWidth <= 720) {
         if (showActivity) {
           showActivity = false;
@@ -935,15 +1261,15 @@ function mountApp(): void {
       const g = staticGlassBase[i];
       out.push(hudAlpha < 0.999 ? { ...g, alpha: g.alpha * hudAlpha } : g);
     }
-    // Elevated crystal droplet lenses rendered in Stage 1 so they refract Stage 0 glass + scene!
-    if (!pureView && railIndicatorBox.hw > 1) {
+    // Elevated crystal droplet lenses rendered in Stage 1 so they refract Stage 0 glass + raw 3D scene!
+    if (!pureView && loupeGlassBox.hw > 1) {
       out.push({
-        cx: railIndicatorBox.cx,
-        cy: railIndicatorBox.cy,
-        hw: railIndicatorBox.hw,
-        hh: railIndicatorBox.hh,
-        radius: Math.min(18, railIndicatorBox.hh),
-        bevel: 0.28,
+        cx: loupeGlassBox.cx,
+        cy: loupeGlassBox.cy,
+        hw: loupeGlassBox.hw,
+        hh: loupeGlassBox.hh,
+        radius: loupeGlassBox.hh,
+        bevel: 0.30,
         frost: 0.0,
         style: 2,
         alpha: hudAlpha,
@@ -966,9 +1292,11 @@ function mountApp(): void {
     } else {
       const tools = rectToGlass(toolCapsuleEl, 999, 0.25, 1.3, 0, 1.0);
       if (tools) base.push(tools);
-      const rail = rectToGlass(zoomRailEl, 999, 0.25, 1.3, 0, 1.0);
-      if (rail) base.push(rail);
 
+      if (showDepthSheet) {
+        const sheet = rectToGlass(depthSheet, 24, 0.14, 3.0, 1, 1.0);
+        if (sheet) base.push(sheet);
+      }
       if (showActivity) {
         const sheet = rectToGlass(activitySheet, 26, 0.14, 3.0, 1, 1.0);
         if (sheet) base.push(sheet);
@@ -993,14 +1321,12 @@ function mountApp(): void {
 
     staticGlassBase = base;
     staticGlassElevated = elevated;
-    const rr = zoomRailEl.getBoundingClientRect();
-    railViewportRect = { left: rr.left, top: rr.top, right: rr.right };
     pushGlassToEngine();
   };
   refreshGlassLayout = syncGlassLayout;
 
   const syncViewportLayout = () => {
-    measureRail();
+    measureVernier();
     syncGlassLayout();
   };
 
@@ -1008,7 +1334,8 @@ function mountApp(): void {
   if (typeof ResizeObserver !== 'undefined') {
     const ro = new ResizeObserver(syncViewportLayout);
     ro.observe(toolCapsuleEl);
-    ro.observe(zoomRailEl);
+    ro.observe(vernierCapsuleEl);
+    ro.observe(depthSheet);
     ro.observe(activitySheet);
     ro.observe(soundSheet);
     ro.observe(inspectCard);
@@ -1043,9 +1370,11 @@ function mountApp(): void {
     powerOnGuardUntil = performance.now() + 420;
     setAwaitingPowerOn(false);
     introPhase = 'idle';
+    const cues = audio.getVibe().introCues;
+    engine.setIntroCues(cues);
     audio.unlockFromGesture();
-    // Title is already centered & crisp: cue melts away smoothly, immediate C1 sub-bass -> optical push-through at +0.44s!
-    engine.releaseIntroHold(0.78);
+    // Title is already centered & crisp: cue melts away smoothly and Beat 1 hits immediately (~20ms)!
+    engine.releaseIntroHold(cues.heldStartSec);
   };
 
   if (engine.isIntroHeld) {
@@ -1117,18 +1446,224 @@ function mountApp(): void {
     action?.run();
   });
 
-  // Wire zoom rail clicks
-  for (const btn of railButtons) {
-    btn.addEventListener('click', () => {
-      const idx = Number(btn.dataset.idx ?? 1);
-      const z = Number(btn.dataset.z ?? 0);
-      const fromZ = lastZoomRendered === -99 ? 0 : lastZoomRendered;
-      railUserScrolling = false;
-      centerRailStop(idx, true);
-      audio.playDive(fromZ, z);
-      engine.flyToZoom(z);
+  // Helper to fly cleanly to a zoom stop (used by tap, Depth Map tiles, and keyboard arrows)
+  const flyToStop = (z: number) => {
+    cancelVernierCoast();
+    const fromZ = lastZoomRendered === -99 ? engine.getZoom() : lastZoomRendered;
+    audio.playDive(fromZ, z);
+    engine.flyToZoom(z);
+  };
+
+  // Wire Readout Pill -> 1-Tap Depth Map sheet
+  vernierReadoutBtn.addEventListener('click', () => {
+    setDepthSheetOpen(!showDepthSheet, true);
+  });
+
+  // Wire Depth Map 1-tap tiles
+  for (const tile of depthTileButtons) {
+    tile.addEventListener('click', () => {
+      const z = Number(tile.dataset.z ?? 0);
+      setDepthSheetOpen(false, false);
+      flyToStop(z);
     });
   }
+
+  // Wire Tactile Optical Vernier Dial: direct 1:1 scrub (touch + mouse), momentum coast, magnetic snap & tap-to-jump
+  let scrubPointerId: number | null = null;
+  let scrubStartX = 0;
+  let scrubStartZ = 0;
+  let scrubLastX = 0;
+  let scrubLastTime = 0;
+  let scrubVelZ = 0;
+  let scrubCurrentZ = 0;
+  let scrubMoved = false;
+  let scrubLastIntStop = 0;
+  let scrubDownTarget: EventTarget | null = null;
+
+  const launchVernierCoast = (initialZ: number, initialVelZ: number) => {
+    cancelVernierCoast();
+    let z = initialZ;
+    let v = Math.max(-14, Math.min(14, initialVelZ));
+    let lastT = performance.now();
+
+    const step = (now: number) => {
+      const dt = Math.min(0.05, Math.max(0.001, (now - lastT) / 1000));
+      lastT = now;
+      z = Math.max(VERNIER_MIN_Z, Math.min(VERNIER_MAX_Z, z + v * dt));
+      v *= Math.exp(-dt * 6.8);
+
+      // Hit soft bounds cleanly
+      if ((z <= VERNIER_MIN_Z + 0.001 && v < 0) || (z >= VERNIER_MAX_Z - 0.001 && v > 0)) {
+        v = 0;
+      }
+
+      engine.scrubZoom(z, true);
+
+      if (Math.abs(v) > 0.22) {
+        vernierCoastRaf = requestAnimationFrame(step);
+      } else {
+        vernierCoastRaf = 0;
+        // Gentle magnetic snap if resting right next to an integer landmark
+        if (z >= -1.25) {
+          const nearest = Math.max(-1, Math.min(9, Math.round(z)));
+          if (Math.abs(z - nearest) <= 0.22) {
+            engine.scrubZoom(nearest, true);
+          }
+        }
+      }
+    };
+    vernierCoastRaf = requestAnimationFrame(step);
+  };
+
+  vernierCapsuleEl.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0 && ev.pointerType === 'mouse') return;
+    cancelVernierCoast();
+    scrubPointerId = ev.pointerId;
+    scrubStartX = ev.clientX;
+    scrubLastX = ev.clientX;
+    scrubLastTime = performance.now();
+    scrubStartZ = lastZoomRendered === -99 ? engine.getZoom() : lastZoomRendered;
+    scrubCurrentZ = scrubStartZ;
+    scrubVelZ = 0;
+    scrubMoved = false;
+    scrubLastIntStop = Math.round(scrubStartZ);
+    scrubDownTarget = ev.target;
+    vernierScrubbing = true;
+    updateVernierDial(scrubStartZ);
+    engageReticle(true);
+    try {
+      vernierCapsuleEl.setPointerCapture(ev.pointerId);
+    } catch {
+      // ignore if unsupported
+    }
+  });
+
+  vernierCapsuleEl.addEventListener('pointermove', (ev) => {
+    if (scrubPointerId === null || ev.pointerId !== scrubPointerId) return;
+    const dx = ev.clientX - scrubStartX;
+    if (!scrubMoved && Math.abs(dx) >= 6) {
+      scrubMoved = true;
+      vernierCapsuleEl.classList.add('scrubbing');
+      if (showDepthSheet) setDepthSheetOpen(false, false);
+    }
+    if (!scrubMoved) return;
+
+    const now = performance.now();
+    const dt = Math.max(0.004, (now - scrubLastTime) / 1000);
+    const stepDx = ev.clientX - scrubLastX;
+    const instVelZ = -(stepDx / vernierPitch) / dt;
+    scrubVelZ = scrubVelZ * 0.62 + instVelZ * 0.38;
+    scrubLastX = ev.clientX;
+    scrubLastTime = now;
+
+    // Pull ruler tape left -> dive deeper (+z), pull right -> zoom out (-z)
+    scrubCurrentZ = Math.max(VERNIER_MIN_Z, Math.min(VERNIER_MAX_Z, scrubStartZ - dx / vernierPitch));
+    engine.scrubZoom(scrubCurrentZ, true);
+
+    const nearestInt = Math.round(scrubCurrentZ);
+    if (nearestInt !== scrubLastIntStop && nearestInt >= -1 && nearestInt <= 9) {
+      scrubLastIntStop = nearestInt;
+      if (ev.pointerType === 'touch' && typeof navigator.vibrate === 'function') {
+        try {
+          navigator.vibrate(4);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  });
+
+  const finishVernierPointer = (ev: PointerEvent, cancelled: boolean) => {
+    if (scrubPointerId === null || ev.pointerId !== scrubPointerId) return;
+    try {
+      if (vernierCapsuleEl.hasPointerCapture(ev.pointerId)) {
+        vernierCapsuleEl.releasePointerCapture(ev.pointerId);
+      }
+    } catch {
+      // ignore
+    }
+    scrubPointerId = null;
+    vernierScrubbing = false;
+    vernierCapsuleEl.classList.remove('scrubbing');
+    updateVernierDial(lastZoomRendered === -99 ? engine.getZoom() : lastZoomRendered);
+    engageReticle(false);
+
+    if (cancelled) return;
+
+    if (!scrubMoved) {
+      const targetEl = scrubDownTarget instanceof Element ? scrubDownTarget : null;
+      const stopBtn = targetEl?.closest<HTMLButtonElement>('.vernier-stop');
+      if (stopBtn) {
+        const z = Number(stopBtn.dataset.z ?? 0);
+        if (Math.abs(z - scrubStartZ) < 0.14) {
+          setDepthSheetOpen(!showDepthSheet, true);
+        } else {
+          flyToStop(z);
+        }
+        return;
+      }
+
+      const rect = vernierCapsuleEl.getBoundingClientRect();
+      const offsetX = ev.clientX - (rect.left + rect.width * 0.5);
+      if (Math.abs(offsetX) < 34) {
+        setDepthSheetOpen(!showDepthSheet, true);
+      } else {
+        const dir = offsetX > 0 ? 1 : -1;
+        const nextIdx = Math.max(0, Math.min(ZOOM_STOPS.length - 1, lastActiveStop + dir));
+        flyToStop(ZOOM_STOPS[nextIdx].z);
+      }
+      return;
+    }
+
+    // If pointer lingered before lifting, zero stale velocity
+    if (performance.now() - scrubLastTime > 75) {
+      scrubVelZ = 0;
+    }
+
+    if (Math.abs(scrubVelZ) > 0.42) {
+      launchVernierCoast(scrubCurrentZ, scrubVelZ);
+    } else if (scrubCurrentZ >= -1.25) {
+      const nearest = Math.max(-1, Math.min(9, Math.round(scrubCurrentZ)));
+      if (Math.abs(scrubCurrentZ - nearest) <= 0.19) {
+        engine.scrubZoom(nearest, true);
+      }
+    }
+  };
+
+  vernierCapsuleEl.addEventListener('pointerup', (ev) => finishVernierPointer(ev, false));
+  vernierCapsuleEl.addEventListener('pointercancel', (ev) => finishVernierPointer(ev, true));
+
+  // Mouse wheel directly over the Vernier Dial scrubs smoothly too!
+  vernierCapsuleEl.addEventListener(
+    'wheel',
+    (ev) => {
+      ev.preventDefault();
+      cancelVernierCoast();
+      if (showDepthSheet) setDepthSheetOpen(false, false);
+      const raw = Math.abs(ev.deltaX) > Math.abs(ev.deltaY) ? ev.deltaX : ev.deltaY;
+      const cur = lastZoomRendered === -99 ? engine.getZoom() : lastZoomRendered;
+      const next = Math.max(VERNIER_MIN_Z, Math.min(VERNIER_MAX_Z, cur + raw * 0.0024));
+      engageReticle(false);
+      engine.scrubZoom(next, true);
+    },
+    { passive: false }
+  );
+
+  // Accessible keyboard stepping when Vernier Dial has focus
+  vernierCapsuleEl.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const nextIdx = Math.min(ZOOM_STOPS.length - 1, lastActiveStop + 1);
+      flyToStop(ZOOM_STOPS[nextIdx].z);
+    } else if (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      const prevIdx = Math.max(0, lastActiveStop - 1);
+      flyToStop(ZOOM_STOPS[prevIdx].z);
+    } else if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      setDepthSheetOpen(!showDepthSheet, true);
+    }
+  });
 
   // Render Activity Sheet bars, micro-sparkline, real GPU/Thermal metrics & process list only when open
   let tickCols: { fill: HTMLDivElement; lbl: HTMLSpanElement }[] = [];
@@ -1250,6 +1785,9 @@ function mountApp(): void {
 
   btnActivity.addEventListener('click', () => {
     showActivity = !showActivity;
+    if (showActivity && showDepthSheet) {
+      setDepthSheetOpen(false, false);
+    }
     if (showActivity && showSoundSheet) {
       showSoundSheet = false;
       btnVibe.classList.remove('active');
@@ -1268,6 +1806,9 @@ function mountApp(): void {
 
   btnVibe.addEventListener('click', () => {
     showSoundSheet = !showSoundSheet;
+    if (showSoundSheet && showDepthSheet) {
+      setDepthSheetOpen(false, false);
+    }
     if (showSoundSheet && showActivity) {
       showActivity = false;
       btnActivity.classList.remove('active');
@@ -1287,7 +1828,8 @@ function mountApp(): void {
   for (const btn of vibeButtons) {
     btn.addEventListener('click', () => {
       const id = (btn.dataset.vibe ?? 'glass') as MusicVibeId;
-      audio.setVibe(id, true);
+      const meta = audio.setVibe(id, true);
+      engine.setIntroCues(meta.introCues);
       audio.playUiTap(true);
       syncSoundSheetUi();
     });
@@ -1313,6 +1855,7 @@ function mountApp(): void {
     syncSoundSheetUi();
     syncGlassLayout();
     introPhase = 'idle';
+    engine.setIntroCues(audio.getVibe().introCues);
     engine.startIntro();
   });
 
@@ -1330,6 +1873,7 @@ function mountApp(): void {
     restoreHudBtn.style.display = pureView ? 'inline-flex' : 'none';
     if (pureView) {
       hoverPill.classList.remove('visible');
+      if (showDepthSheet) setDepthSheetOpen(false, false);
     }
     syncGlassLayout();
   };
@@ -1339,6 +1883,7 @@ function mountApp(): void {
 
   editorialBrandEl.addEventListener('click', () => {
     if (pureView) setPure(false);
+    if (showDepthSheet) setDepthSheetOpen(false, false);
     if (showActivity) {
       showActivity = false;
       btnActivity.classList.remove('active');
@@ -1350,6 +1895,7 @@ function mountApp(): void {
       soundSheet.style.display = 'none';
     }
     introPhase = 'idle';
+    engine.setIntroCues(audio.getVibe().introCues);
     engine.startIntro();
   });
 
@@ -1359,13 +1905,19 @@ function mountApp(): void {
       audio.toggle();
       syncSoundSheetUi();
     } else if (e.key === 'v' || e.key === 'V') {
-      audio.cycleVibe();
+      const meta = audio.cycleVibe();
+      engine.setIntroCues(meta.introCues);
       syncSoundSheetUi();
+    } else if (e.key === 'g' || e.key === 'G') {
+      if (!pureView && !introActive) {
+        setDepthSheetOpen(!showDepthSheet, true);
+      }
     } else if (e.key === 'h' || e.key === 'H') {
       if (engine.isIntroActive) engine.skipIntro();
       setPure(!pureView);
     } else if (e.key === 'r' || e.key === 'R') {
       if (pureView) setPure(false);
+      if (showDepthSheet) setDepthSheetOpen(false, false);
       if (showActivity) {
         showActivity = false;
         btnActivity.classList.remove('active');
@@ -1377,10 +1929,14 @@ function mountApp(): void {
         soundSheet.style.display = 'none';
       }
       introPhase = 'idle';
+      engine.setIntroCues(audio.getVibe().introCues);
       engine.startIntro();
     } else if (e.key === 'Escape') {
       if (engine.isIntroActive) engine.skipIntro();
       if (activeInspect) engine.clearInspect();
+      if (showDepthSheet) {
+        setDepthSheetOpen(false, false);
+      }
       if (showSoundSheet) {
         showSoundSheet = false;
         btnVibe.classList.remove('active');
@@ -1394,7 +1950,15 @@ function mountApp(): void {
   const tracePlayer = new RecordedTracePlayer('build');
 
   // Hand-to-silicon causality: route live pointer/zoom/inspect activity into browser telemetry
-  gpuMount.addEventListener('wheel', () => browserTelemetry.noteInteraction('zoom'), { passive: true });
+  gpuMount.addEventListener(
+    'wheel',
+    () => {
+      cancelVernierCoast();
+      if (showDepthSheet) setDepthSheetOpen(false, false);
+      browserTelemetry.noteInteraction('zoom');
+    },
+    { passive: true }
+  );
   gpuMount.addEventListener(
     'pointermove',
     (ev) => {
@@ -1405,7 +1969,11 @@ function mountApp(): void {
   gpuMount.addEventListener(
     'pointerdown',
     () => {
+      cancelVernierCoast();
       browserTelemetry.noteInteraction('inspect');
+      if (showDepthSheet) {
+        setDepthSheetOpen(false, false);
+      }
       // On narrow mobile screens, tapping the canvas outside an open sheet dismisses it cleanly
       if (window.innerWidth <= 720 && (showActivity || showSoundSheet)) {
         if (showActivity) {

@@ -14,6 +14,7 @@ import {
   BGM_LEVEL_OPTIONS,
   BgmLevelId,
   getVibeMeta,
+  IntroCueMap,
   MUSIC_VIBES,
   MusicVibeId,
   MusicVibeMeta,
@@ -23,7 +24,7 @@ import {
 } from './vibes';
 
 export { BGM_LEVEL_OPTIONS, MUSIC_VIBES };
-export type { BgmLevelId, MusicVibeId, MusicVibeMeta };
+export type { BgmLevelId, IntroCueMap, MusicVibeId, MusicVibeMeta };
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -117,6 +118,8 @@ export class SiliconAudio {
 
   // Active cinematic Cold Boot score state (for clean sync, mid-intro unlock, & early skip fadeout)
   private introRunning = false;
+  private introClockActive = false;
+  private introOriginAudioTime: number | null = null;
   private introStartWallMs = 0;
   private introScoreBus: GainNode | null = null;
   private introSources: AudioScheduledSourceNode[] = [];
@@ -1459,12 +1462,21 @@ export class SiliconAudio {
   // Synchronized Cold Boot Intro + Seamless Loop Handoff
   // ============================================================================
 
+  /** Sample-accurate elapsed intro time (sec) directly from Web Audio hardware clock */
+  public getIntroClockSec(): number | null {
+    if (!this.ctx || !this.introClockActive || this.introOriginAudioTime === null) return null;
+    if (this.ctx.state !== 'running' || this.userMuted || this.tabHidden) return null;
+    return Math.max(0, this.ctx.currentTime - this.introOriginAudioTime);
+  }
+
   public startIntroScore(offsetSec = 0): void {
     this.stopIntroScore(0.1, false);
     this.stopBackgroundLoop(0.2, false);
     if (this.userMuted) return;
 
     this.introRunning = true;
+    this.introClockActive = false;
+    this.introOriginAudioTime = null;
     this.introScheduled = false;
     this.introStartWallMs = performance.now() - offsetSec * 1000;
 
@@ -1500,6 +1512,8 @@ export class SiliconAudio {
    */
   public stopIntroScore(fadeSec = 0.28, continueLoop = true): void {
     this.introRunning = false;
+    this.introClockActive = false;
+    this.introOriginAudioTime = null;
     this.introScheduled = false;
 
     if (this.introHandoffTimer !== null) {
@@ -1540,9 +1554,11 @@ export class SiliconAudio {
 
   private maybeLaunchPendingIntro(): void {
     if (!this.introRunning || this.introScheduled || !this.isActive()) return;
+    const vibe = getVibeMeta(this.vibeId);
     const elapsed = (performance.now() - this.introStartWallMs) / 1000;
-    if (elapsed >= 6.45) {
+    if (elapsed >= vibe.introCues.durationSec - 0.55) {
       this.introRunning = false;
+      this.introClockActive = false;
       if (this.bgmLevel !== 'off') {
         this.bgmWanted = true;
         this.startBackgroundLoop(0.8);
@@ -1554,18 +1570,25 @@ export class SiliconAudio {
 
   private scheduleCinematicIntro(offsetSec: number): void {
     if (!this.ctx || !this.isActive()) return;
-    this.touchAudio(Math.max(4.0, 12.0 - offsetSec));
+    const vibe = getVibeMeta(this.vibeId);
+    const cues = vibe.introCues;
+    this.touchAudio(Math.max(4.0, cues.durationSec + 4.5 - offsetSec));
     this.introScheduled = true;
 
     const ctx = this.ctx;
     const now = ctx.currentTime;
     const t0 = now - offsetSec;
-    const vibe = getVibeMeta(this.vibeId);
+    this.introOriginAudioTime = t0;
+    this.introClockActive = true;
 
     const scoreBus = ctx.createGain();
-    scoreBus.gain.setValueAtTime(offsetSec > 0.05 ? 0.0001 : 1.0, now);
     if (offsetSec > 0.05) {
-      scoreBus.gain.linearRampToValueAtTime(1.0, now + 0.14);
+      // Crisp 15ms de-click when launching from held "Power On" so Beat 1 hits at full punch!
+      const rampSec = offsetSec <= cues.heldStartSec + 0.2 ? 0.015 : 0.1;
+      scoreBus.gain.setValueAtTime(0.0001, now);
+      scoreBus.gain.linearRampToValueAtTime(1.0, now + rampSec);
+    } else {
+      scoreBus.gain.setValueAtTime(1.0, now);
     }
 
     const drySend = ctx.createGain();
@@ -1582,20 +1605,20 @@ export class SiliconAudio {
     const sources: AudioScheduledSourceNode[] = [];
     this.introSources = sources;
 
-    // 1) Render the active vibe's full 7-second Cold Boot composition
+    // 1) Render the active vibe's full beat-locked Cold Boot composition
     const tk = this.makeToolkit((node) => sources.push(node));
     scheduleVibeIntro(vibe.id, tk, t0, now, scoreBus);
 
-    // 2) Subtle optical reticle lock (5.80s) + whisper-clean Liquid Glass rail arrival (6.10s)
-    if (t0 + 5.8 >= now - 0.03) {
-      const lockT = Math.max(now, t0 + 5.8);
+    // 2) Optical reticle lock on lockSec + whisper-clean Liquid Glass HUD arrival on hudSec
+    if (t0 + cues.lockSec >= now - 0.03) {
+      const lockT = Math.max(now, t0 + cues.lockSec);
       const out = this.routeOut(0, 0.45, 0.08);
       this.triggerStrike(lockT, 4000, 3.8, 0.005, 0.068, out);
       this.triggerThock(lockT + 0.02, 185, vibe.turretScaleHz[0], 0.055, 0.085, out, 'sine');
     }
 
-    if (t0 + 6.1 >= now - 0.03) {
-      const hudT = Math.max(now, t0 + 6.1);
+    if (t0 + cues.hudSec >= now - 0.03) {
+      const hudT = Math.max(now, t0 + cues.hudSec);
       const out = this.routeOut(0, 0.36, 0.06);
       this.triggerStrike(hudT, 3400, 4.2, 0.0045, 0.045, out);
       this.triggerCleanTone(hudT, vibe.rootHz * 1.5, 0.08, 0.036, out, 'sine');
@@ -1603,10 +1626,10 @@ export class SiliconAudio {
       this.triggerCleanTone(hudT + 0.068, vibe.octaveHz, 0.1, 0.032, out, 'sine');
     }
 
-    // 3) Seamless tempo-locked handoff into the quiet infinite background loop!
+    // 3) Seamless tempo-locked handoff into the quiet infinite background loop on lockSec downbeat!
     if (this.bgmLevel !== 'off') {
       this.bgmWanted = true;
-      const handoffAudioTime = t0 + vibe.loopHandoffSec;
+      const handoffAudioTime = t0 + cues.lockSec;
       const delayMs = Math.max(0, (handoffAudioTime - now - 0.25) * 1000);
       if (this.introHandoffTimer !== null) {
         window.clearTimeout(this.introHandoffTimer);
@@ -1615,7 +1638,7 @@ export class SiliconAudio {
         this.introHandoffTimer = null;
         this.introRunning = false;
         if (!this.userMuted && !this.tabHidden && this.bgmLevel !== 'off' && this.ctx?.state === 'running') {
-          this.startBackgroundLoop(1.65, handoffAudioTime);
+          this.startBackgroundLoop(1.75, handoffAudioTime);
         }
       }, delayMs);
     }

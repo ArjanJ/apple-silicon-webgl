@@ -1,3 +1,4 @@
+import { getVibeMeta, IntroCueMap } from '../audio/vibes';
 import { DEFAULT_TELEMETRY, LiveMacTelemetry } from '../sim/macTelemetry';
 import {
   createChipTexturePack,
@@ -34,6 +35,8 @@ import {
   SHADOW_CUTOUT_FS,
   SHADOW_FS,
   SHADOW_VS,
+  VERNIER_STRIP_FS,
+  VERNIER_STRIP_VS,
 } from './shaders';
 import {
   buildWorld0,
@@ -104,6 +107,10 @@ export interface EngineHooks {
   onHover?: (hit: DieInspectHit | null, clientX: number, clientY: number) => void;
   onTourChange?: (active: boolean) => void;
   onIntroFrame?: (state: IntroFrameState) => void;
+  /** Optional Web Audio hardware clock callback so intro visuals stay sample-locked to the score */
+  getIntroClockSec?: () => number | null;
+  /** Initial intro beat/cue map from the active soundtrack vibe */
+  introCues?: IntroCueMap;
   /** When true, holds the Cold Boot intro paused on black until startIntro() / releaseIntroHold() is called */
   deferIntroStart?: boolean;
 }
@@ -163,10 +170,10 @@ export const MAX_ZOOM = 9.0;
 const STAGE_FLOOR_Y = [-0.598, -0.26, -0.14, -0.075, -0.35, -6.0, -6.0, -6.0, -6.0, -6.0];
 const WORLD0_GRID_STEP = WORLD1_PITCH / STAGE_RATIOS[0]; // 0.095 (exact World 1 grid pitch on World 0!)
 
-/** "Cold Boot" Centered Title Card -> Wide Flat Horizon Silhouette -> Slow Crane-Up Power-On choreography */
-const INTRO_DURATION = 7.05;
-const INTRO_START_ZOOM = -0.44;
-const INTRO_START_PITCH = 0.22; // ~12.6° sleek low horizontal angle -> cranes slowly up to HERO_PITCH (49°)
+/** "Cold Boot" Centered Title Card -> Dark Silhouette Build -> Major-Beat Ignition & Hero Crane-Up */
+const DEFAULT_INTRO_CUES: IntroCueMap = getVibeMeta('orbital').introCues;
+const INTRO_START_ZOOM = -0.5;
+const INTRO_START_PITCH = 0.18; // ~10.3° sleek sculptural low horizon angle -> cranes up to HERO_PITCH (49°)
 const INTRO_START_YAW = 0.0;    // Dead-straight architectural symmetry (zero crookedness!)
 const HERO_ZOOM = 0.0;
 const HERO_PITCH = 0.86;
@@ -229,6 +236,7 @@ export class SiliconEngine {
   private bloomUpProg: WebGLProgram;
   private compositeProg: WebGLProgram;
   private liquidGlProg: WebGLProgram;
+  private vernierProg: WebGLProgram;
 
   private boxMesh: MeshBuffers;
   private cylMesh: MeshBuffers;
@@ -304,6 +312,15 @@ export class SiliconEngine {
   private glassPointerVelY = 0;
   private glassPointerActive = 0;
 
+  // Retina WebGL2 Vernier Strip (composited into srgbA BEFORE Liquid Glass so the rounded glass pill genuinely refracts the text!)
+  private vernierTex: WebGLTexture | null = null;
+  private vernierTexOriginCss = 0;
+  private vernierTexWidthCss = 1;
+  private vernierRect = new Float32Array(4); // (cx, cy, halfW, halfH)
+  private vernierPitchCss = 90;
+  private vernierLoupeHalfW = 32;
+  private vernierAlpha = 0;
+
   // Cached uniform locations
   private uShadow: Record<string, WebGLUniformLocation | null> = {};
   private uShadowCutout: Record<string, WebGLUniformLocation | null> = {};
@@ -314,6 +331,7 @@ export class SiliconEngine {
   private uUp: Record<string, WebGLUniformLocation | null> = {};
   private uComp: Record<string, WebGLUniformLocation | null> = {};
   private uLiquid: Record<string, WebGLUniformLocation | null> = {};
+  private uVernier: Record<string, WebGLUniformLocation | null> = {};
 
   // Reusable matrices (zero GC per frame)
   private projMat = new Float32Array(16);
@@ -360,7 +378,8 @@ export class SiliconEngine {
   private tourElapsed = 0;
   private tourBaseYaw = -0.14;
 
-  // "Cold Boot" Powered-Off -> Staged Silicon Power-On state
+  // "Cold Boot" Powered-Off -> Beat-Aligned Major-Drop Silicon Power-On state
+  private introCues: IntroCueMap = DEFAULT_INTRO_CUES;
   private introActive = false;
   private introAwaitingBoot = false;
   private introHoldRendered = false;
@@ -368,6 +387,7 @@ export class SiliconEngine {
   private introLightSweep = 1.0;
   private introKeyIntensity = 1.0;
   private introRimBoost = 1.0;
+  private introBeatPulse = 0.0;
   private introFogBoost = 0.0;
   private introExposure = 1.0;
   private introDofBoost = 0.0;
@@ -492,6 +512,7 @@ export class SiliconEngine {
     this.bloomUpProg = this.createProgram(FULLSCREEN_VS, BLOOM_UP_FS);
     this.compositeProg = this.createProgram(FULLSCREEN_VS, COMPOSITE_FS);
     this.liquidGlProg = this.createProgram(LIQUID_GL_VS, LIQUID_GL_FS);
+    this.vernierProg = this.createProgram(VERNIER_STRIP_VS, VERNIER_STRIP_FS);
 
     this.cacheUniforms();
 
@@ -600,12 +621,16 @@ export class SiliconEngine {
     this.resize();
     this.bindEvents();
 
+    if (this.hooks.introCues) {
+      this.introCues = this.hooks.introCues;
+    }
+
     const prefersReducedMotion =
       typeof window !== 'undefined' &&
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (prefersReducedMotion) {
-      this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
+      this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: this.introCues.durationSec });
       this.kickoffDeferredHighResTextures();
     } else if (this.hooks.deferIntroStart) {
       this.holdIntro();
@@ -1153,6 +1178,13 @@ export class SiliconEngine {
       'uQuadPad',
       'uPointerFluid',
     ]);
+    this.uVernier = grab(this.vernierProg, [
+      'uTex',
+      'uCssSize',
+      'uVernierRect',
+      'uTexParams',
+      'uFadeParams',
+    ]);
   }
 
   private createArrayBuffer(data: Float32Array): WebGLBuffer {
@@ -1508,6 +1540,11 @@ export class SiliconEngine {
     return this.introAwaitingBoot;
   }
 
+  /** Update the active intro beat/cue map whenever the user switches soundtrack vibes */
+  public setIntroCues(cues: IntroCueMap): void {
+    this.introCues = cues;
+  }
+
   /** Hold Cold Boot paused at black while checking autoplay or waiting for user power-on gesture */
   public holdIntro(): void {
     this.initIntroState();
@@ -1515,17 +1552,18 @@ export class SiliconEngine {
     this.introHoldRendered = false;
   }
 
-  /** Release the Cold Boot hold and launch seamlessly from `startElapsedSec` (0.0 for autoplay, ~0.50s from held title) */
+  /** Release the Cold Boot hold and launch seamlessly from `startElapsedSec` (0.0 for autoplay, heldStartSec from held title) */
   public releaseIntroHold(startElapsedSec = 0): void {
     if (!this.introAwaitingBoot) return;
     this.introAwaitingBoot = false;
-    this.introElapsed = clamp(startElapsedSec, 0, INTRO_DURATION - 0.1);
+    const dur = this.introCues.durationSec;
+    this.introElapsed = clamp(startElapsedSec, 0, dur - 0.1);
     this.lastFrame = performance.now();
     this.lastRenderMs = 0;
     this.markActivity();
     this.hooks.onIntroFrame?.({
       active: true,
-      progress: clamp(this.introElapsed / INTRO_DURATION, 0, 1),
+      progress: clamp(this.introElapsed / dur, 0, 1),
       elapsed: this.introElapsed,
     });
   }
@@ -1561,11 +1599,12 @@ export class SiliconEngine {
     this.yaw = INTRO_START_YAW;
     this.targetYaw = INTRO_START_YAW;
 
-    // Chip fades smoothly in from pure black while powered "off" (zero DOF stall during intro!)
-    this.introLightSweep = 0.34;
-    this.introKeyIntensity = 0.085;
-    this.introRimBoost = 0.56;
-    this.introFogBoost = 0.028;
+    // Chip emerges from pure black completely powered "off" — stays dark & sculptural until the major beat!
+    this.introLightSweep = 0.18;
+    this.introKeyIntensity = 0.045;
+    this.introRimBoost = 0.48;
+    this.introBeatPulse = 0.0;
+    this.introFogBoost = 0.032;
     this.introExposure = 0.0;
     this.introDofBoost = 0.0;
 
@@ -1579,7 +1618,7 @@ export class SiliconEngine {
     this.bootActive = 1.0;
   }
 
-  /** Play (or replay) the "Cold Boot" powered-off -> staged silicon power-on entrance */
+  /** Play (or replay) the "Cold Boot" powered-off -> beat-aligned major-drop silicon power-on entrance */
   public startIntro(): void {
     this.introAwaitingBoot = false;
     this.initIntroState();
@@ -1595,7 +1634,7 @@ export class SiliconEngine {
     this.targetYaw = this.yaw;
     this.targetPitch = this.pitch;
     this.kickoffDeferredHighResTextures();
-    this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
+    this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: this.introCues.durationSec });
   }
 
   /** Pick the hottest live P-Core on the user's Mac as the hero dive target */
@@ -1810,6 +1849,43 @@ export class SiliconEngine {
     this.flightActive = true;
   }
 
+  public getZoom(): number {
+    return this.zoom;
+  }
+
+  /**
+   * Direct tactile zoom scrubbing (used by the Optical Vernier Dial on both touch and desktop).
+   * Cancels any active flight, smoothly tracks the cinematic camera pose for the target depth,
+   * and keeps 120 FPS inertia responsive without jarring jumps.
+   */
+  public scrubZoom(z: number, followPose = true): void {
+    if (this.introAwaitingBoot) return;
+    this.markActivity();
+    this.skipIntro();
+    this.stopTour();
+    if (this.flightActive) {
+      this.flightActive = false;
+      this.targetYaw = this.yaw;
+      this.targetPitch = this.pitch;
+    }
+    const destZoom = clamp(z, MIN_ZOOM, MAX_ZOOM);
+    this.targetZoom = destZoom;
+    this.zoomRate = 18.0;
+
+    if (destZoom <= 0.05) {
+      this.targetAnchor0[0] = 0;
+      this.targetAnchor0[1] = 0;
+    }
+
+    if (followPose) {
+      const [destPitch, rawDestYaw] = this.getCameraPoseForZoom(destZoom);
+      const twoPi = Math.PI * 2;
+      const deltaYaw = ((rawDestYaw - this.yaw) % twoPi + Math.PI * 3) % twoPi - Math.PI;
+      this.targetPitch = destPitch;
+      this.targetYaw = this.yaw + deltaYaw;
+    }
+  }
+
   private resize = (): void => {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
@@ -1848,7 +1924,7 @@ export class SiliconEngine {
       radius: number;
       bevel: number;
       frost: number;
-      style: 0 | 1 | 2;
+      style: 0 | 1 | 2 | 3;
       alpha: number;
     }[]
   ): void {
@@ -1858,7 +1934,7 @@ export class SiliconEngine {
     let hasElev = false;
     for (let i = 0; i < count; i++) {
       const r = regions[i];
-      if (r.style === 2 && r.alpha > 0.005) hasElev = true;
+      if (r.style >= 2 && r.alpha > 0.005) hasElev = true;
       const o = i * 4;
       const p3 = r.style * 4.0 + clamp(r.alpha, 0.0, 1.0);
       if (
@@ -2359,7 +2435,7 @@ export class SiliconEngine {
     gl.uniform1f(locs.uThermal, this.thermal ? 1.0 : 0.0);
     gl.uniform1f(locs.uTranslucent, 0.0);
     gl.uniform1f(locs.uRegionKind, this.activeRegionKind);
-    gl.uniform4f(locs.uIntroLight, this.introLightSweep, this.introKeyIntensity, this.introRimBoost, 0.0);
+    gl.uniform4f(locs.uIntroLight, this.introLightSweep, this.introKeyIntensity, this.introRimBoost, this.introBeatPulse);
     gl.uniform4f(locs.uBootA, this.bootPwrRails, this.bootFabricLock, this.bootMemTrain, this.bootEcoreWake);
     gl.uniform4f(locs.uBootB, this.bootPcoreWake, this.bootGpuWake, this.bootAuxWake, this.bootActive);
   }
@@ -2669,7 +2745,39 @@ export class SiliconEngine {
     if (Math.abs(this.glassPointerVelX) < 0.01) this.glassPointerVelX = 0;
     if (Math.abs(this.glassPointerVelY) < 0.01) this.glassPointerVelY = 0;
 
-    // 1) Hardware-blit full crisp composite scene srgbA -> default screen framebuffer
+    // 0) Composite Retina Vernier Strip (ticks + words) directly into srgbA BEFORE Liquid Glass
+    //    so the rounded Liquid Glass magnifier pill genuinely refracts, bends & prismatically disperses the letters!
+    if (this.vernierTex && this.vernierAlpha > 0.005 && this.vernierRect[2] > 1 && this.vernierRect[3] > 1) {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.srgbA.fbo);
+      gl.viewport(0, 0, this.canvasW, this.canvasH);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(this.vernierProg);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.vernierTex);
+      gl.uniform1i(this.uVernier.uTex, 0);
+      gl.uniform2f(this.uVernier.uCssSize, this.cssW, this.cssH);
+      gl.uniform4f(
+        this.uVernier.uVernierRect,
+        this.vernierRect[0],
+        this.vernierRect[1],
+        this.vernierRect[2],
+        this.vernierRect[3]
+      );
+      gl.uniform4f(
+        this.uVernier.uTexParams,
+        this.vernierTexOriginCss,
+        this.vernierPitchCss,
+        this.vernierTexWidthCss,
+        this.zoom
+      );
+      gl.uniform4f(this.uVernier.uFadeParams, this.vernierLoupeHalfW, this.vernierAlpha, 0, 0);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.disable(gl.BLEND);
+    }
+
+    // 1) Hardware-blit full crisp composite scene (including Vernier strip!) srgbA -> default screen framebuffer
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.srgbA.fbo);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
     gl.blitFramebuffer(
@@ -2685,6 +2793,8 @@ export class SiliconEngine {
       gl.NEAREST
     );
 
+    if (this.glassCount === 0) return;
+
     const drawStageQuads = (targetStage: 0 | 1) => {
       const pad = targetStage === 1 ? 20.0 : 36.0;
       for (let i = 0; i < this.glassCount; i++) {
@@ -2694,8 +2804,9 @@ export class SiliconEngine {
         const style = Math.round(rawStyle);
         const alpha = p3 - rawStyle * 4.0;
         if (alpha < 0.005) continue;
-        if (targetStage === 0 && style === 2) continue;
-        if (targetStage === 1 && style !== 2) continue;
+        const isElev = style >= 2;
+        if (targetStage === 0 && isElev) continue;
+        if (targetStage === 1 && !isElev) continue;
         gl.uniform4f(
           this.uLiquid.uGlassRect,
           this.glassRects[o],
@@ -2758,7 +2869,7 @@ export class SiliconEngine {
         this.glassRects[o + 1],
         this.glassRects[o + 2],
         this.glassRects[o + 3],
-        style === 2 ? refractMargin : 36.0
+        style >= 2 ? refractMargin : 36.0
       );
     }
 
@@ -2780,7 +2891,7 @@ export class SiliconEngine {
       const rawStyle = Math.floor(p3 * 0.25);
       const style = Math.round(rawStyle);
       const alpha = p3 - rawStyle * 4.0;
-      if (alpha < 0.005 || style === 2) continue;
+      if (alpha < 0.005 || style >= 2) continue;
       this.blitCssRegion(
         this.glassRects[o],
         this.glassRects[o + 1],
@@ -2790,7 +2901,7 @@ export class SiliconEngine {
       );
     }
 
-    // Draw Stage 1 elevated droplet quads directly onto screen (sampling srgbB!)
+    // Draw Stage 1 elevated droplet & magnifier quads directly onto screen (sampling srgbB!)
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvasW, this.canvasH);
@@ -2839,6 +2950,7 @@ export class SiliconEngine {
       Math.abs(this.smoothCamShiftY) > 0.0004 ||
       Math.abs(this.smoothCamShiftZ) > 0.0004 ||
       this.bootActive > 0.002 ||
+      this.introBeatPulse > 0.002 ||
       (this.hasInspect && this.inspectAlpha < 0.996) ||
       (!this.hasInspect && this.inspectAlpha > 0.002) ||
       (hoverDistinctNow && this.hoverAlpha < 0.996) ||
@@ -2901,52 +3013,111 @@ export class SiliconEngine {
     this.smoothCamShiftY *= shiftDecay;
     this.smoothCamShiftZ *= shiftDecay;
 
-    // "Cold Boot" Title Card (0.0-1.45s) -> Dark Chip Fade-In (1.45-2.45s) -> Staged Power-On (2.45-7.05s)
+    // Beat-Locked "Cold Boot": Title on Black -> Dark Unpowered Silhouette Build -> MAJOR BEAT Ignition & Crane-Up!
     const prevZ = this.zoom;
     const prevYaw = this.yaw;
     if (this.introActive) {
-      this.introElapsed += dt;
-      const t = this.introElapsed;
-      const progress = clamp(t / INTRO_DURATION, 0, 1);
+      const cues = this.introCues;
+      const audioClock = this.hooks.getIntroClockSec?.() ?? null;
+      if (audioClock !== null && audioClock >= 0) {
+        // Lock tightly to Web Audio hardware sample clock so visuals & music never drift on frame hitches!
+        const nextDt = this.introElapsed + dt;
+        const drift = audioClock - nextDt;
+        if (Math.abs(drift) > 0.045) {
+          this.introElapsed = Math.max(this.introElapsed, audioClock);
+        } else {
+          this.introElapsed = Math.max(this.introElapsed, nextDt + drift * 0.38);
+        }
+      } else {
+        this.introElapsed += dt;
+      }
 
-      // Dead-straight wide horizontal silhouette (-0.44 zoom, ~12.6° flat angle),
-      // then slowly cranes upward & glides into hero framing (0.0 zoom, 49° angle) as the silicon powers up!
-      const uPitch = this.smootherstep(2.15, 6.65, t);
-      const uZoom = this.smootherstep(2.35, 6.75, t);
+      const t = this.introElapsed;
+      const progress = clamp(t / cues.durationSec, 0, 1);
+
+      // Smooth musical beat envelope (fast smoothstep attack -> clean exponential decay)
+      const beatEnv = (beatSec: number, attack = 0.026, decay = 0.30): number => {
+        const dtB = t - beatSec;
+        if (dtB <= 0 || dtB > decay * 4.8) return 0;
+        const a = clamp(dtB / attack, 0, 1);
+        const rise = a * a * (3 - 2 * a);
+        return rise * Math.exp(-Math.max(0, dtB - attack) / decay);
+      };
+
+      // Rhythmic rim-glint & subtle optical breath strictly on bass-thump build beats (damped cleanly during pre-drop inhale!)
+      const preDropHush = 1.0 - this.smoothstep(cues.preDropSec, cues.preDropSec + 0.14, t);
+      let buildPulse = 0;
+      const pulseCount = cues.pulseBeats.length;
+      for (let i = 0; i < pulseCount; i++) {
+        const w = 0.42 + (pulseCount > 1 ? (i / (pulseCount - 1)) * 0.42 : 0.35);
+        buildPulse += beatEnv(cues.pulseBeats[i], 0.036, 0.32) * w;
+      }
+      buildPulse = clamp(buildPulse, 0, 0.86) * preDropHush;
+
+      const dropPulse = beatEnv(cues.dropSec, 0.02, 0.56);
+      const bloomPulse = beatEnv(cues.bloomSec, 0.026, 0.42);
+      this.introBeatPulse = clamp(buildPulse + dropPulse * 1.15 + bloomPulse * 0.45, 0, 1.45);
+
+      // C1-smooth musical camera choreography:
+      //   1. revealSec -> riseSec: slow sculptural horizon emergence (unpowered dark silhouette)
+      //   2. riseSec -> preDropSec: deliberate tension crane-up while chip remains DARK & unpowered
+      //   3. preDropSec -> dropSec: poised suspense breath right before the drop
+      //   4. dropSec -> lockSec: authoritative kinetic surge up into hero framing on the MAJOR BEAT!
+      const uEmerge = this.smootherstep(cues.revealSec, cues.riseSec, t);
+      const uBuild = this.smootherstep(cues.riseSec, cues.preDropSec, t);
+      const dropSpan = Math.max(0.45, cues.lockSec + 0.26 - cues.dropSec);
+      const rawDrop = clamp((t - cues.dropSec) / dropSpan, 0, 1);
+      const uDrop = (1.0 - Math.pow(1.0 - rawDrop, 3.1)) * this.smoothstep(0.0, 0.055, rawDrop);
+
+      const midPitch = INTRO_START_PITCH + 0.33;
+      const midZoom = INTRO_START_ZOOM + 0.28;
+      const beatZoomBreath = buildPulse * 0.008 + dropPulse * 0.022;
+
       this.yaw = HERO_YAW;
-      this.pitch = INTRO_START_PITCH + (HERO_PITCH - INTRO_START_PITCH) * uPitch;
-      this.zoom = INTRO_START_ZOOM + (HERO_ZOOM - INTRO_START_ZOOM) * uZoom;
+      this.pitch = INTRO_START_PITCH + 0.03 * uEmerge + 0.30 * uBuild + (HERO_PITCH - midPitch) * uDrop;
+      this.zoom = INTRO_START_ZOOM + 0.06 * uEmerge + 0.22 * uBuild + (HERO_ZOOM - midZoom) * uDrop + beatZoomBreath;
       this.targetYaw = this.yaw;
       this.targetPitch = this.pitch;
       this.targetZoom = this.zoom;
 
-      // Stay pure #000 while centered title card holds, then silky cross-dissolve of the unpowered chip (1.38 -> 2.42s)
-      // right behind the optical rack-out of the title, before sweeping the cleanroom softbox open!
-      const fadeInOff = this.smootherstep(1.38, 2.42, t) * 0.78;
-      const earlyHint = this.smootherstep(2.50, 4.20, t) * 0.10;
-      const studioReveal = this.smootherstep(3.90, 6.25, t);
-      this.introExposure = fadeInOff + 0.22 * this.smootherstep(2.80, 6.05, t);
-      this.introLightSweep = 0.34 + 0.66 * this.smootherstep(2.95, 6.35, t);
-      this.introKeyIntensity = 0.085 + earlyHint + (1.0 - 0.085 - 0.10) * studioReveal;
-      this.introRimBoost = 0.56 + 0.44 * this.smootherstep(2.75, 5.75, t);
-      this.introFogBoost = 0.028 * (1.0 - this.smootherstep(3.70, 6.15, t));
+      // Delayed Studio Lighting:
+      //   - Pure #000 under the title card -> moody dark obsidian silhouette during build
+      //   - Brief suspense hush during preDropSec -> dropSec
+      //   - Studio key softbox floods & sweeps dramatically across the bare silicon RIGHT ON dropSec!
+      const fadeInOff = uEmerge * 0.72;
+      const buildExpLift = uBuild * 0.07;
+      const preDropDip =
+        this.smootherstep(cues.preDropSec, cues.dropSec, t) * (1.0 - this.smoothstep(cues.dropSec, cues.dropSec + 0.05, t));
+      const lightSpan = Math.max(0.35, cues.lockSec - cues.dropSec);
+      const rawDropLight = clamp((t - cues.dropSec) / lightSpan, 0, 1);
+      const dropLight = (1.0 - Math.pow(1.0 - rawDropLight, 3.0)) * this.smoothstep(0.0, 0.045, rawDropLight);
+
+      this.introExposure = clamp(
+        fadeInOff + buildExpLift - preDropDip * 0.045 + (1.0 - 0.79) * dropLight + dropPulse * 0.05,
+        0.0,
+        1.05
+      );
+      this.introLightSweep = 0.18 + 0.12 * uBuild + 0.70 * uDrop;
+      this.introKeyIntensity = clamp(0.045 + 0.065 * uBuild - preDropDip * 0.035 + (1.0 - 0.11) * dropLight, 0.02, 1.0);
+      this.introRimBoost = 0.48 + 0.24 * uBuild + 0.28 * dropLight;
+      this.introFogBoost = 0.032 * (1.0 - dropLight);
       this.introDofBoost = 0.0;
 
-      // Staged hardware power-on sequence (begins at 2.45s once the entire unpowered chip has faded in!):
-      //   Stage 1 (2.45-3.25s): V_DD perimeter MLCC decoupling caps & ABF power rails blaze amber
-      //   Stage 2 (2.95-3.82s): Coherent fabric spines & 48 MB SLC clock-lock outward from center
-      //   Stage 3 (3.42-4.35s): 45° ABF escape buses train all 4x LPDDR5 Unified Memory packages
-      //   Stage 4 (3.78-5.65s): E-Cores (Boot ROM) -> P-Cores P0..P7 -> GPU Array -> ANE / Media / I/O PHY
-      this.bootPwrRails = clamp((t - 2.45) / 0.80, 0, 1);
-      this.bootFabricLock = clamp((t - 2.95) / 0.87, 0, 1);
-      this.bootMemTrain = clamp((t - 3.42) / 0.93, 0, 1);
-      this.bootEcoreWake = clamp((t - 3.78) / 0.64, 0, 1);
-      this.bootPcoreWake = clamp((t - 4.06) / 0.98, 0, 1);
-      this.bootGpuWake = clamp((t - 4.46) / 0.92, 0, 1);
-      this.bootAuxWake = clamp((t - 4.80) / 0.80, 0, 1);
-      this.bootActive = 1.0 - this.smootherstep(5.85, 6.85, t);
+      // Delayed Hardware Power-On Cascade — stays 100% DARK until THE MAJOR BEAT (dropSec)!
+      //   On dropSec (Major Beat): V_DD amber power rails -> Coherent Fabric & 48 MB SLC -> LPDDR5 45° training bursts
+      //   On bloomSec (Next Beat): E-Cores -> P-Cores P0..P7 stagger -> GPU Array sweep -> ANE / Media / I/O PHY
+      const beatLen = Math.max(0.45, cues.bloomSec - cues.dropSec);
+      const dtDrop = t - cues.dropSec;
+      this.bootPwrRails = clamp(dtDrop / (beatLen * 1.05), 0, 1);
+      this.bootFabricLock = clamp((dtDrop - beatLen * 0.06) / (beatLen * 1.15), 0, 1);
+      this.bootMemTrain = clamp((dtDrop - beatLen * 0.28) / (beatLen * 1.15), 0, 1);
+      this.bootEcoreWake = clamp((t - (cues.bloomSec - beatLen * 0.18)) / (beatLen * 0.85), 0, 1);
+      this.bootPcoreWake = clamp((t - cues.bloomSec) / (beatLen * 1.35), 0, 1);
+      this.bootGpuWake = clamp((t - (cues.bloomSec + beatLen * 0.24)) / (beatLen * 1.25), 0, 1);
+      this.bootAuxWake = clamp((t - (cues.bloomSec + beatLen * 0.48)) / (beatLen * 1.10), 0, 1);
+      this.bootActive = 1.0 - this.smootherstep(cues.lockSec + beatLen * 0.45, cues.durationSec - 0.10, t);
 
-      if (t >= INTRO_DURATION) {
+      if (t >= cues.durationSec) {
         this.introActive = false;
         this.zoom = this.targetZoom = HERO_ZOOM;
         this.pitch = this.targetPitch = HERO_PITCH;
@@ -2954,6 +3125,7 @@ export class SiliconEngine {
         this.introLightSweep = 1.0;
         this.introKeyIntensity = 1.0;
         this.introRimBoost = 1.0;
+        this.introBeatPulse = 0.0;
         this.introFogBoost = 0.0;
         this.introExposure = 1.0;
         this.introDofBoost = 0.0;
@@ -2966,7 +3138,7 @@ export class SiliconEngine {
         this.bootAuxWake = 1.0;
         this.bootActive = 0.0;
         this.kickoffDeferredHighResTextures();
-        this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
+        this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: cues.durationSec });
       } else {
         this.hooks.onIntroFrame?.({ active: true, progress, elapsed: t });
       }
@@ -2981,6 +3153,10 @@ export class SiliconEngine {
       this.introLightSweep += (1.0 - this.introLightSweep) * settle;
       this.introKeyIntensity += (1.0 - this.introKeyIntensity) * settle;
       this.introRimBoost += (1.0 - this.introRimBoost) * settle;
+      this.introBeatPulse += (0.0 - this.introBeatPulse) * settle;
+      if (this.introBeatPulse < 0.002) {
+        this.introBeatPulse = 0.0;
+      }
       this.introFogBoost += (0.0 - this.introFogBoost) * settle;
       this.introExposure += (1.0 - this.introExposure) * settle;
       this.introDofBoost += (0.0 - this.introDofBoost) * settle;
@@ -3306,8 +3482,9 @@ export class SiliconEngine {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
-    // PASS 3A: Full-Retina ACES Optical Composite -> Screen (or srgbA when liquidGL HUD is active)
-    const runGlass = this.glassCount > 0 && this.srgbA && this.srgbB;
+    // PASS 3A: Full-Retina ACES Optical Composite -> Screen (or srgbA when liquidGL HUD or Vernier strip is active)
+    const hasVernier = this.vernierTex !== null && this.vernierAlpha > 0.005;
+    const runGlass = (this.glassCount > 0 || hasVernier) && this.srgbA && this.srgbB;
     gl.bindFramebuffer(gl.FRAMEBUFFER, runGlass ? this.srgbA.fbo : null);
     gl.viewport(0, 0, this.canvasW, this.canvasH);
     gl.useProgram(this.compositeProg);
@@ -3378,6 +3555,10 @@ export class SiliconEngine {
     gl.deleteTexture(this.abfNormTex);
     gl.deleteTexture(this.ramDecalTex);
     gl.deleteTexture(this.envTex);
+    if (this.vernierTex) {
+      gl.deleteTexture(this.vernierTex);
+      this.vernierTex = null;
+    }
     gl.deleteBuffer(this.boxVbo);
     gl.deleteBuffer(this.boxIbo);
     gl.deleteBuffer(this.cylVbo);
@@ -3412,6 +3593,7 @@ export class SiliconEngine {
     gl.deleteProgram(this.bloomUpProg);
     gl.deleteProgram(this.compositeProg);
     gl.deleteProgram(this.liquidGlProg);
+    gl.deleteProgram(this.vernierProg);
 
     if (this.canvas.parentElement === this.container) {
       this.container.removeChild(this.canvas);

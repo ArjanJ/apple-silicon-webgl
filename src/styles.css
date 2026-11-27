@@ -190,7 +190,8 @@ body,
 }
 
 .reticle-layer.intro-hidden .nm-bracket,
-.reticle-layer.intro-lock .nm-bracket {
+.reticle-layer.intro-lock .nm-bracket,
+.reticle-layer.depth-open .nm-bracket {
   opacity: 0 !important;
 }
 
@@ -1137,89 +1138,493 @@ body,
   transform: scale(0.96);
 }
 
-/* Bottom Single-Row 44px Liquid Glass Gliding Rail */
+/* ==========================================================================
+   Bottom Optical Vernier Zoom Dial + 1-Tap Liquid Glass Depth Map
+   (iPhone Pro Camera tactile ergonomics × Zeiss Electron Microscope optics)
+   ========================================================================== */
 .hud-bottom {
   position: absolute;
-  left: max(24px, calc(env(safe-area-inset-left) + 12px));
-  right: max(24px, calc(env(safe-area-inset-right) + 12px));
-  bottom: max(22px, calc(env(safe-area-inset-bottom) + 12px));
+  left: max(16px, calc(env(safe-area-inset-left) + 10px));
+  right: max(16px, calc(env(safe-area-inset-right) + 10px));
+  bottom: max(18px, calc(env(safe-area-inset-bottom) + 10px));
   display: flex;
   justify-content: center;
   pointer-events: none;
   z-index: 20;
 }
 
-.zoom-rail {
-  position: relative;
-  pointer-events: auto;
+.vernier-dock {
+  --realm-accent: #dce6f5;
+  --realm-glow: rgba(220, 230, 245, 0.55);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
   max-width: 100%;
-  height: 44px;
-  padding: 4px;
+  pointer-events: none;
+}
+
+/* Whisper-Light Floating Scale Readout above the Lens — Tappable for 1-Tap Depth Map (No outer glass bar!) */
+.vernier-readout {
+  pointer-events: auto;
+  appearance: none;
+  outline: none;
+  border: none;
+  background: transparent;
+  height: 24px;
+  padding: 0 10px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior-x: contain;
-  -webkit-overflow-scrolling: touch;
-  touch-action: pan-x;
-  scrollbar-width: none;
-}
-
-.zoom-rail::-webkit-scrollbar {
-  display: none;
-}
-
-/* Continuously Gliding Liquid Glass Droplet Lens (rendered in WebGL2!) */
-.rail-indicator {
-  position: absolute;
-  top: 4px;
-  left: 0;
-  height: 36px;
-  width: 44px;
-  border-radius: 999px;
-  background: transparent;
-  pointer-events: none;
-  z-index: 0;
-  will-change: transform, width;
-}
-
-.rail-stop {
-  position: relative;
-  z-index: 1;
-  flex-shrink: 0;
-  appearance: none;
-  outline: none;
-  height: 36px;
-  padding: 0 11px;
-  border-radius: 999px;
-  border: none;
-  background: transparent;
-  color: rgba(252, 253, 255, 0.88);
-  font-family: var(--sans);
-  font-size: 11.5px;
-  font-weight: 500;
-  letter-spacing: -0.015em;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.85);
+  gap: 5.5px;
   cursor: pointer;
-  transition: color 0.16s ease, background 0.16s ease, transform 0.14s ease;
+  color: rgba(255, 255, 255, 0.94);
+  font-family: var(--sans);
+  text-shadow:
+    0 1px 10px rgba(0, 0, 0, 0.95),
+    0 0 18px rgba(0, 0, 0, 0.72);
+  transition: transform 0.14s cubic-bezier(0.22, 1, 0.36, 1), background 0.18s ease, opacity 0.16s ease;
   white-space: nowrap;
 }
 
-.rail-stop:hover:not(.active) {
+.vernier-readout:hover {
+  background: rgba(255, 255, 255, 0.08);
+  transform: translateY(-1px);
+}
+
+.vernier-readout:active {
+  transform: scale(0.96);
+}
+
+.vernier-realm-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--realm-accent);
+  box-shadow: 0 0 8px var(--realm-glow);
+  flex-shrink: 0;
+  transition: background 0.28s ease, box-shadow 0.28s ease;
+}
+
+.vernier-sep {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.vernier-mag {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--realm-accent);
+  transition: color 0.28s ease;
+}
+
+.vernier-size {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: rgba(245, 248, 255, 0.84);
+}
+
+.vernier-chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 1px;
+  color: rgba(242, 246, 255, 0.70);
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), color 0.18s ease;
+}
+
+.vernier-readout.open .vernier-chev {
+  transform: rotate(180deg);
+  color: var(--realm-accent);
+}
+
+/* Open Floating Optical Vernier Track (Zero outer glass container — only the selected center word wears Liquid Glass!) */
+.vernier-capsule {
+  --vernier-pitch: 90px;
+  position: relative;
+  pointer-events: auto;
+  width: min(490px, calc(100vw - 24px));
+  height: 54px;
+  background: transparent;
+  overflow: visible;
+  cursor: grab;
+  touch-action: none;
+  outline: none;
+}
+
+.vernier-capsule.scrubbing {
+  cursor: grabbing;
+}
+
+.vernier-capsule:focus-visible .vernier-loupe {
+  box-shadow: 0 0 0 1.5px rgba(140, 228, 255, 0.75);
+}
+
+/* Single Floating Morphing Center Liquid Glass Pill (Rendered in WebGL2 HDR Refraction Shader!) */
+.vernier-loupe {
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 62px;
+  height: 34px;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Minimal Center Index Pip Perched Right Above the Liquid Glass Pill */
+.vernier-hairline {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 10px;
+  height: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.vernier-pip {
+  width: 0;
+  height: 0;
+  margin-top: 1px;
+  border-left: 3.2px solid transparent;
+  border-right: 3.2px solid transparent;
+  border-top: 4px solid var(--realm-accent);
+  filter: drop-shadow(0 0 6px var(--realm-glow));
+  transition: border-top-color 0.28s ease, transform 0.16s ease;
+}
+
+.vernier-capsule.scrubbing .vernier-pip {
+  transform: scale(1.22);
+}
+
+/* Soft Edge-Faded Viewport for Open Floating Ticks & Words */
+.vernier-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 18%, #000 82%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 18%, #000 82%, transparent 100%);
+  z-index: 2;
+}
+
+.vernier-tape {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 0;
+  overflow: visible;
+  will-change: transform;
+}
+
+/* Engraved Logarithmic Ticks Floating Directly Above the Words */
+.vernier-tick {
+  position: absolute;
+  top: 7px;
+  left: calc(var(--tick-z) * var(--vernier-pitch));
+  transform: translateX(-50%);
+  transform-origin: center bottom;
+  width: 1px;
+  height: 5px;
+  border-radius: 1px;
+  background: rgba(242, 246, 255, 0.24);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.72);
+  pointer-events: none;
+  will-change: transform;
+}
+
+.vernier-tick.mid {
+  top: 6px;
+  height: 6.5px;
+  background: rgba(242, 246, 255, 0.36);
+}
+
+.vernier-tick.major {
+  top: 5px;
+  width: 1.5px;
+  height: 8.5px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.vernier-tick.major.realm-macro {
+  background: rgba(220, 230, 245, 0.72);
+}
+.vernier-tick.major.realm-beol {
+  background: rgba(243, 177, 114, 0.82);
+}
+.vernier-tick.major.realm-feol {
+  background: rgba(127, 226, 255, 0.85);
+}
+.vernier-tick.major.realm-quantum {
+  background: rgba(196, 161, 255, 0.88);
+}
+
+/* Gliding Landmark Words Passing Through the Morphing Center Liquid Glass Pill */
+.vernier-stop {
+  position: absolute;
+  bottom: 2px;
+  height: 34px;
+  left: calc(var(--stop-z) * var(--vernier-pitch));
+  transform: translateX(-50%);
+  appearance: none;
+  outline: none;
+  border: none;
+  background: transparent;
+  padding: 0 10px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.014em;
+  color: rgba(248, 250, 255, 0.84);
+  text-shadow:
+    0 1px 8px rgba(0, 0, 0, 0.92),
+    0 0 14px rgba(0, 0, 0, 0.6);
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: color 0.16s ease;
+}
+
+.vernier-stop .vc {
+  display: inline-block;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.vernier-stop:hover:not(.active) {
   color: #ffffff;
-  background: rgba(255, 255, 255, 0.09);
 }
 
-.rail-stop:active {
-  transform: scale(0.95);
-}
-
-.rail-stop.active {
+.vernier-stop.active {
   color: #ffffff;
   font-weight: 600;
-  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.65);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.78);
+}
+
+/* 1-Tap Liquid Glass Depth Map Sheet (Centered above Vernier Dock) */
+.depth-sheet {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(max(18px, calc(env(safe-area-inset-bottom) + 10px)) + 92px);
+  width: min(372px, calc(100vw - 24px));
+  max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 178px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  scrollbar-width: none;
+  padding: 13px 14px 14px;
+  border-radius: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 23;
+  pointer-events: auto;
+  animation: sheetIn 0.16s ease-out;
+}
+
+.depth-sheet::-webkit-scrollbar {
+  display: none;
+}
+
+.depth-realms {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.depth-realm {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.depth-realm-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: rgba(248, 250, 255, 0.82);
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.82);
+}
+
+.depth-realm-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.depth-realm.realm-macro .depth-realm-dot {
+  background: #dce6f5;
+  box-shadow: 0 0 6px rgba(220, 230, 245, 0.55);
+}
+.depth-realm.realm-beol .depth-realm-dot {
+  background: #f3b172;
+  box-shadow: 0 0 6px rgba(243, 177, 114, 0.6);
+}
+.depth-realm.realm-feol .depth-realm-dot {
+  background: #7fe2ff;
+  box-shadow: 0 0 6px rgba(127, 226, 255, 0.65);
+}
+.depth-realm.realm-quantum .depth-realm-dot {
+  background: #c4a1ff;
+  box-shadow: 0 0 6px rgba(196, 161, 255, 0.65);
+}
+
+.depth-realm-range {
+  margin-left: auto;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: rgba(242, 246, 255, 0.72);
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.82);
+}
+
+.depth-grid {
+  display: grid;
+  gap: 5px;
+}
+
+.depth-grid.cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.depth-grid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.depth-grid.cols-4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.depth-tile {
+  appearance: none;
+  outline: none;
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  background: rgba(8, 12, 20, 0.34);
+  border-radius: 13px;
+  min-height: 44px;
+  padding: 7px 9px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.12s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.depth-tile:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.depth-tile:active {
+  transform: scale(0.97);
+}
+
+.depth-tile.active {
+  background: rgba(255, 255, 255, 0.22);
+  box-shadow:
+    inset 0 0.75px 0 rgba(255, 255, 255, 0.40),
+    0 2px 10px rgba(0, 0, 0, 0.34);
+}
+
+.depth-tile.active.realm-macro {
+  border-color: rgba(220, 230, 245, 0.55);
+}
+.depth-tile.active.realm-beol {
+  border-color: rgba(243, 177, 114, 0.58);
+}
+.depth-tile.active.realm-feol {
+  border-color: rgba(127, 226, 255, 0.62);
+}
+.depth-tile.active.realm-quantum {
+  border-color: rgba(196, 161, 255, 0.65);
+}
+
+.depth-tile-name {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: rgba(255, 255, 255, 0.94);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.58);
+}
+
+.depth-tile-meta {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 9.5px;
+  font-weight: 500;
+  color: rgba(242, 246, 255, 0.62);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.depth-tile.active .depth-tile-meta {
+  color: rgba(248, 252, 255, 0.88);
+}
+
+/* Calibrated Zeiss/FEI Optical Scale Bar (Desktop Bottom-Right) */
+.zeiss-scale {
+  position: absolute;
+  right: max(26px, calc(env(safe-area-inset-right) + 16px));
+  bottom: max(24px, calc(env(safe-area-inset-bottom) + 16px));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  pointer-events: none;
+  z-index: 19;
+  opacity: 0.72;
+}
+
+.zeiss-scale-lbl {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: rgba(245, 248, 255, 0.88);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.88);
+}
+
+.zeiss-scale-bar {
+  position: relative;
+  height: 5px;
+  border-bottom: 1px solid rgba(245, 248, 255, 0.82);
+  border-left: 1px solid rgba(245, 248, 255, 0.82);
+  border-right: 1px solid rgba(245, 248, 255, 0.82);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+  will-change: width;
 }
 
 /* Tiny Pure-View Restore Pill (only visible when HUD is hidden) */
@@ -1266,9 +1671,13 @@ body,
 
 @media (max-width: 1080px) {
   .inspect-card {
-    bottom: max(92px, calc(env(safe-area-inset-bottom) + 84px));
+    bottom: max(116px, calc(env(safe-area-inset-bottom) + 108px));
     left: max(16px, calc(env(safe-area-inset-left) + 12px));
     width: 268px;
+  }
+
+  .zeiss-scale {
+    display: none;
   }
 }
 
@@ -1354,7 +1763,7 @@ body,
   .inspect-card {
     left: max(12px, calc(env(safe-area-inset-left) + 10px));
     right: max(12px, calc(env(safe-area-inset-right) + 10px));
-    bottom: max(72px, calc(env(safe-area-inset-bottom) + 66px));
+    bottom: max(112px, calc(env(safe-area-inset-bottom) + 104px));
     width: auto;
     max-width: 400px;
     margin: 0 auto;
@@ -1381,23 +1790,47 @@ body,
   .hud-bottom {
     left: max(10px, calc(env(safe-area-inset-left) + 8px));
     right: max(10px, calc(env(safe-area-inset-right) + 8px));
-    bottom: max(14px, calc(env(safe-area-inset-bottom) + 10px));
+    bottom: max(12px, calc(env(safe-area-inset-bottom) + 8px));
   }
 
-  .zoom-rail {
-    height: 46px;
-    padding: 4px;
-    gap: 2px;
+  .vernier-dock {
+    gap: 4px;
   }
 
-  .rail-indicator {
+  .vernier-readout {
+    height: 26px;
+    padding: 0 10px;
+  }
+
+  .vernier-capsule {
+    --vernier-pitch: 82px;
+    width: min(374px, calc(100vw - 16px));
+    height: 58px;
+  }
+
+  .vernier-loupe {
+    bottom: 2px;
     height: 38px;
   }
 
-  .rail-stop {
+  .vernier-stop {
+    bottom: 2px;
     height: 38px;
-    padding: 0 13px;
-    font-size: 12px;
+    font-size: 13px;
+  }
+
+  .depth-sheet {
+    bottom: calc(max(12px, calc(env(safe-area-inset-bottom) + 8px)) + 96px);
+    width: calc(100vw - 20px);
+    max-width: 392px;
+    max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 168px);
+    padding: 12px 13px 13px;
+    border-radius: 22px;
+  }
+
+  .depth-tile {
+    min-height: 46px;
+    padding: 7px 10px;
   }
 
   .intro-chip-name {
@@ -1423,21 +1856,38 @@ body,
   }
 
   .hud-bottom {
-    bottom: max(10px, calc(env(safe-area-inset-bottom) + 6px));
+    bottom: max(8px, calc(env(safe-area-inset-bottom) + 6px));
   }
 
-  .zoom-rail {
-    height: 40px;
+  .vernier-dock {
+    gap: 3px;
   }
 
-  .rail-indicator {
-    height: 32px;
+  .vernier-readout {
+    height: 22px;
+    padding: 0 8px;
   }
 
-  .rail-stop {
-    height: 32px;
-    padding: 0 11px;
-    font-size: 11px;
+  .vernier-capsule {
+    --vernier-pitch: 76px;
+    height: 46px;
+    width: min(390px, calc(100vw - 24px));
+  }
+
+  .vernier-loupe {
+    bottom: 2px;
+    height: 30px;
+  }
+
+  .vernier-stop {
+    bottom: 2px;
+    height: 30px;
+    font-size: 11.5px;
+  }
+
+  .depth-sheet {
+    bottom: calc(max(8px, calc(env(safe-area-inset-bottom) + 6px)) + 78px);
+    max-height: calc(100dvh - 140px);
   }
 
   .activity-sheet,

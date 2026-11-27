@@ -15,6 +15,29 @@ export type MusicVibeId = 'glass' | 'orbital' | 'pulse' | 'velvet' | 'noir';
 
 export type BgmLevelId = 'off' | 'whisper' | 'quiet' | 'present';
 
+export interface IntroCueMap {
+  /** Total intro duration (sec) */
+  readonly durationSec: number;
+  /** Elapsed offset (sec) used when launching from a held "Power On" screen so Beat 1 hits immediately */
+  readonly heldStartSec: number;
+  /** Title dissolves out and the dark unpowered chip silhouette begins emerging */
+  readonly revealSec: number;
+  /** Beat timestamps (sec) during the unpowered build for subtle rhythmic rim-glints & camera breath */
+  readonly pulseBeats: readonly number[];
+  /** Tension lift beat — camera starts its slow crane-up while chip stays dark & unpowered */
+  readonly riseSec: number;
+  /** Crisp pre-drop suspense breath / inhale right before the major beat */
+  readonly preDropSec: number;
+  /** THE MAJOR BEAT: musical drop where the chip ignites & studio lighting floods open */
+  readonly dropSec: number;
+  /** Secondary cascade beat right after the drop where compute cores, GPU & ANE sweep online */
+  readonly bloomSec: number;
+  /** Optical reticle lock beat (and exact Bar 0 downbeat for seamless background loop handoff) */
+  readonly lockSec: number;
+  /** Liquid Glass HUD arrival beat */
+  readonly hudSec: number;
+}
+
 export interface MusicVibeMeta {
   readonly id: MusicVibeId;
   readonly name: string;
@@ -25,6 +48,8 @@ export interface MusicVibeMeta {
   readonly loopSteps: number;
   /** Exact intro timestamp (sec) where the infinite background loop locks onto Bar 0 downbeat */
   readonly loopHandoffSec: number;
+  /** Beat-locked intro choreography timestamps shared by audio, camera, lighting, and boot cascade */
+  readonly introCues: IntroCueMap;
   /** 11 objective turret stop frequencies (Scale -> Quarks) tuned to this vibe's key */
   readonly turretScaleHz: readonly number[];
   /** 8 P-Core hover frequencies tuned to this vibe's key */
@@ -57,7 +82,19 @@ export const MUSIC_VIBES: readonly MusicVibeMeta[] = [
     metaBadge: 'F DORIAN · 100 BPM',
     stepSec: 0.6,
     loopSteps: 16,
-    loopHandoffSec: 5.65,
+    loopHandoffSec: 5.6,
+    introCues: {
+      durationSec: 7.1,
+      heldStartSec: 0.78,
+      revealSec: 1.4,
+      pulseBeats: [2.6, 3.2, 3.8],
+      riseSec: 2.6,
+      preDropSec: 4.12,
+      dropSec: 4.4,
+      bloomSec: 5.0,
+      lockSec: 5.6,
+      hudSec: 6.2,
+    },
     turretScaleHz: [87.31, 130.81, 174.61, 196.0, 207.65, 261.63, 293.66, 311.13, 349.23, 65.41, 43.65],
     pCoreScaleHz: [174.61, 196.0, 207.65, 261.63, 293.66, 311.13, 349.23, 392.0],
     rootHz: 174.61,
@@ -74,7 +111,19 @@ export const MUSIC_VIBES: readonly MusicVibeMeta[] = [
     metaBadge: 'D LYDIAN · 88 BPM',
     stepSec: 0.17045,
     loopSteps: 64,
-    loopHandoffSec: 5.86,
+    loopHandoffSec: 5.695,
+    introCues: {
+      durationSec: 7.2,
+      heldStartSec: 0.9,
+      revealSec: 1.604,
+      pulseBeats: [2.285, 2.967, 3.649],
+      riseSec: 2.285,
+      preDropSec: 4.04,
+      dropSec: 4.331,
+      bloomSec: 5.013,
+      lockSec: 5.695,
+      hudSec: 6.376,
+    },
     turretScaleHz: [73.42, 110.0, 146.83, 164.81, 185.0, 220.0, 246.94, 277.18, 293.66, 55.0, 36.71],
     pCoreScaleHz: [146.83, 164.81, 185.0, 220.0, 246.94, 277.18, 293.66, 329.63],
     rootHz: 146.83,
@@ -89,9 +138,21 @@ export const MUSIC_VIBES: readonly MusicVibeMeta[] = [
     shortLabel: 'Pulse',
     tagline: 'Tactile modular plucks & cleanroom clockwork',
     metaBadge: 'A DORIAN · 114 BPM',
-    stepSec: 0.1316,
+    stepSec: 0.13158,
     loopSteps: 64,
-    loopHandoffSec: 5.608,
+    loopHandoffSec: 5.483,
+    introCues: {
+      durationSec: 6.95,
+      heldStartSec: 0.72,
+      revealSec: 1.273,
+      pulseBeats: [2.325, 2.852, 3.378, 3.904],
+      riseSec: 2.325,
+      preDropSec: 4.167,
+      dropSec: 4.431,
+      bloomSec: 4.957,
+      lockSec: 5.483,
+      hudSec: 6.009,
+    },
     turretScaleHz: [55.0, 82.41, 110.0, 123.47, 130.81, 164.81, 185.0, 196.0, 220.0, 41.2, 27.5],
     pCoreScaleHz: [110.0, 123.47, 130.81, 164.81, 185.0, 196.0, 220.0, 246.94],
     rootHz: 110.0,
@@ -108,7 +169,19 @@ export const MUSIC_VIBES: readonly MusicVibeMeta[] = [
     metaBadge: 'E♭ MAJ9 · 84 BPM',
     stepSec: 0.17857,
     loopSteps: 64,
-    loopHandoffSec: 5.84,
+    loopHandoffSec: 5.914,
+    introCues: {
+      durationSec: 7.35,
+      heldStartSec: 0.89,
+      revealSec: 1.629,
+      pulseBeats: [2.343, 3.057, 3.771],
+      riseSec: 2.343,
+      preDropSec: 4.2,
+      dropSec: 4.486,
+      bloomSec: 5.2,
+      lockSec: 5.914,
+      hudSec: 6.45,
+    },
     turretScaleHz: [77.78, 116.54, 155.56, 174.61, 196.0, 233.08, 261.63, 293.66, 311.13, 58.27, 38.89],
     pCoreScaleHz: [155.56, 174.61, 196.0, 233.08, 261.63, 293.66, 311.13, 349.23],
     rootHz: 155.56,
@@ -123,9 +196,21 @@ export const MUSIC_VIBES: readonly MusicVibeMeta[] = [
     shortLabel: 'Noir',
     tagline: 'Dark C-minor Moog 16th electro pulse',
     metaBadge: 'C MINOR · 112 BPM',
-    stepSec: 0.134,
+    stepSec: 0.13393,
     loopSteps: 64,
-    loopHandoffSec: 5.666,
+    loopHandoffSec: 5.557,
+    introCues: {
+      durationSec: 7.0,
+      heldStartSec: 0.71,
+      revealSec: 1.271,
+      pulseBeats: [2.343, 2.879, 3.414, 3.95],
+      riseSec: 2.343,
+      preDropSec: 4.218,
+      dropSec: 4.486,
+      bloomSec: 5.021,
+      lockSec: 5.557,
+      hudSec: 6.093,
+    },
     turretScaleHz: [65.41, 98.0, 130.81, 146.83, 155.56, 196.0, 207.65, 233.08, 261.63, 49.0, 32.7],
     pCoreScaleHz: [130.81, 146.83, 155.56, 196.0, 207.65, 233.08, 261.63, 293.66],
     rootHz: 130.81,
@@ -514,109 +599,121 @@ export function scheduleVibeIntro(
   }
 }
 
-/** 1) CLEANROOM GLASS — Luminous D Lydian minimalist crystal bells + felt keys */
+/** 1) CLEANROOM GLASS — Luminous D Lydian crystal bells + dark silhouette build -> 4.331s Dmaj9 Ignition Drop */
 function scheduleGlassIntro(tk: SynthToolkit, t0: number, now: number, scoreBus: AudioNode): void {
-  // Act 0 (0.00 - 2.45s): Warm D2 breath swell + laser-clean glass harmonic pings
-  if (t0 + 2.55 > now) {
-    const sT = Math.max(now, t0 + 0.08);
-    const dur = Math.max(0.2, t0 + 2.55 - sT);
-    playPadChord(tk, sT, [73.42, 146.83, 220.0], dur, 0.16, scoreBus, {
+  const step = 0.17045;
+  const beat = step * 4; // 0.6818s (88 BPM)
+  const b0 = 0.24;
+
+  // Act 0-1 (0.24 - 2.285s): Sparse crystal metrology pings on black & dark silhouette emergence
+  if (t0 + 2.32 > now) {
+    const sT = Math.max(now, t0 + b0);
+    const dur = Math.max(0.2, t0 + 2.34 - sT);
+    playPadChord(tk, sT, [73.42, 146.83, 220.0], dur, 0.12, scoreBus, {
       wave: 'triangle',
-      cutoffStart: 220,
-      cutoffPeak: 640,
-      cutoffEnd: 380,
-      attackSec: 1.15,
-      releaseSec: 0.4,
+      cutoffStart: 190,
+      cutoffPeak: 480,
+      cutoffEnd: 320,
+      attackSec: 0.95,
+      releaseSec: 0.35,
       detuneCents: 4,
     });
 
     const pings: [number, number, number, number][] = [
-      [0.42, 587.33, -0.35, 0.075], // D5
-      [1.18, 880.0, 0.32, 0.07], // A5
-      [1.78, 739.99, -0.25, 0.08], // F#5
-      [2.16, 1174.66, 0.28, 0.085], // D6
+      [b0, 587.33, -0.32, 0.068], // Beat 0 (0.24s) D5
+      [b0 + beat, 880.0, 0.3, 0.072], // Beat 1 (0.922s) A5
+      [b0 + beat * 2, 739.99, -0.24, 0.078], // Beat 2 (1.604s reveal) F#5
     ];
     for (const [cue, hz, pv, amp] of pings) {
       if (t0 + cue >= now - 0.02) {
         const ct = Math.max(now, t0 + cue);
-        playGlassBell(tk, ct, hz, 1.35, amp, pv, scoreBus, 0.45);
-        tk.triggerStrike(ct, 3200 + cue * 420, 4.4, 0.005, amp * 0.75, scoreBus);
+        playGlassBell(tk, ct, hz, 1.35, amp, pv, scoreBus, 0.4);
+        tk.triggerStrike(ct, 3200 + cue * 360, 4.4, 0.005, amp * 0.65, scoreBus);
       }
     }
   }
 
-  // Act 1-4 (2.45 - 5.86s): 20 steps of cascading crystalline glass arpeggios + rising Dmaj9 -> Gmaj7#11 -> A6/9 pad
-  const step = 0.17045;
+  // Act 2 (2.285 - 4.04s): Restrained ascending crystalline arp + rising tension pad over STILL-DARK chip
+  const riseStart = b0 + beat * 3; // 2.285s
   const arpNotes = [
-    // Bar 1 (Dmaj9): V_DD rails & fabric ignite
-    293.66, 440.0, 587.33, 659.25, 739.99, 659.25, 587.33, 440.0,
-    // Bar 2 (Gmaj7#11 -> A6/9): Memory training & core clusters wake
-    392.0, 587.33, 739.99, 880.0, 987.77, 880.0, 739.99, 659.25,
-    // Pre-climax lift into Dmaj9 hero bloom
-    587.33, 739.99, 880.0, 1174.66,
+    // Beat 3 (Dmaj9)
+    293.66, 440.0, 587.33, 659.25,
+    // Beat 4 (Gmaj7#11)
+    392.0, 587.33, 739.99, 880.0,
+    // Beat 5 (A6/9 lift -> crisp pre-drop breath after 10th note at 3.82s!)
+    440.0, 659.25, 880.0,
   ];
   for (let i = 0; i < arpNotes.length; i++) {
-    const cue = 2.45 + i * step;
+    const cue = riseStart + i * step;
     if (t0 + cue + 0.15 <= now) continue;
     const ct = Math.max(now, t0 + cue);
     const prog = i / (arpNotes.length - 1);
-    const pv = (i % 2 === 0 ? -1 : 1) * (0.22 + (i % 4) * 0.12);
-    playGlassBell(tk, ct, arpNotes[i], 0.65 + prog * 0.5, 0.075 + prog * 0.065, pv, scoreBus, 0.35 + prog * 0.45);
+    const pv = (i % 2 === 0 ? -1 : 1) * (0.2 + (i % 4) * 0.11);
+    playGlassBell(tk, ct, arpNotes[i], 0.58 + prog * 0.35, 0.068 + prog * 0.05, pv, scoreBus, 0.32 + prog * 0.38);
     if (i % 2 === 0) {
-      playRhodesNote(tk, ct, arpNotes[i] * 0.5, 0.55 + prog * 0.3, 0.08 + prog * 0.05, -pv * 0.6, scoreBus, 0.7);
+      playRhodesNote(tk, ct, arpNotes[i] * 0.5, 0.48 + prog * 0.2, 0.068 + prog * 0.04, -pv * 0.55, scoreBus, 0.65);
     }
     if (i % 4 === 0 && t0 + cue >= now - 0.02) {
-      const bassHz = i < 8 ? 73.42 : i < 16 ? 98.0 : 110.0;
-      playSoftSub(tk, ct, bassHz, 0.55, 0.24 + prog * 0.08, scoreBus, bassHz * 1.9);
-      playMicroHat(tk, ct, 6400, 0.028, 0.045 + prog * 0.03, pv * 0.7, scoreBus);
+      const bassHz = i < 4 ? 73.42 : i < 8 ? 98.0 : 110.0;
+      playSoftSub(tk, ct, bassHz, 0.52, 0.2 + prog * 0.08, scoreBus, bassHz * 1.85);
+      playMicroHat(tk, ct, 6400, 0.024, 0.038 + prog * 0.028, pv * 0.7, scoreBus);
     }
   }
 
-  // Rising warm pad bed across power-on (2.45 - 5.90s)
-  if (t0 + 4.15 > now) {
-    const sT = Math.max(now, t0 + 2.45);
-    playPadChord(tk, sT, [146.83, 220.0, 277.18, 329.63], Math.max(0.2, t0 + 4.25 - sT), 0.17, scoreBus, {
+  // Rising warm pad + cleanroom air swell cutting right before the 4.331s drop
+  if (t0 + 4.16 > now) {
+    const sT = Math.max(now, t0 + riseStart);
+    playPadChord(tk, sT, [146.83, 220.0, 293.66, 369.99, 440.0], Math.max(0.2, t0 + 4.16 - sT), 0.17, scoreBus, {
       wave: 'sawtooth',
-      cutoffStart: 360,
-      cutoffPeak: 1150,
-      cutoffEnd: 820,
-      attackSec: 0.55,
-      releaseSec: 0.45,
+      cutoffStart: 320,
+      cutoffPeak: 1420,
+      cutoffEnd: 380,
+      attackSec: 1.1,
+      releaseSec: 0.28,
+      detuneCents: 6,
+    });
+    playAirSwell(tk, sT, Math.max(0.2, t0 + 4.18 - sT), 340, 1480, 0.042, scoreBus);
+  }
+
+  // Pre-drop breath shimmer (4.04s): solitary D6 harmonic suspended over stillness
+  const preDrop = 4.04;
+  if (t0 + preDrop >= now - 0.02) {
+    const ct = Math.max(now, t0 + preDrop);
+    playGlassBell(tk, ct, 1174.66, 0.36, 0.075, 0.0, scoreBus, 0.72);
+  }
+
+  // Act 3 (4.331s = MAJOR DROP BEAT): Luminous Dmaj9 Hero Ignition Bloom!
+  const drop = 4.331;
+  if (t0 + 7.4 > now) {
+    const tRes = Math.max(now, t0 + drop);
+    const dur = Math.max(0.5, t0 + 7.45 - tRes);
+    if (t0 + drop >= now - 0.03) {
+      playCinemaImpact(tk, tRes, 98, 36.71, 2.2, 0.38, scoreBus);
+      playGlassBell(tk, tRes, 587.33, 2.3, 0.145, -0.25, scoreBus, 0.72);
+      playGlassBell(tk, tRes + 0.035, 739.99, 2.2, 0.12, 0.25, scoreBus, 0.68);
+      playGlassBell(tk, tRes + 0.07, 1174.66, 2.4, 0.105, 0.0, scoreBus, 0.65);
+      tk.triggerStrike(tRes, 4400, 3.6, 0.006, 0.08, scoreBus);
+    }
+    playPadChord(tk, tRes, [73.42, 146.83, 220.0, 277.18, 329.63, 369.99], dur, 0.24, scoreBus, {
+      wave: 'triangle',
+      cutoffStart: 1550,
+      cutoffPeak: 1450,
+      cutoffEnd: 260,
+      attackSec: 0.05,
+      releaseSec: 1.9,
       detuneCents: 6,
     });
   }
-  if (t0 + 5.95 > now) {
-    const sT = Math.max(now, t0 + 4.1);
-    playPadChord(tk, sT, [196.0, 293.66, 369.99, 440.0], Math.max(0.2, t0 + 5.95 - sT), 0.21, scoreBus, {
-      wave: 'sawtooth',
-      cutoffStart: 580,
-      cutoffPeak: 1650,
-      cutoffEnd: 920,
-      attackSec: 0.5,
-      releaseSec: 0.55,
-      detuneCents: 7,
-    });
-  }
 
-  // Act 5 (5.86 - 8.80s): Luminous Dmaj9 Hero Bloom gently handing off to the quiet loop
-  if (t0 + 8.6 > now) {
-    const tRes = Math.max(now, t0 + 5.86);
-    const dur = Math.max(0.5, t0 + 8.8 - tRes);
-    if (t0 + 5.86 >= now - 0.03) {
-      playSoftSub(tk, tRes, 36.71, 1.35, 0.34, scoreBus, 92);
-      playGlassBell(tk, tRes, 587.33, 2.2, 0.14, -0.22, scoreBus, 0.65);
-      playGlassBell(tk, tRes + 0.045, 739.99, 2.1, 0.11, 0.25, scoreBus, 0.6);
-      playGlassBell(tk, tRes + 0.09, 1174.66, 2.3, 0.09, 0.0, scoreBus, 0.55);
-    }
-    playPadChord(tk, tRes, [73.42, 146.83, 220.0, 277.18, 329.63, 369.99], dur, 0.22, scoreBus, {
-      wave: 'triangle',
-      cutoffStart: 1300,
-      cutoffPeak: 1450,
-      cutoffEnd: 280,
-      attackSec: 0.14,
-      releaseSec: 1.9,
-      detuneCents: 5,
-    });
+  // Act 4 (5.013s = BLOOM BEAT): Secondary crystalline cascade as P-Cores & GPU ignite!
+  const bloom = 5.013;
+  if (t0 + bloom >= now - 0.02) {
+    const ct = Math.max(now, t0 + bloom);
+    playSoftSub(tk, ct, 73.42, 0.68, 0.24, scoreBus, 128);
+    playRhodesNote(tk, ct, 293.66, 1.4, 0.1, -0.2, scoreBus, 0.75);
+    playGlassBell(tk, ct, 659.25, 1.5, 0.095, -0.32, scoreBus, 0.62);
+    playGlassBell(tk, ct + 0.055, 880.0, 1.5, 0.085, 0.32, scoreBus, 0.58);
+    playGlassBell(tk, ct + 0.11, 1479.98, 1.6, 0.07, 0.0, scoreBus, 0.52);
   }
 }
 
@@ -653,7 +750,7 @@ function playTimpaniPulse(
   tk.track(osc);
 }
 
-/** Deep cinematic sub-impact boom + velvety air thump for the 5.65s full-die reveal */
+/** Deep cinematic sub-impact boom + velvety air thump for the major ignition beat */
 function playCinemaImpact(
   tk: SynthToolkit,
   time: number,
@@ -671,7 +768,7 @@ function playCinemaImpact(
 
   const g = ctx.createGain();
   g.gain.setValueAtTime(0.0001, time);
-  g.gain.linearRampToValueAtTime(gain, time + 0.018);
+  g.gain.linearRampToValueAtTime(gain, time + 0.016);
   g.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain * 0.42), time + durSec * 0.35);
   g.gain.exponentialRampToValueAtTime(0.0001, time + durSec);
 
@@ -685,12 +782,12 @@ function playCinemaImpact(
   src.buffer = tk.brushedNoiseBuf;
   const lp = ctx.createBiquadFilter();
   lp.type = 'lowpass';
-  lp.frequency.setValueAtTime(340, time);
-  lp.frequency.exponentialRampToValueAtTime(75, time + 0.55);
+  lp.frequency.setValueAtTime(380, time);
+  lp.frequency.exponentialRampToValueAtTime(72, time + 0.55);
 
   const ng = ctx.createGain();
   ng.gain.setValueAtTime(0.0001, time);
-  ng.gain.linearRampToValueAtTime(gain * 0.24, time + 0.025);
+  ng.gain.linearRampToValueAtTime(gain * 0.28, time + 0.02);
   ng.gain.exponentialRampToValueAtTime(0.0001, time + 0.65);
 
   src.connect(lp);
@@ -700,7 +797,7 @@ function playCinemaImpact(
   tk.track(src);
 }
 
-/** Soft horizon air swell rising into the silicon reveal */
+/** Soft horizon air swell rising into the major ignition beat */
 function playAirSwell(
   tk: SynthToolkit,
   time: number,
@@ -734,236 +831,298 @@ function playAirSwell(
   tk.track(src);
 }
 
-/** 2) QUANTUM DRIFT (Horizon Pulse) — Solemn timpani heartbeat + rising dark cello strings -> wide Fm9 reveal */
+/** 2) QUANTUM DRIFT (Horizon Pulse) — Beat-locked timpani build over dark silhouette -> 4.40s Fm9 Major Ignition Drop */
 function scheduleOrbitalIntro(tk: SynthToolkit, t0: number, now: number, scoreBus: AudioNode): void {
-  // Solemn low heartbeat pulse climbing from blackout through power-on (0.25s -> 5.05s)
-  for (let i = 0; i < 9; i++) {
-    const cue = 0.25 + i * 0.6;
+  // Beats 0..6 (0.20, 0.80, 1.40, 2.00, 2.60, 3.20, 3.80s):
+  //   - Beats 0..3: quiet distant timpani heartbeat while title & dark silhouette emerge smoothly
+  //   - Beats 4..6 (2.60, 3.20, 3.80s): deep felt sub-bass thumps lock in with the camera crane-up & rim pulses!
+  for (let i = 0; i < 7; i++) {
+    const cue = 0.2 + i * 0.6;
     if (t0 + cue < now - 0.02) continue;
     const ct = Math.max(now, t0 + cue);
-    const prog = i / 8;
-    const hz = i < 6 ? 43.65 : 69.3;
-    playTimpaniPulse(tk, ct, hz, 0.68, 0.16 + prog * 0.22, scoreBus);
+    const hz = i < 5 ? 43.65 : 69.3; // Steps up to Db2 tension on Beats 5 & 6 right before the drop!
+    if (i < 4) {
+      playTimpaniPulse(tk, ct, hz, 0.52, 0.13 + i * 0.018, scoreBus);
+    } else {
+      const bProg = (i - 4) / 2;
+      playTimpaniPulse(tk, ct, hz, 0.58, 0.27 + bProg * 0.1, scoreBus);
+      // Deep felt sub-bass thump layered on Beats 4, 5, 6 so visual rim pulses match an unmistakable bass hit
+      playSoftSub(tk, ct, hz, 0.44, 0.26 + bProg * 0.1, scoreBus, hz * 2.35);
+      tk.triggerStrike(ct, 2100 + (i - 4) * 650, 3.4, 0.006, 0.05 + bProg * 0.04, scoreBus);
+    }
   }
 
-  // Rising dark cello / analog string swell climbing across power-on rails & clusters
-  if (t0 + 3.75 > now) {
-    const sT = Math.max(now, t0 + 1.45);
-    playPadChord(tk, sT, [87.31, 130.81, 174.61], Math.max(0.2, t0 + 3.75 - sT), 0.2, scoreBus, {
+  // Beat 2 (1.40s reveal): Low dark cello drone emerges as the title dissolves and unpowered chip fades in
+  if (t0 + 2.85 > now) {
+    const sT = Math.max(now, t0 + 1.4);
+    playPadChord(tk, sT, [87.31, 130.81, 174.61], Math.max(0.2, t0 + 2.85 - sT), 0.17, scoreBus, {
       wave: 'sawtooth',
-      cutoffStart: 150,
-      cutoffPeak: 680,
-      cutoffEnd: 420,
-      attackSec: 1.3,
-      releaseSec: 0.7,
+      cutoffStart: 135,
+      cutoffPeak: 480,
+      cutoffEnd: 320,
+      attackSec: 0.95,
+      releaseSec: 0.45,
       detuneCents: 8,
       useDrive: true,
     });
   }
-  if (t0 + 5.85 > now) {
-    const sT = Math.max(now, t0 + 3.45);
-    playPadChord(tk, sT, [69.3, 138.59, 207.65, 261.63, 349.23], Math.max(0.2, t0 + 5.85 - sT), 0.3, scoreBus, {
+
+  // Beat 4 (2.60s rise) -> 4.24s (crisp pre-drop breath!): Rising dark strings + horizon air swell
+  if (t0 + 4.26 > now) {
+    const sT = Math.max(now, t0 + 2.6);
+    const dur = Math.max(0.2, t0 + 4.26 - sT);
+    playPadChord(tk, sT, [69.3, 138.59, 207.65, 261.63, 349.23], dur, 0.28, scoreBus, {
       wave: 'sawtooth',
-      cutoffStart: 280,
-      cutoffPeak: 1450,
-      cutoffEnd: 780,
-      attackSec: 1.45,
-      releaseSec: 0.65,
+      cutoffStart: 220,
+      cutoffPeak: 1420,
+      cutoffEnd: 360,
+      attackSec: 1.05,
+      releaseSec: 0.26,
       detuneCents: 9,
       useDrive: true,
     });
-  }
-  if (t0 + 5.65 > now) {
-    const sT = Math.max(now, t0 + 2.8);
-    const dur = Math.max(0.2, t0 + 5.65 - sT);
-    playAirSwell(tk, sT, dur, 220, 920, 0.05, scoreBus);
+    playAirSwell(tk, sT, Math.max(0.2, t0 + 4.22 - sT), 190, 1080, 0.058, scoreBus);
   }
 
-  // Act 5 (5.65 - 9.45s): Deep cinematic reveal impact + wide warm Fm9 strings settling into loop
-  if (t0 + 9.4 > now) {
-    const tRes = Math.max(now, t0 + 5.65);
-    const dur = Math.max(0.5, t0 + 9.45 - tRes);
-    if (t0 + 5.65 >= now - 0.03) {
-      playCinemaImpact(tk, tRes, 108, 43.65, 2.8, 0.44, scoreBus);
+  // Beat 7 (4.40s = THE MAJOR DROP BEAT): Deep cinema impact + wide warm Fm9 orchestral bloom -> chip ignites!
+  const drop = 4.4;
+  if (t0 + 7.9 > now) {
+    const tRes = Math.max(now, t0 + drop);
+    const dur = Math.max(0.5, t0 + 7.95 - tRes);
+    if (t0 + drop >= now - 0.03) {
+      playCinemaImpact(tk, tRes, 118, 43.65, 2.55, 0.48, scoreBus);
+      tk.triggerStrike(tRes, 3600, 3.2, 0.007, 0.085, scoreBus);
+      // Luminous fifth shimmer catching the studio softbox sweep across the bare silicon
+      playGlassBell(tk, tRes, 523.25, 1.9, 0.075, -0.28, scoreBus, 0.48);
+      playGlassBell(tk, tRes + 0.04, 698.46, 2.1, 0.068, 0.28, scoreBus, 0.45);
     }
-    playPadChord(tk, tRes, [87.31, 130.81, 196.0, 207.65, 261.63], dur, 0.27, scoreBus, {
+    playPadChord(tk, tRes, [43.65, 87.31, 130.81, 196.0, 207.65, 261.63, 349.23], dur, 0.29, scoreBus, {
       wave: 'sawtooth',
-      cutoffStart: 1180,
-      cutoffPeak: 960,
+      cutoffStart: 1520,
+      cutoffPeak: 1180,
       cutoffEnd: 210,
-      attackSec: 0.14,
-      releaseSec: 2.5,
+      attackSec: 0.06,
+      releaseSec: 2.2,
       detuneCents: 8,
       useDrive: true,
     });
   }
+
+  // Beat 8 (5.00s = BLOOM BEAT): Deep resonant answer pulse + rising harmonic core cascade shimmer
+  const bloom = 5.0;
+  if (t0 + bloom >= now - 0.02) {
+    const ct = Math.max(now, t0 + bloom);
+    playTimpaniPulse(tk, ct, 43.65, 0.72, 0.34, scoreBus);
+    playGlassBell(tk, ct, 415.3, 1.45, 0.062, -0.34, scoreBus, 0.42);
+    playGlassBell(tk, ct + 0.05, 523.25, 1.45, 0.058, 0.0, scoreBus, 0.44);
+    playGlassBell(tk, ct + 0.1, 783.99, 1.55, 0.054, 0.34, scoreBus, 0.46);
+  }
 }
 
-/** 3) SILICON PULSE — Precision A Dorian modular micro-plucks & tactile cleanroom groove */
+/** 3) SILICON PULSE — Precision A Dorian cleanroom clockwork -> 4.431s Am9 Modular Ignition Drop */
 function schedulePulseIntro(tk: SynthToolkit, t0: number, now: number, scoreBus: AudioNode): void {
-  // Act 0 (0.00 - 2.45s): Microscopic piezo-clock sync pulses + warm A1 sub swell
-  if (t0 + 2.46 > now) {
-    const sT = Math.max(now, t0 + 0.1);
-    playSoftSub(tk, sT, 55.0, Math.max(0.2, t0 + 2.45 - sT), 0.18, scoreBus);
+  const step = 0.13158;
+  const beat = step * 4; // 0.5263s (114 BPM)
+  const b0 = 0.22;
 
-    const clockCues = [0.55, 1.15, 1.55, 1.85, 2.08, 2.24, 2.35];
-    for (let i = 0; i < clockCues.length; i++) {
-      const cue = clockCues[i];
+  // Act 0-1 (0.22 - 2.325s): Precision cleanroom clock ticks + warm A1 sub bed on black & dark silhouette
+  if (t0 + 2.34 > now) {
+    const sT = Math.max(now, t0 + b0);
+    playSoftSub(tk, sT, 55.0, Math.max(0.2, t0 + 2.32 - sT), 0.15, scoreBus);
+
+    for (let b = 0; b < 4; b++) {
+      const cue = b0 + b * beat;
       if (t0 + cue >= now - 0.02) {
         const ct = Math.max(now, t0 + cue);
-        const prog = i / (clockCues.length - 1);
-        const pv = (i % 2 === 0 ? -1 : 1) * 0.28;
-        playMicroHat(tk, ct, 4200 + prog * 2800, 0.016, 0.09 + prog * 0.08, pv, scoreBus);
-        playModularPluck(tk, ct, 220 * (1 + (i % 3) * 0.25), 0.08, 0.055 + prog * 0.04, -pv, scoreBus, 0.3 + prog * 0.5);
+        const prog = b / 3;
+        const pv = b % 2 === 0 ? -0.26 : 0.26;
+        playMicroHat(tk, ct, 4400 + prog * 2200, 0.016, 0.075 + prog * 0.05, pv, scoreBus);
+        playModularPluck(tk, ct, 220 * (1 + (b % 3) * 0.25), 0.09, 0.055 + prog * 0.035, -pv, scoreBus, 0.32 + prog * 0.3);
       }
     }
   }
 
-  // Act 1-4 (2.45 - 5.608s): 24 steps of interlocking 16th Buchla/modular A-Dorian groove
-  const step = 0.1316;
+  // Act 2 (2.325 - 4.167s): 14 steps of tightly filtered A-Dorian modular build, cutting cleanly for 2-16th pre-drop breath!
+  const riseStart = b0 + beat * 4; // 2.325s
   const bassSeq = [
     110.0, 0, 110.0, 164.81, 0, 110.0, 130.81, 0,
-    110.0, 164.81, 0, 110.0, 196.0, 0, 164.81, 130.81,
-    87.31, 0, 174.61, 87.31, 130.81, 0, 164.81, 196.0,
+    87.31, 0, 174.61, 87.31, 130.81, 164.81,
   ];
   const topSeq = [
     440.0, 0, 329.63, 0, 392.0, 0, 440.0, 493.88,
-    0, 523.25, 0, 440.0, 392.0, 0, 329.63, 0,
-    440.0, 493.88, 523.25, 0, 587.33, 659.25, 587.33, 659.25,
+    440.0, 493.88, 523.25, 0, 587.33, 659.25,
   ];
 
-  for (let i = 0; i < 24; i++) {
-    const cue = 2.45 + i * step;
+  for (let i = 0; i < bassSeq.length; i++) {
+    const cue = riseStart + i * step;
     if (t0 + cue + 0.14 <= now) continue;
     const ct = Math.max(now, t0 + cue);
-    const prog = i / 23;
+    const prog = i / (bassSeq.length - 1);
 
     if (i % 4 === 0 && t0 + cue >= now - 0.02) {
-      playSoftSub(tk, ct, i < 16 ? 55.0 : 43.65, 0.22, 0.3 + prog * 0.08, scoreBus, 148);
+      playSoftSub(tk, ct, i < 8 ? 55.0 : 43.65, 0.22, 0.26 + prog * 0.09, scoreBus, 146);
     }
     if (i % 2 === 1 && t0 + cue >= now - 0.02) {
-      playMicroHat(tk, ct, 7400, 0.02, 0.055 + prog * 0.045, i % 4 === 1 ? -0.32 : 0.32, scoreBus);
+      playMicroHat(tk, ct, 7200, 0.018, 0.048 + prog * 0.04, i % 4 === 1 ? -0.32 : 0.32, scoreBus);
     }
     const bHz = bassSeq[i];
     if (bHz > 0) {
-      playModularPluck(tk, ct, bHz, 0.16, 0.13 + prog * 0.06, -0.16, scoreBus, 0.35 + prog * 0.6);
+      playModularPluck(tk, ct, bHz, 0.15, 0.11 + prog * 0.06, -0.16, scoreBus, 0.28 + prog * 0.58);
     }
     const tHz = topSeq[i];
     if (tHz > 0) {
-      playModularPluck(tk, ct, tHz, 0.22, 0.08 + prog * 0.055, i % 2 === 0 ? 0.34 : -0.34, scoreBus, 0.45 + prog * 0.55);
+      playModularPluck(tk, ct, tHz, 0.2, 0.072 + prog * 0.055, i % 2 === 0 ? 0.32 : -0.32, scoreBus, 0.35 + prog * 0.55);
     }
   }
+  if (t0 + 4.18 > now) {
+    const sT = Math.max(now, t0 + riseStart);
+    playAirSwell(tk, sT, Math.max(0.2, t0 + 4.18 - sT), 360, 1620, 0.045, scoreBus);
+  }
 
-  // Act 5 (5.608 - 7.80s): Clean Am9 modular lock & smooth settle into quiet pulse loop
-  if (t0 + 7.8 > now) {
-    const tRes = Math.max(now, t0 + 5.608);
-    const dur = Math.max(0.4, t0 + 7.85 - tRes);
-    if (t0 + 5.608 >= now - 0.03) {
-      playSoftSub(tk, tRes, 55.0, 0.65, 0.34, scoreBus, 140);
-      playGlassBell(tk, tRes, 440.0, 1.4, 0.09, 0.0, scoreBus, 0.5);
+  // Act 3 (4.431s = MAJOR DROP BEAT): Punchy Am9 modular lock + deep sub impact -> chip ignites!
+  const drop = 4.431;
+  if (t0 + 7.05 > now) {
+    const tRes = Math.max(now, t0 + drop);
+    const dur = Math.max(0.4, t0 + 7.1 - tRes);
+    if (t0 + drop >= now - 0.03) {
+      playCinemaImpact(tk, tRes, 138, 55.0, 1.85, 0.42, scoreBus);
+      playGlassBell(tk, tRes, 440.0, 1.55, 0.11, -0.22, scoreBus, 0.62);
+      playGlassBell(tk, tRes + 0.035, 659.25, 1.65, 0.09, 0.22, scoreBus, 0.58);
+      tk.triggerStrike(tRes, 4200, 3.4, 0.006, 0.085, scoreBus);
     }
-    playPadChord(tk, tRes, [110.0, 164.81, 246.94, 261.63, 329.63], dur, 0.17, scoreBus, {
+    playPadChord(tk, tRes, [110.0, 164.81, 246.94, 261.63, 329.63], dur, 0.2, scoreBus, {
       wave: 'triangle',
-      cutoffStart: 1200,
-      cutoffPeak: 1250,
-      cutoffEnd: 260,
-      attackSec: 0.08,
-      releaseSec: 1.5,
+      cutoffStart: 1450,
+      cutoffPeak: 1320,
+      cutoffEnd: 240,
+      attackSec: 0.04,
+      releaseSec: 1.55,
       detuneCents: 5,
+    });
+  }
+
+  // Act 4 (4.957s = BLOOM BEAT): Syncopated modular answer firing cores & GPU online!
+  const bloom = 4.957;
+  if (t0 + bloom >= now - 0.02) {
+    const ct = Math.max(now, t0 + bloom);
+    playSoftSub(tk, ct, 55.0, 0.34, 0.28, scoreBus, 132);
+    const cascade = [329.63, 440.0, 523.25, 659.25];
+    cascade.forEach((hz, idx) => {
+      playModularPluck(tk, ct + idx * (step * 0.5), hz, 0.24, 0.09, (idx - 1.5) * 0.22, scoreBus, 0.72);
     });
   }
 }
 
-/** 4) LATE-NIGHT LAB — Warm Eb major9 Rhodes chord rolls & brushed analog tape glow */
+/** 4) LATE-NIGHT LAB — Warm Eb major9 Rhodes build over dark silhouette -> 4.486s Ebmaj9 Ignition Bloom */
 function scheduleVelvetIntro(tk: SynthToolkit, t0: number, now: number, scoreBus: AudioNode): void {
-  // Act 0 (0.00 - 2.45s): Warm Eb2 Rhodes swell + cozy soft brushed clicks
-  if (t0 + 2.5 > now) {
-    const sT = Math.max(now, t0 + 0.12);
-    playPadChord(tk, sT, [77.78, 155.56, 233.08], Math.max(0.2, t0 + 2.5 - sT), 0.14, scoreBus, {
+  const beat = 0.71428; // 84 BPM
+  const b0 = 0.2;
+
+  // Act 0-1 (0.20 - 2.343s): Warm Eb2 tape swell + solitary Rhodes notes on black & dark silhouette
+  if (t0 + 2.4 > now) {
+    const sT = Math.max(now, t0 + b0);
+    playPadChord(tk, sT, [77.78, 155.56, 233.08], Math.max(0.2, t0 + 2.4 - sT), 0.13, scoreBus, {
       wave: 'triangle',
-      cutoffStart: 220,
-      cutoffPeak: 540,
-      cutoffEnd: 340,
-      attackSec: 1.0,
-      releaseSec: 0.4,
+      cutoffStart: 200,
+      cutoffPeak: 480,
+      cutoffEnd: 320,
+      attackSec: 0.9,
+      releaseSec: 0.35,
       detuneCents: 6,
     });
     const taps: [number, number][] = [
-      [0.68, 311.13],
-      [1.52, 349.23],
-      [2.12, 392.0],
+      [b0, 311.13], // Beat 0 (0.20s)
+      [b0 + beat, 349.23], // Beat 1 (0.914s)
+      [b0 + beat * 2, 392.0], // Beat 2 (1.629s reveal)
     ];
     for (let i = 0; i < taps.length; i++) {
       const [cue, hz] = taps[i];
       if (t0 + cue >= now - 0.02) {
         const ct = Math.max(now, t0 + cue);
-        playRhodesNote(tk, ct, hz, 1.1, 0.075 + i * 0.015, i % 2 === 0 ? -0.3 : 0.3, scoreBus, 1.2);
+        playRhodesNote(tk, ct, hz, 1.05, 0.072 + i * 0.012, i % 2 === 0 ? -0.28 : 0.28, scoreBus, 1.18);
       }
     }
   }
 
-  // Act 1-4 (2.45 - 5.84s): Warm rolled jazz chords (Ebmaj9 -> Cm9 -> Fm9 -> Bb13sus4) + soft groove
+  // Act 2 (2.343 - 4.20s): Warm tension chords (Cm9 -> Fm9 -> Bb13sus4) while camera rises over dark chip
   const chords: [number, number, readonly number[]][] = [
-    [2.45, 77.78, [155.56, 233.08, 293.66, 349.23, 392.0]], // Ebmaj9
-    [3.34, 65.41, [130.81, 196.0, 233.08, 293.66, 311.13]], // Cm9
-    [4.24, 87.31, [174.61, 207.65, 261.63, 311.13, 392.0]], // Fm9
-    [5.05, 58.27, [155.56, 207.65, 261.63, 349.23, 392.0]], // Bb13sus4
+    [2.343, 65.41, [130.81, 196.0, 233.08, 293.66, 311.13]], // Beat 3: Cm9
+    [3.057, 87.31, [174.61, 207.65, 261.63, 311.13, 392.0]], // Beat 4: Fm9
+    [3.771, 58.27, [155.56, 207.65, 261.63, 349.23, 392.0]], // Beat 5: Bb13sus4 dominant tension!
   ];
-
   for (let c = 0; c < chords.length; c++) {
     const [cue, bassHz, notes] = chords[c];
-    if (t0 + cue + 0.5 <= now) continue;
+    if (t0 + cue + 0.45 <= now) continue;
     const ct = Math.max(now, t0 + cue);
-    playSoftSub(tk, ct, bassHz, 0.92, 0.25 + c * 0.02, scoreBus, bassHz * 1.4);
+    playSoftSub(tk, ct, bassHz, 0.68, 0.22 + c * 0.03, scoreBus, bassHz * 1.45);
     for (let n = 0; n < notes.length; n++) {
-      const nt = ct + n * 0.042;
-      const pv = ((n / (notes.length - 1)) * 2 - 1) * 0.42;
-      playRhodesNote(tk, nt, notes[n], 1.25, 0.088 + c * 0.008, pv, scoreBus, 1.15);
+      const nt = ct + n * 0.036;
+      const pv = ((n / (notes.length - 1)) * 2 - 1) * 0.4;
+      playRhodesNote(tk, nt, notes[n], c === 2 ? 0.52 : 0.88, 0.08 + c * 0.01, pv, scoreBus, 1.15);
     }
-    // Soft brushed percussion pulse
-    playMicroHat(tk, ct + 0.36, 5200, 0.042, 0.05, 0.22, scoreBus);
-    playMicroHat(tk, ct + 0.72, 4600, 0.032, 0.038, -0.22, scoreBus);
+    if (c < 2) {
+      playMicroHat(tk, ct + beat * 0.5, 4900, 0.036, 0.042, c % 2 === 0 ? 0.22 : -0.22, scoreBus);
+    }
+  }
+  if (t0 + 4.25 > now) {
+    const sT = Math.max(now, t0 + 2.343);
+    playAirSwell(tk, sT, Math.max(0.2, t0 + 4.25 - sT), 240, 960, 0.04, scoreBus);
   }
 
-  // Act 5 (5.84 - 8.70s): Resolving warm Ebmaj9 Rhodes bloom melting into late-night loop
-  if (t0 + 8.6 > now) {
-    const tRes = Math.max(now, t0 + 5.84);
-    const dur = Math.max(0.5, t0 + 8.7 - tRes);
-    if (t0 + 5.84 >= now - 0.03) {
-      playSoftSub(tk, tRes, 77.78, 1.3, 0.3, scoreBus, 120);
-      const chord = [155.56, 233.08, 293.66, 349.23, 466.16];
+  // Act 3 (4.486s = MAJOR DROP BEAT): Deep Eb2 warm impact + lush rolled Ebmaj9 Rhodes bloom!
+  const drop = 4.486;
+  if (t0 + 7.55 > now) {
+    const tRes = Math.max(now, t0 + drop);
+    const dur = Math.max(0.5, t0 + 7.6 - tRes);
+    if (t0 + drop >= now - 0.03) {
+      playCinemaImpact(tk, tRes, 112, 38.89, 2.2, 0.38, scoreBus);
+      const chord = [155.56, 233.08, 293.66, 349.23, 466.16, 587.33];
       chord.forEach((hz, i) => {
-        playRhodesNote(tk, tRes + i * 0.038, hz, 2.2, 0.095, (i - 2) * 0.2, scoreBus, 1.25);
+        playRhodesNote(tk, tRes + i * 0.03, hz, 2.1, 0.1, (i - 2.5) * 0.18, scoreBus, 1.25);
       });
     }
-    playPadChord(tk, tRes, [77.78, 155.56, 233.08, 293.66, 349.23], dur, 0.16, scoreBus, {
+    playPadChord(tk, tRes, [77.78, 155.56, 233.08, 293.66, 349.23], dur, 0.2, scoreBus, {
       wave: 'triangle',
-      cutoffStart: 920,
-      cutoffPeak: 980,
+      cutoffStart: 1220,
+      cutoffPeak: 1120,
       cutoffEnd: 240,
-      attackSec: 0.18,
-      releaseSec: 1.8,
+      attackSec: 0.08,
+      releaseSec: 1.85,
       detuneCents: 7,
+    });
+  }
+
+  // Act 4 (5.20s = BLOOM BEAT): Warm upper Rhodes shimmer cascade for core & GPU wake!
+  const bloom = 5.2;
+  if (t0 + bloom >= now - 0.02) {
+    const ct = Math.max(now, t0 + bloom);
+    playSoftSub(tk, ct, 77.78, 0.72, 0.24, scoreBus, 118);
+    const lick = [392.0, 466.16, 587.33];
+    lick.forEach((hz, i) => {
+      playRhodesNote(tk, ct + i * 0.055, hz, 1.35, 0.088, (i - 1) * 0.28, scoreBus, 1.2);
     });
   }
 }
 
-/** 5) CYBER NOIR — Iconic Dark C-Minor Moog 16th Arp handing off smoothly to dark ambient pulse */
+/** 5) CYBER NOIR — Dark C-Minor Moog 16th build over unpowered silhouette -> 4.486s Cm9 Monolith Ignition */
 function scheduleNoirIntro(tk: SynthToolkit, t0: number, now: number, scoreBus: AudioNode): void {
   const { ctx } = tk;
+  const step = 0.13393;
+  const beat = step * 4; // 0.5357s (112 BPM)
+  const b0 = 0.2;
 
-  // Act 0 (0.00 - 2.45s): C1 sub tension + accelerating clock ticks
-  if (t0 + 2.48 > now) {
-    const sT = Math.max(now, t0 + 0.12);
-    const peakT = Math.max(sT + 0.12, t0 + 2.38);
-    const endT = Math.max(peakT + 0.05, t0 + 2.48);
+  // Act 0-1 (0.20 - 2.343s): C1 sub tension + cold metallic ticks on beats 0..3
+  if (t0 + 2.36 > now) {
+    const sT = Math.max(now, t0 + b0);
+    const peakT = Math.max(sT + 0.12, t0 + 2.26);
+    const endT = Math.max(peakT + 0.05, t0 + 2.36);
 
     const subPre = ctx.createOscillator();
     subPre.type = 'sine';
     subPre.frequency.setValueAtTime(32.7, sT);
     const spg = ctx.createGain();
     spg.gain.setValueAtTime(0.0001, sT);
-    spg.gain.linearRampToValueAtTime(0.21, peakT);
+    spg.gain.linearRampToValueAtTime(0.2, peakT);
     spg.gain.exponentialRampToValueAtTime(0.0001, endT);
     subPre.connect(spg);
     spg.connect(scoreBus);
@@ -971,28 +1130,23 @@ function scheduleNoirIntro(tk: SynthToolkit, t0: number, now: number, scoreBus: 
     subPre.stop(endT + 0.02);
     tk.track(subPre);
 
-    const preTicks: [number, number, number][] = [
-      [0.65, 1650, 0.11],
-      [1.56, 2100, 0.14],
-      [2.02, 2650, 0.17],
-      [2.28, 3150, 0.21],
-    ];
-    for (const [cue, hz, amp] of preTicks) {
+    for (let b = 0; b < 4; b++) {
+      const cue = b0 + b * beat;
       if (t0 + cue >= now - 0.02) {
         const ct = Math.max(now, t0 + cue);
-        tk.triggerStrike(ct, hz, 3.8, 0.007, amp, scoreBus);
-        tk.triggerThock(ct, 155, 52, 0.06, amp * 0.92, scoreBus, 'triangle');
+        const amp = 0.1 + b * 0.032;
+        tk.triggerStrike(ct, 1750 + b * 420, 3.8, 0.007, amp, scoreBus);
+        tk.triggerThock(ct, 152, 48, 0.06, amp * 0.9, scoreBus, 'triangle');
       }
     }
   }
 
-  // Act 1-4 (2.45 - 5.666s): 24 steps of Dark Electro Moog 16th Arp building to climax
+  // Act 2 (2.343 - 4.218s): 14 steps of brooding Dark Moog 16th arp cutting cleanly for 2-16th pre-drop silence!
+  const riseStart = b0 + beat * 4; // 2.343s
   const buildPattern = [
     65.41, 65.41, 130.81, 65.41, 98.0, 65.41, 77.78, 98.0,
-    65.41, 65.41, 130.81, 65.41, 116.54, 98.0, 77.78, 65.41,
-    51.91, 51.91, 103.83, 51.91, 77.78, 98.0, 130.81, 155.56,
+    51.91, 51.91, 103.83, 51.91, 77.78, 98.0,
   ];
-  const step = 0.134;
   const arpDrive = ctx.createWaveShaper();
   arpDrive.curve = tk.warmDriveCurve;
   arpDrive.connect(scoreBus);
@@ -1005,32 +1159,32 @@ function scheduleNoirIntro(tk: SynthToolkit, t0: number, now: number, scoreBus: 
   arpPanR.connect(arpDrive);
 
   for (let i = 0; i < buildPattern.length; i++) {
-    const cueSec = 2.45 + i * step;
+    const cueSec = riseStart + i * step;
     if (t0 + cueSec + 0.14 <= now) continue;
     const ct = Math.max(now, t0 + cueSec);
     const hz = buildPattern[i];
-    const buildProg = i / 23;
+    const buildProg = i / (buildPattern.length - 1);
 
     if (i % 4 === 0 && t0 + cueSec >= now - 0.02) {
-      const kickAmp = 0.35 * (0.72 + buildProg * 0.32);
+      const kickAmp = 0.34 * (0.72 + buildProg * 0.34);
       tk.triggerThock(ct, 138, 32.7, 0.24, kickAmp, scoreBus, 'sine');
-      tk.triggerStrike(ct, 2500 + buildProg * 1100, 2.2, 0.008, 0.14 + buildProg * 0.06, scoreBus);
+      tk.triggerStrike(ct, 2500 + buildProg * 1100, 2.2, 0.008, 0.13 + buildProg * 0.07, scoreBus);
     }
-    if (i >= 16 && t0 + cueSec >= now - 0.02) {
-      const bp = (i - 16) / 7;
-      playMicroHat(tk, ct, 3600 + bp * 1800, 0.005, 0.1 + bp * 0.09, i % 2 === 0 ? -0.34 : 0.34, scoreBus);
+    if (i >= 8 && t0 + cueSec >= now - 0.02) {
+      const bp = (i - 8) / 5;
+      playMicroHat(tk, ct, 3600 + bp * 1900, 0.005, 0.09 + bp * 0.08, i % 2 === 0 ? -0.34 : 0.34, scoreBus);
     }
 
     const lp = ctx.createBiquadFilter();
     lp.type = 'lowpass';
     lp.Q.setValueAtTime(4.2, ct);
-    const cutPeak = 320 + buildProg * 2450 + (i % 4 === 2 ? 460 : 0);
+    const cutPeak = 310 + buildProg * 2350 + (i % 4 === 2 ? 420 : 0);
     lp.frequency.setValueAtTime(cutPeak, ct);
-    lp.frequency.exponentialRampToValueAtTime(110, ct + 0.118);
+    lp.frequency.exponentialRampToValueAtTime(105, ct + 0.118);
 
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, ct);
-    g.gain.linearRampToValueAtTime(0.17 * (0.55 + buildProg * 0.55), ct + 0.004);
+    g.gain.linearRampToValueAtTime(0.16 * (0.55 + buildProg * 0.55), ct + 0.004);
     g.gain.exponentialRampToValueAtTime(0.0001, ct + 0.128);
 
     lp.connect(g);
@@ -1047,25 +1201,40 @@ function scheduleNoirIntro(tk: SynthToolkit, t0: number, now: number, scoreBus: 
       tk.track(osc);
     }
   }
+  if (t0 + 4.24 > now) {
+    const sT = Math.max(now, t0 + riseStart);
+    playAirSwell(tk, sT, Math.max(0.2, t0 + 4.24 - sT), 240, 1450, 0.055, scoreBus);
+  }
 
-  // Act 5 (5.666 - 8.60s): Resolving C-Minor Dark Synth Monolith handing off smoothly into quiet Noir loop
-  if (t0 + 8.6 > now) {
-    const tRes = Math.max(now, t0 + 5.666);
-    const dur = Math.max(0.5, t0 + 8.6 - tRes);
-    if (t0 + 5.666 >= now - 0.03) {
-      tk.triggerThock(tRes, 132, 32.7, 0.52, 0.44, scoreBus, 'sine');
+  // Act 3 (4.486s = MAJOR DROP BEAT): Massive C-Minor Dark Synth Monolith ignition!
+  const drop = 4.486;
+  if (t0 + 7.45 > now) {
+    const tRes = Math.max(now, t0 + drop);
+    const dur = Math.max(0.5, t0 + 7.5 - tRes);
+    if (t0 + drop >= now - 0.03) {
+      playCinemaImpact(tk, tRes, 136, 32.7, 2.35, 0.48, scoreBus);
+      tk.triggerStrike(tRes, 3400, 2.6, 0.008, 0.12, scoreBus);
     }
-    playPadChord(tk, tRes, [32.7, 65.41, 98.0, 130.81, 155.56], dur, 0.26, scoreBus, {
+    playPadChord(tk, tRes, [32.7, 65.41, 98.0, 130.81, 146.83, 155.56, 196.0], dur, 0.28, scoreBus, {
       wave: 'sawtooth',
-      cutoffStart: 1650,
-      cutoffPeak: 1200,
-      cutoffEnd: 160,
-      attackSec: 0.04,
+      cutoffStart: 1950,
+      cutoffPeak: 1450,
+      cutoffEnd: 165,
+      attackSec: 0.035,
       releaseSec: 1.9,
-      detuneCents: 6,
-      q: 1.3,
+      detuneCents: 7,
+      q: 1.35,
       useDrive: true,
     });
+  }
+
+  // Act 4 (5.021s = BLOOM BEAT): Secondary dark synth pulse + eerie crystalline high chime for cores/GPU!
+  const bloom = 5.021;
+  if (t0 + bloom >= now - 0.02) {
+    const ct = Math.max(now, t0 + bloom);
+    tk.triggerThock(ct, 124, 32.7, 0.36, 0.34, scoreBus, 'sine');
+    playGlassBell(tk, ct, 523.25, 1.5, 0.072, -0.28, scoreBus, 0.4);
+    playGlassBell(tk, ct + 0.05, 622.25, 1.55, 0.065, 0.28, scoreBus, 0.42);
   }
 }
 
