@@ -1068,14 +1068,17 @@ function bakeStudioEnvMipmaps(): TextureBuffer[] {
     }
     for (let i = 0; i < weights.length; i++) weights[i] /= wSum;
 
-    // Horizontal (toroidal azimuth wrap)
+    // Horizontal (toroidal azimuth wrap with spherical 1/sin(theta) compensation so zenith IBL on top-down silicon has zero polar pinching!)
     for (let y = 0; y < h; y++) {
+      const theta = ((y + 0.5) / h) * Math.PI;
+      const sinT = Math.max(Math.sin(theta), 0.16);
+      const horizStep = Math.min(Math.round(1.0 / sinT), Math.max(1, w >> 3));
       for (let x = 0; x < w; x++) {
         let r = 0;
         let g = 0;
         let b = 0;
         for (let k = -radius; k <= radius; k++) {
-          const sx = ((x + k) % w + w) % w;
+          const sx = ((x + k * horizStep) % w + w) % w;
           const wt = weights[k + radius];
           const si = (y * w + sx) * 3;
           r += src[si] * wt;

@@ -273,28 +273,40 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
     }
   }
 
-  // Dual-end SMD MLCC Tan Ceramic + Bright Tin-Silver Soldered Decoupling Capacitors + Reflow Solder Fillets
+  // Dual-end SMD MLCC Tan Ceramic + Bright Tin-Silver Soldered Decoupling Capacitors + Concave Reflow Solder Fillets
+  // Includes realistic micro pick-and-place jitter & ceramic batch variation (extraA = batch tint seed; extraB = 1 on fillets)
   for (let i = -13; i <= 13; i++) {
-    const x = i * 0.22;
     for (const side of [-1, 1]) {
-      const z = side * 2.86;
-      b.addBox(x, -0.015 + yOff, z, 0.048, 0.044, 0.044, 0.006, 15);
-      b.addBox(x - 0.046, -0.015 + yOff, z, 0.024, 0.046, 0.046, 0.007, 16);
-      b.addBox(x + 0.046, -0.015 + yOff, z, 0.024, 0.046, 0.046, 0.007, 16);
-      // Reflowed tin-silver solder meniscus fillets seating each cap onto the ABF land pads
-      b.addBox(x - 0.058, -0.058 + yOff, z, 0.026, 0.018, 0.053, 0.012, 16);
-      b.addBox(x + 0.058, -0.058 + yOff, z, 0.026, 0.018, 0.053, 0.012, 16);
+      const h1 = hash12(i * 3.17 + side * 11.3, 7.1);
+      const h2 = hash12(i * 5.41 + side * 19.7, 13.9);
+      const h3 = hash12(i * 7.83 + side * 23.1, 3.7);
+      const batch = hash12(i * 11.2 + side * 4.7, 29.3);
+      const x = i * 0.22 + (h1 - 0.5) * 0.0065;
+      const z = side * 2.86 + (h2 - 0.5) * 0.0065;
+      const yJit = (h3 - 0.5) * 0.0026;
+      b.addBox(x, -0.015 + yOff + yJit, z, 0.048, 0.044, 0.044, 0.006, 15, 0, 0, batch, 0);
+      b.addBox(x - 0.046, -0.015 + yOff + yJit, z, 0.024, 0.046, 0.046, 0.007, 16, 0, 0, -1, 0);
+      b.addBox(x + 0.046, -0.015 + yOff + yJit, z, 0.024, 0.046, 0.046, 0.007, 16, 0, 0, 1, 0);
+      // Reflowed tin-silver concave solder meniscus fillets seating each cap onto the ABF land pads (extraA = dirX, extraB = 1)
+      b.addBox(x - 0.058, -0.058 + yOff, z, 0.026, 0.018, 0.053, 0.012, 16, 0, 0, -1, 1);
+      b.addBox(x + 0.058, -0.058 + yOff, z, 0.026, 0.018, 0.053, 0.012, 16, 0, 0, 1, 1);
     }
   }
   for (let i = -11; i <= 11; i++) {
-    const z = i * 0.22;
     for (const side of [-1, 1]) {
-      const x = side * 3.32;
-      b.addBox(x, -0.015 + yOff, z, 0.044, 0.044, 0.048, 0.006, 15);
-      b.addBox(x, -0.015 + yOff, z - 0.046, 0.046, 0.046, 0.024, 0.007, 16);
-      b.addBox(x, -0.015 + yOff, z + 0.046, 0.046, 0.046, 0.024, 0.007, 16);
-      b.addBox(x, -0.058 + yOff, z - 0.058, 0.053, 0.018, 0.026, 0.012, 16);
-      b.addBox(x, -0.058 + yOff, z + 0.058, 0.053, 0.018, 0.026, 0.012, 16);
+      const h1 = hash12(i * 4.31 + side * 17.9, 21.3);
+      const h2 = hash12(i * 6.73 + side * 9.1, 31.7);
+      const h3 = hash12(i * 8.19 + side * 13.3, 5.9);
+      const batch = hash12(i * 13.7 + side * 7.3, 41.1);
+      const x = side * 3.32 + (h1 - 0.5) * 0.0065;
+      const z = i * 0.22 + (h2 - 0.5) * 0.0065;
+      const yJit = (h3 - 0.5) * 0.0026;
+      b.addBox(x, -0.015 + yOff + yJit, z, 0.044, 0.044, 0.048, 0.006, 15, 0, 0, batch, 0);
+      b.addBox(x, -0.015 + yOff + yJit, z - 0.046, 0.046, 0.046, 0.024, 0.007, 16, 0, 0, -1, 0);
+      b.addBox(x, -0.015 + yOff + yJit, z + 0.046, 0.046, 0.046, 0.024, 0.007, 16, 0, 0, 1, 0);
+      // Reflowed tin-silver concave solder meniscus fillets (extraB = 2 marks Z-oriented fillets)
+      b.addBox(x, -0.058 + yOff, z - 0.058, 0.053, 0.018, 0.026, 0.012, 16, 0, 0, -1, 2);
+      b.addBox(x, -0.058 + yOff, z + 0.058, 0.053, 0.018, 0.026, 0.012, 16, 0, 0, 1, 2);
     }
   }
 

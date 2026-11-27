@@ -301,6 +301,7 @@ export class SiliconEngine {
   private lastLightLookX = Number.NaN;
   private lastLightLookZ = Number.NaN;
   private lastLightHalf = Number.NaN;
+  private lastLightSweep = Number.NaN;
   private msaaFbo: WebGLFramebuffer | null = null;
   private msaaColorRb: WebGLRenderbuffer | null = null;
   private msaaGbufRb: WebGLRenderbuffer | null = null;
@@ -1088,22 +1089,31 @@ export class SiliconEngine {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
-  private updateLightMatrix(lookX: number, lookZ: number, halfExtent: number): void {
+  private updateLightMatrix(lookX: number, lookZ: number, halfExtent: number, lightSweep = 1.0): void {
+    const sweep = clamp(lightSweep, 0.0, 1.0);
     if (
       Math.abs(lookX - this.lastLightLookX) < 0.002 &&
       Math.abs(lookZ - this.lastLightLookZ) < 0.002 &&
-      Math.abs(halfExtent - this.lastLightHalf) < 0.002
+      Math.abs(halfExtent - this.lastLightHalf) < 0.002 &&
+      Math.abs(sweep - this.lastLightSweep) < 0.003
     ) {
       return;
     }
     this.lastLightLookX = lookX;
     this.lastLightLookZ = lookZ;
     this.lastLightHalf = halfExtent;
-    const lLen = Math.hypot(0.52, 0.84, 0.4);
-    const dist = 14.0 + (halfExtent - 8.8) * 0.65;
-    const lx = lookX + (0.52 / lLen) * dist;
-    const ly = (0.84 / lLen) * dist;
-    const lz = lookZ + (0.4 / lLen) * dist;
+    this.lastLightSweep = sweep;
+    // Match SCENE_FS keyDir sweep exactly so Cold Boot casts real moving shadows across the die & SMD caps!
+    const sLen = Math.hypot(0.52, 0.84, 0.4);
+    const iLen = Math.hypot(-0.82, 0.3, -0.49);
+    const dx = (-0.82 / iLen) * (1.0 - sweep) + (0.52 / sLen) * sweep;
+    const dy = (0.3 / iLen) * (1.0 - sweep) + (0.84 / sLen) * sweep;
+    const dz = (-0.49 / iLen) * (1.0 - sweep) + (0.4 / sLen) * sweep;
+    const dLen = Math.hypot(dx, dy, dz) || 1.0;
+    const dist = 14.0 + Math.max(0.0, halfExtent - 7.2) * 0.65;
+    const lx = lookX + (dx / dLen) * dist;
+    const ly = (dy / dLen) * dist;
+    const lz = lookZ + (dz / dLen) * dist;
     mat4LookAt(this.lightViewMat, lx, ly, lz, lookX, 0, lookZ, 0, 1, 0);
     mat4Ortho(this.lightProjMat, -halfExtent, halfExtent, -halfExtent, halfExtent, 2.0, 44.0);
     mat4Multiply(this.lightVPMat, this.lightProjMat, this.lightViewMat);
@@ -1241,6 +1251,7 @@ export class SiliconEngine {
     this.uComp = grab(this.compositeProg, [
       'uTex',
       'uBloomTex',
+      'uBounceTex',
       'uResolution',
       'uMotion',
       'uTime',
@@ -4061,7 +4072,10 @@ export class SiliconEngine {
       this.opticalMetrics
     );
 
-    this.updateLightMatrix(lookX, lookZ, 7.2 + macroOut * 8.6);
+    // Tighten shadow frustum on deep BEOL/FEOL/GAA scales (~3.6x higher texel density!) & sync with Cold Boot key sweep
+    const deepTight = this.smoothstep(0.35, 1.35, this.zoom);
+    const shadowHalf = 7.2 - deepTight * 3.4 + macroOut * 8.6;
+    this.updateLightMatrix(lookX, lookZ, shadowHalf, this.introLightSweep);
     const fogDensity = 0.0082 * Math.pow(0.10, outT) + this.introFogBoost;
 
     // Collect all physically visible nested scales (zero per-frame array/object allocation!)
@@ -4185,6 +4199,9 @@ export class SiliconEngine {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.bloomUp[1].tex);
     gl.uniform1i(this.uComp.uBloomTex, 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.bloomDown[2].tex);
+    gl.uniform1i(this.uComp.uBounceTex, 2);
     gl.uniform2f(this.uComp.uResolution, this.canvasW, this.canvasH);
     gl.uniform1f(this.uComp.uMotion, this.smoothMotion);
     gl.uniform1f(this.uComp.uTime, elapsedSec);
