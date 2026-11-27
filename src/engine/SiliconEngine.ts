@@ -184,19 +184,21 @@ const HERO_ZOOM = 0.0;
 const HERO_PITCH = 0.86;
 const HERO_YAW = 0.0;
 
-/** Keyframed Cinematic Dive choreography: [timeSec, zoom, pitch, yawOffset] */
+/** Keyframed "Powers of Ten" Cinematic Dive choreography: [timeSec, zoom, pitch, yawOffset] */
 const TOUR_KEYS: readonly [number, number, number, number][] = [
-  [0.0, -1.08, 0.96, 0.0],
-  [3.0, 0.0, 0.84, -0.06],
-  [5.4, 0.02, 0.78, 0.08],
-  [8.4, 1.0, 0.72, 0.22],
+  [0.0, -1.12, 0.96, 0.0],
+  [1.4, -1.04, 0.94, 0.03],
+  [4.0, 0.0, 0.84, -0.05],
+  [5.8, 0.04, 0.78, 0.08],
+  [8.6, 1.0, 0.72, 0.22],
   [11.4, 2.0, 0.62, 0.38],
-  [14.2, 3.0, 0.56, 0.5],
-  [17.0, 4.0, 0.46, 0.64],
-  [20.2, 5.0, 0.3, 0.8],
-  [23.2, 6.0, 0.28, 0.98],
-  [26.2, 7.0, 0.24, 1.22],
-  [29.4, 8.0, 0.3, 1.52],
+  [14.0, 3.0, 0.56, 0.5],
+  [16.6, 4.0, 0.46, 0.64],
+  [19.6, 5.0, 0.3, 0.8],
+  [22.4, 6.0, 0.28, 0.98],
+  [25.2, 7.0, 0.24, 1.2],
+  [27.4, 7.52, 0.26, 1.36],
+  [29.8, 8.0, 0.3, 1.54],
   [32.6, 9.0, 0.32, 1.88],
   [35.2, 9.0, 0.34, 2.18],
 ];
@@ -413,7 +415,7 @@ export class SiliconEngine {
   private introCues: IntroCueMap = DEFAULT_INTRO_CUES;
   private introActive = false;
   private introAwaitingBoot = false;
-  private introHoldRendered = false;
+  private introHeldAmbient = 0.0;
   private introElapsed = 0;
   private introLightSweep = 1.0;
   private introKeyIntensity = 1.0;
@@ -1698,11 +1700,11 @@ export class SiliconEngine {
     this.introCues = cues;
   }
 
-  /** Hold Cold Boot paused at black while checking autoplay or waiting for user power-on gesture */
+  /** Hold Cold Boot paused with a faint breathing metallic silhouette while waiting for user power-on gesture */
   public holdIntro(): void {
     this.initIntroState();
     this.introAwaitingBoot = true;
-    this.introHoldRendered = false;
+    this.introHeldAmbient = 0.24;
   }
 
   /** Release the Cold Boot hold and launch seamlessly from `startElapsedSec` (0.0 for autoplay, heldStartSec from held title) */
@@ -3383,16 +3385,29 @@ export class SiliconEngine {
 
     const now = performance.now();
     if (this.introAwaitingBoot) {
-      if (this.introHoldRendered) {
+      // Pace the breathing unpowered hardware-teaser silhouette at ~30 FPS (zero fan spin, alive on frame 1)
+      if (now - this.lastRenderMs < IDLE_FRAME_MS) {
         return;
       }
-      this.introHoldRendered = true;
-      const gl = this.gl;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, this.canvasW, this.canvasH);
-      gl.clearColor(0, 0, 0, 1);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      return;
+      this.lastRenderMs = now;
+      this.lastFrame = now;
+      const tHold = (now - this.startTime) / 1000;
+      const breath = 0.5 - 0.5 * Math.cos(tHold * 0.92);
+      const sweep = 0.5 + 0.5 * Math.sin(tHold * 0.38 - 0.55);
+      this.zoom = INTRO_START_ZOOM;
+      this.targetZoom = INTRO_START_ZOOM;
+      this.pitch = INTRO_START_PITCH;
+      this.targetPitch = INTRO_START_PITCH;
+      this.yaw = INTRO_START_YAW + Math.sin(tHold * 0.32) * 0.012;
+      this.targetYaw = this.yaw;
+      this.introExposure = 0.24 + 0.11 * breath;
+      this.introHeldAmbient = this.introExposure;
+      this.introKeyIntensity = 0.018 + 0.018 * breath;
+      this.introRimBoost = 0.58 + 0.34 * breath;
+      this.introLightSweep = 0.14 + 0.22 * sweep;
+      this.introBeatPulse = 0.05 * breath;
+      this.introFogBoost = 0.036;
+      this.introDofBoost = 0.0;
     }
 
     const hoverDistinctNow = this.hasHover && (!this.hasInspect || this.hoverId !== this.inspectId);
@@ -3424,19 +3439,21 @@ export class SiliconEngine {
 
     const needsFullRate = isMoving || idleAgeMs < IDLE_HOLD_MS;
     this.isIdlePaced = !needsFullRate;
-    if (!needsFullRate) {
-      const minInterval = !this.windowFocused
-        ? BLURRED_FRAME_MS
-        : idleAgeMs < COOLDOWN_END_MS
-          ? COOLDOWN_FRAME_MS
-          : IDLE_FRAME_MS;
-      if (now - this.lastRenderMs < minInterval) {
-        return;
+    if (!this.introAwaitingBoot) {
+      if (!needsFullRate) {
+        const minInterval = !this.windowFocused
+          ? BLURRED_FRAME_MS
+          : idleAgeMs < COOLDOWN_END_MS
+            ? COOLDOWN_FRAME_MS
+            : IDLE_FRAME_MS;
+        if (now - this.lastRenderMs < minInterval) {
+          return;
+        }
       }
+      this.lastRenderMs = now;
     }
-    this.lastRenderMs = now;
 
-    const rawDtMs = now - this.lastFrame;
+    const rawDtMs = this.introAwaitingBoot ? IDLE_FRAME_MS : now - this.lastFrame;
     this.lastFrame = now;
     const dt = Math.min(0.10, Math.max(0.001, rawDtMs / 1000));
     const elapsedSec = (now - this.startTime) / 1000;
@@ -3480,7 +3497,7 @@ export class SiliconEngine {
     // Beat-Locked "Cold Boot": Title on Black -> Dark Unpowered Silhouette Build -> MAJOR BEAT Ignition & Crane-Up!
     const prevZ = this.zoom;
     const prevYaw = this.yaw;
-    if (this.introActive) {
+    if (this.introActive && !this.introAwaitingBoot) {
       const cues = this.introCues;
       const audioClock = this.hooks.getIntroClockSec?.() ?? null;
       if (audioClock !== null && audioClock >= 0) {
@@ -3545,7 +3562,9 @@ export class SiliconEngine {
       const dropSweepSpan = Math.max(0.45, cues.lockSec + 0.26 - cues.dropSec);
       const rawDropSweep = clamp((t - cues.dropSec) / dropSweepSpan, 0, 1);
       const uDropSweep = (1.0 - Math.pow(1.0 - rawDropSweep, 3.1)) * this.smoothstep(0.0, 0.055, rawDropSweep);
-      const fadeInOff = uEmerge * 0.72;
+      const fadeInOff = Math.max(uEmerge * 0.72, this.introHeldAmbient);
+      this.introHeldAmbient *= Math.exp(-1.4 * dt);
+      if (this.introHeldAmbient < 0.001) this.introHeldAmbient = 0;
       const buildExpLift = uBuild * 0.07;
       const preDropDip =
         this.smootherstep(cues.preDropSec, cues.dropSec, t) * (1.0 - this.smoothstep(cues.dropSec, cues.dropSec + 0.05, t));
@@ -3603,7 +3622,7 @@ export class SiliconEngine {
       } else {
         this.hooks.onIntroFrame?.({ active: true, progress, elapsed: t });
       }
-    } else {
+    } else if (!this.introAwaitingBoot) {
       // Flush at most 1 deferred high-res photographic texture upload per frame (zero micro-stutter!)
       if (this.pendingTexUploads.length > 0) {
         const upload = this.pendingTexUploads.shift();

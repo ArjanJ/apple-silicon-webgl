@@ -59,6 +59,7 @@ export function formatMagnification(uZoom: number): {
   sizeText: string;
   dialDeg: number;
   bracketText: string | null;
+  bracketAnalogy: string | null;
   bracketOpacity: number;
   scaleBarLabel: string;
   scaleBarPx: number;
@@ -127,27 +128,80 @@ export function formatMagnification(uZoom: number): {
   else sizeText = `${fm.toFixed(2)} fm`;
 
   let bracketText: string | null = null;
+  let bracketAnalogy: string | null = null;
   let bracketOpacity = 0;
   if (z <= -0.58) {
     bracketText = '24.26 mm · US Quarter Dollar · 1:1 Physical Scale';
+    bracketAnalogy = 'Over 2,000,000 transistor gates fit side-by-side across this coin';
     bracketOpacity = Math.max(0, Math.min(1, (-0.58 - z) / 0.24));
   } else {
-    const badges: { center: number; half: number; label: string }[] = [
-      { center: 1.0, half: 0.36, label: '120 µm · BEOL Global Power & Clock Grid (M12–M16)' },
-      { center: 2.0, half: 0.36, label: '3.0 µm · Copper Damascene Routing (M4–M9) & Vias' },
-      { center: 3.0, half: 0.36, label: '600 nm · FEOL Standard-Cell Logic Rows · VDD/VSS · PMOS/NMOS' },
-      { center: 4.0, half: 0.38, label: '120 nm · Uniform GAA Nanosheet Cell · TiN/W · SiN Spacers' },
-      { center: 5.0, half: 0.38, label: '12 nm Gate · 5 nm GAA Ribbon · HfO₂/SiO₂ High-k · Undoped Si' },
-      { center: 6.0, half: 0.38, label: '0.543 nm · (100) Silicon Crystal · Amorphous SiO₂/HfO₂ · Bloch Waves' },
-      { center: 7.0, half: 0.32, label: '111 pm · Silicon-28 (¹⁴Si) · 1s² 2s² 2p⁶ 3sp³ Wavefunctions' },
-      { center: 7.52, half: 0.22, label: '99.9999999999% Empty Space · Plunging 35,800× to the Nucleus' },
-      { center: 8.0, half: 0.32, label: '3.1 fm · Oblate ²⁸Si Nucleus · 14P + 14N · Pion Exchange Field' },
-      { center: 9.0, half: 0.42, label: '0.84 fm · Single Proton · uud Color-Charge Quarks · Gluon Flux' },
+    const badges: { center: number; half: number; label: string; analogy: string }[] = [
+      {
+        center: 1.0,
+        half: 0.36,
+        label: '120 µm · BEOL Global Power & Clock Grid (M12–M16)',
+        analogy: 'Roughly the width of a single human hair',
+      },
+      {
+        center: 2.0,
+        half: 0.36,
+        label: '3.0 µm · Copper Damascene Routing (M4–M9) & Vias',
+        analogy: 'Smaller than a single red blood cell (7 µm)',
+      },
+      {
+        center: 3.0,
+        half: 0.36,
+        label: '600 nm · FEOL Standard-Cell Logic Rows · VDD/VSS · PMOS/NMOS',
+        analogy: 'About one wavelength of visible orange light',
+      },
+      {
+        center: 4.0,
+        half: 0.38,
+        label: '120 nm · Uniform GAA Nanosheet Cell · TiN/W · SiN Spacers',
+        analogy: 'The physical scale of a single virus particle',
+      },
+      {
+        center: 5.0,
+        half: 0.38,
+        label: '12 nm Gate · 5 nm GAA Ribbon · HfO₂/SiO₂ High-k · Undoped Si',
+        analogy: '6× wider than a single strand of DNA (2 nm)',
+      },
+      {
+        center: 6.0,
+        half: 0.38,
+        label: '0.543 nm · (100) Silicon Crystal · Amorphous SiO₂/HfO₂ · Bloch Waves',
+        analogy: 'Less than twice the width of a water molecule',
+      },
+      {
+        center: 7.0,
+        half: 0.32,
+        label: '111 pm · Silicon-28 (¹⁴Si) · 1s² 2s² 2p⁶ 3sp³ Wavefunctions',
+        analogy: '100,000× wider than the nucleus hidden at its center',
+      },
+      {
+        center: 7.52,
+        half: 0.22,
+        label: '99.9999999999% Empty Space · Plunging 35,800× to the Nucleus',
+        analogy: 'If this atom were a stadium, its nucleus is a marble at midfield',
+      },
+      {
+        center: 8.0,
+        half: 0.32,
+        label: '3.1 fm · Oblate ²⁸Si Nucleus · 14P + 14N · Pion Exchange Field',
+        analogy: '99.97% of the atom’s mass packed into a trillionth of its volume',
+      },
+      {
+        center: 9.0,
+        half: 0.42,
+        label: '0.84 fm · Single Proton · uud Color-Charge Quarks · Gluon Flux',
+        analogy: 'Bound by the strong force at ~16 tons of tension inside your chip',
+      },
     ];
     for (const b of badges) {
       const dist = Math.abs(z - b.center);
       if (dist < b.half) {
         bracketText = b.label;
+        bracketAnalogy = b.analogy;
         bracketOpacity = Math.max(0, Math.min(1, (b.half - dist) / (b.half * 0.55)));
         break;
       }
@@ -161,6 +215,7 @@ export function formatMagnification(uZoom: number): {
     sizeText,
     dialDeg,
     bracketText,
+    bracketAnalogy,
     bracketOpacity,
     scaleBarLabel: bar.label,
     scaleBarPx: bar.px,

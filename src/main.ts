@@ -98,6 +98,8 @@ const ICONS = {
   close: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
   power: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/></svg>`,
   chevronUp: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>`,
+  play: `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 4 20 12 6 20 6 4"/></svg>`,
+  stop: `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>`,
 };
 
 function buildDepthSheetHtml(): string {
@@ -213,7 +215,10 @@ function mountApp(): void {
         ${buildReticleSvg()}
         <div id="nm-bracket" class="nm-bracket" style="opacity:0;pointer-events:none;display:none;">
           <div class="nm-line"></div>
-          <div id="nm-label" class="nm-label">12 nm Gate · 5 nm GAA Ribbon</div>
+          <div class="nm-stack">
+            <div id="nm-label" class="nm-label">12 nm Gate · 5 nm GAA Ribbon</div>
+            <div id="nm-analogy" class="nm-analogy"></div>
+          </div>
           <div class="nm-line"></div>
         </div>
       </div>
@@ -251,6 +256,9 @@ function mountApp(): void {
           </div>
 
           <div class="tool-capsule liquid-glass">
+            <button id="btn-dive" class="glass-btn" title="Powers of Ten Auto-Dive: Package to Proton (Space)" aria-label="Auto-Dive">
+              <span id="btn-dive-icon" class="btn-icon">${ICONS.play}</span><span id="btn-dive-lbl" class="btn-label">Dive</span>
+            </button>
             <button id="btn-activity" class="glass-btn" title="Inspect per-core CPU, GPU, and die thermal telemetry" aria-label="Activity Telemetry">
               ${ICONS.activity}<span class="btn-label">Activity</span>
             </button>
@@ -469,6 +477,7 @@ function mountApp(): void {
   const reticleDial = document.getElementById('reticle-dial')!;
   const nmBracket = document.getElementById('nm-bracket')!;
   const nmLabel = document.getElementById('nm-label')!;
+  const nmAnalogy = document.getElementById('nm-analogy')!;
 
   const vernierDockEl = document.getElementById('vernier-dock')!;
   const vernierReadoutBtn = document.getElementById('vernier-readout') as HTMLButtonElement;
@@ -499,6 +508,9 @@ function mountApp(): void {
   const hudChromeEl = document.getElementById('hud-chrome')!;
   const restoreHudBtn = document.getElementById('restore-hud-btn')!;
 
+  const btnDive = document.getElementById('btn-dive')!;
+  const btnDiveIcon = document.getElementById('btn-dive-icon')!;
+  const btnDiveLbl = document.getElementById('btn-dive-lbl')!;
   const btnActivity = document.getElementById('btn-activity')!;
   const btnBurst = document.getElementById('btn-burst')!;
   const btnBurstLbl = document.getElementById('btn-burst-lbl')!;
@@ -550,6 +562,7 @@ function mountApp(): void {
   let showSoundSheet = false;
   let showDepthSheet = false;
   let pureView = false;
+  let tourActive = false;
   let bursting = false;
   let activeSource: 'live' | TraceCaptureId = 'live';
   let activeChipPreset: ChipPresetId = 'auto';
@@ -1094,6 +1107,20 @@ function mountApp(): void {
     onIntroFrame: ({ active, elapsed }) => {
       syncIntroUi(active, elapsed);
     },
+    onTourChange: (active) => {
+      tourActive = active;
+      btnDive.classList.toggle('active', active);
+      btnDiveIcon.innerHTML = active ? ICONS.stop : ICONS.play;
+      btnDiveLbl.textContent = active ? 'Stop' : 'Dive';
+      btnDive.title = active
+        ? 'Stop Auto-Dive (Space)'
+        : 'Powers of Ten Auto-Dive: Package to Proton (Space)';
+      reticleLayer.classList.toggle('diving', active);
+      if (!active) {
+        engageReticle(false);
+      }
+      syncGlassLayout();
+    },
     onZoomFrame: (z, fps, motion, interacting, yawVel, regionKind) => {
       currentFps = fps;
       audio.updateFrame(z, motion, interacting, yawVel, regionKind, introActive);
@@ -1111,7 +1138,7 @@ function mountApp(): void {
       if (Math.abs(z - lastZoomRendered) < 0.0005) return;
       lastZoomRendered = z;
 
-      const { dialDeg, bracketText, bracketOpacity, magText, sizeText, scaleBarLabel, scaleBarPx } =
+      const { dialDeg, bracketText, bracketAnalogy, bracketOpacity, magText, sizeText, scaleBarLabel, scaleBarPx } =
         formatMagnification(z);
       const frac = Math.max(0.015, Math.min(0.8, ((z + 1) / 10) * 0.8));
       reticleArc.setAttribute('stroke-dasharray', `${(circ * frac).toFixed(1)} ${circ.toFixed(1)}`);
@@ -1122,6 +1149,16 @@ function mountApp(): void {
         nmBracket.style.opacity = bracketOpacity.toFixed(3);
         if (nmLabel.textContent !== bracketText) {
           nmLabel.textContent = bracketText;
+        }
+        if (bracketAnalogy) {
+          if (nmAnalogy.textContent !== bracketAnalogy) {
+            nmAnalogy.textContent = bracketAnalogy;
+          }
+          if (nmAnalogy.style.display === 'none') {
+            nmAnalogy.style.display = 'block';
+          }
+        } else if (nmAnalogy.style.display !== 'none') {
+          nmAnalogy.style.display = 'none';
         }
       } else if (nmBracket.style.display !== 'none') {
         nmBracket.style.display = 'none';
@@ -1735,6 +1772,28 @@ function mountApp(): void {
   refreshSoundSheetUi = syncSoundSheetUi;
   syncSoundSheetUi();
 
+  const toggleAutoDive = () => {
+    if (awaitingPowerOn) return;
+    cancelVernierCoast();
+    if (!tourActive) {
+      if (showDepthSheet) setDepthSheetOpen(false, false);
+      if (showActivity) {
+        showActivity = false;
+        btnActivity.classList.remove('active');
+        activitySheet.style.display = 'none';
+      }
+      if (showSoundSheet) {
+        showSoundSheet = false;
+        btnVibe.classList.remove('active');
+        soundSheet.style.display = 'none';
+      }
+    }
+    audio.playUiTap(!tourActive);
+    engine.toggleTour();
+  };
+
+  btnDive.addEventListener('click', toggleAutoDive);
+
   btnActivity.addEventListener('click', () => {
     showActivity = !showActivity;
     if (showActivity && showDepthSheet) {
@@ -1853,6 +1912,16 @@ function mountApp(): void {
 
   window.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.code === 'Space' || e.key === ' ') {
+      if (awaitingPowerOn) return;
+      const activeEl = document.activeElement;
+      if (activeEl === vernierCapsuleEl || activeEl instanceof HTMLInputElement || activeEl instanceof HTMLTextAreaElement) {
+        return;
+      }
+      e.preventDefault();
+      toggleAutoDive();
+      return;
+    }
     if (e.key === 'm' || e.key === 'M') {
       audio.toggle();
       syncSoundSheetUi();
@@ -1885,6 +1954,7 @@ function mountApp(): void {
       engine.startIntro();
     } else if (e.key === 'Escape') {
       if (engine.isIntroActive) engine.skipIntro();
+      if (tourActive) engine.stopTour();
       if (activeInspect) engine.clearInspect();
       if (showDepthSheet) {
         setDepthSheetOpen(false, false);
