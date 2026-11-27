@@ -9,7 +9,7 @@ import {
 import { DieInspectHit, MicroDomain } from './engine/inspect';
 import { EngineLocationState, SiliconEngine } from './engine/SiliconEngine';
 import { BrowserTelemetrySource } from './sim/browserTelemetry';
-import { BrowserWorkloadRunner, WORKLOAD_OPTIONS, WorkloadKind } from './sim/browserWorkloads';
+import { BrowserWorkloadRunner, WorkloadKind } from './sim/browserWorkloads';
 import { applyChipPreset, CHIP_PRESETS, ChipPresetId } from './sim/chipPresets';
 import { DEFAULT_TELEMETRY, LiveMacTelemetry } from './sim/macTelemetry';
 import { formatMagnification } from './sim/microJourney';
@@ -310,9 +310,6 @@ function mountApp(): void {
             <button id="btn-activity" class="glass-btn mobile-overflow-item" title="Inspect per-core CPU, GPU, and die thermal telemetry" aria-label="Activity Telemetry">
               ${ICONS.activity}<span class="btn-label">Activity</span>
             </button>
-            <button id="btn-burst" class="glass-btn mobile-overflow-item" title="Run a 3.5-second multi-core Web Worker burst" aria-label="Hardware Burst">
-              ${ICONS.zap}<span id="btn-burst-lbl" class="btn-label">Burst</span>
-            </button>
             <div class="capsule-divider mobile-overflow-item"></div>
             <button id="btn-vibe" class="glass-btn icon-only mobile-overflow-item" title="Soundtrack Vibes (V)" aria-label="Soundtrack Vibes">
               ${ICONS.music}
@@ -338,11 +335,6 @@ function mountApp(): void {
             <span class="more-row-icon">${ICONS.activity}</span>
             <span class="more-row-label">Activity</span>
             <span id="more-activity-meta" class="more-row-meta">Telemetry</span>
-          </button>
-          <button id="more-burst-row" class="more-row" type="button" role="menuitem">
-            <span class="more-row-icon">${ICONS.zap}</span>
-            <span class="more-row-label">Hardware Burst</span>
-            <span id="more-burst-meta" class="more-row-meta">Ready</span>
           </button>
           <button id="more-vibe-row" class="more-row" type="button" role="menuitem">
             <span class="more-row-icon">${ICONS.music}</span>
@@ -472,18 +464,6 @@ function mountApp(): void {
                         ? 'Match detected hardware or active trace'
                         : `${cp.chipName} · ${cp.pCoreCount}P+${cp.eCoreCount}E · ${cp.gpuCores}C GPU · ${cp.memTotalGB} GB`
                     }">${cp.shortLabel}</button>`
-                ).join('')}
-              </div>
-            </div>
-            <div class="sheet-control-row">
-              <div class="sheet-control-lbl">
-                <span>BURST WORKLOAD</span>
-                <span id="workload-hint" class="sheet-control-hint">Ready</span>
-              </div>
-              <div id="workload-seg" class="seg-group" role="tablist" aria-label="Hardware Burst Workload">
-                ${WORKLOAD_OPTIONS.map(
-                  (wl) =>
-                    `<button class="seg-btn ${wl.id === 'compute' ? 'active' : ''}" data-workload="${wl.id}" title="${wl.title}">${wl.shortLabel}</button>`
                 ).join('')}
               </div>
             </div>
@@ -621,8 +601,6 @@ function mountApp(): void {
   const btnDiveIcon = document.getElementById('btn-dive-icon')!;
   const btnDiveLbl = document.getElementById('btn-dive-lbl')!;
   const btnActivity = document.getElementById('btn-activity')!;
-  const btnBurst = document.getElementById('btn-burst')!;
-  const btnBurstLbl = document.getElementById('btn-burst-lbl')!;
   const btnVibe = document.getElementById('btn-vibe')!;
   const btnSound = document.getElementById('btn-sound')!;
   const btnPure = document.getElementById('btn-pure')!;
@@ -630,8 +608,6 @@ function mountApp(): void {
 
   const moreSheet = document.getElementById('more-sheet')!;
   const moreActivityRow = document.getElementById('more-activity-row') as HTMLButtonElement;
-  const moreBurstRow = document.getElementById('more-burst-row') as HTMLButtonElement;
-  const moreBurstMeta = document.getElementById('more-burst-meta')!;
   const moreVibeRow = document.getElementById('more-vibe-row') as HTMLButtonElement;
   const moreVibeMeta = document.getElementById('more-vibe-meta')!;
   const moreTiltRow = document.getElementById('more-tilt-row') as HTMLButtonElement;
@@ -698,10 +674,8 @@ function mountApp(): void {
   const procListEl = document.getElementById('proc-list')!;
   const sourceHintEl = document.getElementById('source-hint')!;
   const chipSpecHintEl = document.getElementById('chip-spec-hint')!;
-  const workloadHintEl = document.getElementById('workload-hint')!;
   const sourceButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#source-seg .seg-btn'));
   const chipButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#chip-seg .seg-btn'));
-  const workloadButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#workload-seg .seg-btn'));
 
   const inspectCard = document.getElementById('inspect-card')!;
   const inspectTitle = document.getElementById('inspect-title')!;
@@ -797,7 +771,7 @@ function mountApp(): void {
 
   const syncMoreMenuState = () => {
     btnMore.classList.toggle('active', showMoreMenu);
-    btnMore.classList.toggle('has-activity', !showMoreMenu && (bursting || showActivity || showSoundSheet));
+    btnMore.classList.toggle('has-activity', !showMoreMenu && (showActivity || showSoundSheet));
     btnMore.setAttribute('aria-expanded', showMoreMenu ? 'true' : 'false');
     moreActivityRow.classList.toggle('active', showActivity);
     moreVibeRow.classList.toggle('active', showSoundSheet);
@@ -2255,10 +2229,6 @@ function mountApp(): void {
       activeChipPreset === 'auto'
         ? `Auto · ${telemetry.pCoreCount}P+${telemetry.eCoreCount}E`
         : `${telemetry.pCoreCount}P+${telemetry.eCoreCount}E · ${telemetry.gpuCores}C`;
-
-    workloadHintEl.textContent = telemetry.workloadSummary
-      ? telemetry.workloadSummary
-      : WORKLOAD_OPTIONS.find((w) => w.id === selectedWorkload)?.buttonLabel ?? 'Ready';
   };
 
   const renderActivitySheet = () => {
@@ -2421,16 +2391,6 @@ function mountApp(): void {
   btnMore.addEventListener('click', () => setMoreMenuOpen(!showMoreMenu, true));
   moreActivityRow.addEventListener('click', toggleActivitySheet);
   moreVibeRow.addEventListener('click', toggleSoundSheet);
-  moreBurstRow.addEventListener('click', () => {
-    setMoreMenuOpen(false, false);
-    if (bursting) {
-      workloadRunner.stop();
-      audio.playUiTap(false);
-      return;
-    }
-    triggerHaptic('impact');
-    triggerWorkload(selectedWorkload);
-  });
   moreTiltRow.addEventListener('click', () => {
     if (tiltEnabled) {
       setTiltActive(false);
@@ -2655,34 +2615,12 @@ function mountApp(): void {
     { passive: true }
   );
 
-  const syncBurstButtonUi = () => {
-    btnBurst.classList.toggle('active', bursting);
-    moreBurstRow.classList.toggle('active', bursting);
-    if (!bursting) {
-      btnBurstLbl.textContent = 'Burst';
-      moreBurstMeta.textContent = 'Ready';
-    } else if (activePinnedPCore !== null) {
-      btnBurstLbl.textContent = `Core P${activePinnedPCore}`;
-      moreBurstMeta.textContent = `Core P${activePinnedPCore}`;
-    } else {
-      const opt = WORKLOAD_OPTIONS.find((w) => w.id === selectedWorkload);
-      const lbl = opt ? opt.buttonLabel : 'Bursting';
-      btnBurstLbl.textContent = lbl;
-      moreBurstMeta.textContent = lbl;
-    }
-    syncMoreMenuState();
-    syncGlassLayout();
-  };
-
   const syncSegmentedUi = () => {
     for (const btn of sourceButtons) {
       btn.classList.toggle('active', btn.dataset.source === activeSource);
     }
     for (const btn of chipButtons) {
       btn.classList.toggle('active', btn.dataset.chip === activeChipPreset);
-    }
-    for (const btn of workloadButtons) {
-      btn.classList.toggle('active', btn.dataset.workload === selectedWorkload);
     }
   };
 
@@ -2692,7 +2630,6 @@ function mountApp(): void {
     bursting = active;
     activePinnedPCore = pinnedPCore;
     engine.setBurstActive(active);
-    syncBurstButtonUi();
     if (activeInspect) renderInspectCard(false);
     refreshPollCadence();
   });
@@ -2737,15 +2674,6 @@ function mountApp(): void {
     workloadRunner.startPinnedCore(coreIdx, 3800);
   };
 
-  btnBurst.addEventListener('click', () => {
-    if (bursting) {
-      workloadRunner.stop();
-      audio.playUiTap(false);
-      return;
-    }
-    triggerWorkload(selectedWorkload);
-  });
-
   for (const btn of sourceButtons) {
     btn.addEventListener('click', () => {
       const src = (btn.dataset.source ?? 'live') as 'live' | TraceCaptureId;
@@ -2765,20 +2693,6 @@ function mountApp(): void {
       }
       if (lastRawSample) {
         applyTelemetry(lastRawSample);
-      }
-    });
-  }
-
-  for (const btn of workloadButtons) {
-    btn.addEventListener('click', () => {
-      const wl = (btn.dataset.workload ?? 'compute') as WorkloadKind;
-      selectedWorkload = wl;
-      syncSegmentedUi();
-      if (bursting) {
-        triggerWorkload(wl);
-      } else {
-        audio.playUiTap(true);
-        syncControlHints();
       }
     });
   }
