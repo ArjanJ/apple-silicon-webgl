@@ -599,6 +599,136 @@ body,
   margin: 0 3px;
 }
 
+.mobile-only-btn {
+  display: none;
+  position: relative;
+}
+
+.more-badge-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 7px rgba(140, 228, 255, 0.9);
+  opacity: 0;
+  transform: scale(0.5);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  pointer-events: none;
+}
+
+.mobile-only-btn.has-activity .more-badge-dot {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Compact Mobile Overflow Controls Sheet (Top-Right Liquid Glass Popover) */
+.more-sheet {
+  position: absolute;
+  top: max(60px, calc(env(safe-area-inset-top) + 54px));
+  right: max(14px, calc(env(safe-area-inset-right) + 12px));
+  width: min(228px, calc(100vw - 28px));
+  max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 140px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 7px;
+  border-radius: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  z-index: 23;
+  pointer-events: auto;
+  animation: sheetIn 0.15s ease-out;
+}
+
+.more-sheet::-webkit-scrollbar {
+  display: none;
+}
+
+.more-row {
+  appearance: none;
+  outline: none;
+  border: 0.5px solid transparent;
+  background: transparent;
+  border-radius: 14px;
+  height: 38px;
+  padding: 0 11px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: rgba(252, 253, 255, 0.92);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.012em;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.58);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.12s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.more-row:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+.more-row:active {
+  transform: scale(0.98);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.more-row.active {
+  background: rgba(140, 228, 255, 0.16);
+  border-color: rgba(140, 228, 255, 0.42);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.more-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  color: rgba(240, 246, 255, 0.86);
+  flex-shrink: 0;
+}
+
+.more-row.active .more-row-icon {
+  color: var(--cyan);
+}
+
+.more-row-label {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.more-row-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  color: rgba(242, 246, 255, 0.58);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.more-row.active .more-row-meta {
+  color: var(--cyan);
+}
+
+.more-divider {
+  height: 0.5px;
+  margin: 2px 8px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
 /* On-Demand Activity & Soundtrack Liquid Glass Sheets (Closed by Default) */
 .activity-sheet,
 .sound-sheet {
@@ -681,6 +811,33 @@ body,
   letter-spacing: -0.012em;
   color: rgba(255, 255, 255, 0.94);
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.58);
+}
+
+.vibe-row-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.vibe-tag {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  color: rgba(236, 244, 255, 0.72);
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.vibe-row.active .vibe-tag {
+  background: rgba(140, 228, 255, 0.16);
+  border-color: rgba(140, 228, 255, 0.42);
+  color: var(--cyan);
 }
 
 .vibe-dot {
@@ -1620,8 +1777,16 @@ body,
 
   .tool-capsule {
     flex-shrink: 0;
-    padding: 5px;
-    gap: 3px;
+    padding: 4px;
+    gap: 2px;
+  }
+
+  .tool-capsule .mobile-overflow-item {
+    display: none;
+  }
+
+  .tool-capsule .mobile-only-btn {
+    display: inline-flex;
   }
 
   .tool-capsule .glass-btn .btn-label {
@@ -1634,10 +1799,6 @@ body,
     height: 34px;
     padding: 0;
     justify-content: center;
-  }
-
-  .tool-capsule .capsule-divider {
-    margin: 0 2px;
   }
 
   .nm-bracket {

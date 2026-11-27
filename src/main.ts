@@ -100,6 +100,7 @@ const ICONS = {
   chevronUp: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>`,
   play: `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 4 20 12 6 20 6 4"/></svg>`,
   stop: `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>`,
+  more: `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>`,
 };
 
 function buildDepthSheetHtml(): string {
@@ -259,29 +260,57 @@ function mountApp(): void {
             <button id="btn-dive" class="glass-btn" title="Powers of Ten Auto-Dive: Package to Proton (Space)" aria-label="Auto-Dive">
               <span id="btn-dive-icon" class="btn-icon">${ICONS.play}</span><span id="btn-dive-lbl" class="btn-label">Dive</span>
             </button>
-            <button id="btn-activity" class="glass-btn" title="Inspect per-core CPU, GPU, and die thermal telemetry" aria-label="Activity Telemetry">
+            <button id="btn-activity" class="glass-btn mobile-overflow-item" title="Inspect per-core CPU, GPU, and die thermal telemetry" aria-label="Activity Telemetry">
               ${ICONS.activity}<span class="btn-label">Activity</span>
             </button>
-            <button id="btn-burst" class="glass-btn" title="Run a 3.5-second multi-core Web Worker burst" aria-label="Hardware Burst">
+            <button id="btn-burst" class="glass-btn mobile-overflow-item" title="Run a 3.5-second multi-core Web Worker burst" aria-label="Hardware Burst">
               ${ICONS.zap}<span id="btn-burst-lbl" class="btn-label">Burst</span>
             </button>
-            <div class="capsule-divider"></div>
-            <button id="btn-vibe" class="glass-btn icon-only" title="Soundtrack Vibes (V)" aria-label="Soundtrack Vibes">
+            <div class="capsule-divider mobile-overflow-item"></div>
+            <button id="btn-vibe" class="glass-btn icon-only mobile-overflow-item" title="Soundtrack Vibes (V)" aria-label="Soundtrack Vibes">
               ${ICONS.music}
             </button>
             <button id="btn-sound" class="glass-btn icon-only" title="Sound (M)" aria-label="Toggle Sound">
               ${ICONS.volumeOn}
             </button>
-            <button id="btn-pure" class="glass-btn icon-only" title="Pure View — Hide UI (H)" aria-label="Pure View">
+            <button id="btn-pure" class="glass-btn icon-only mobile-overflow-item" title="Pure View — Hide UI (H)" aria-label="Pure View">
               ${ICONS.eyeOff}
             </button>
+            <button id="btn-more" class="glass-btn icon-only mobile-only-btn" title="More Controls" aria-label="More Controls" aria-expanded="false" aria-controls="more-sheet">
+              ${ICONS.more}
+              <span class="more-badge-dot" aria-hidden="true"></span>
+            </button>
           </div>
+        </div>
+
+        <div id="more-sheet" class="more-sheet liquid-glass liquid-glass-sheet" style="display:none;" role="menu" aria-label="Controls">
+          <button id="more-activity-row" class="more-row" type="button" role="menuitem">
+            <span class="more-row-icon">${ICONS.activity}</span>
+            <span class="more-row-label">Activity</span>
+            <span id="more-activity-meta" class="more-row-meta">Telemetry</span>
+          </button>
+          <button id="more-burst-row" class="more-row" type="button" role="menuitem">
+            <span class="more-row-icon">${ICONS.zap}</span>
+            <span class="more-row-label">Hardware Burst</span>
+            <span id="more-burst-meta" class="more-row-meta">Ready</span>
+          </button>
+          <button id="more-vibe-row" class="more-row" type="button" role="menuitem">
+            <span class="more-row-icon">${ICONS.music}</span>
+            <span class="more-row-label">Soundtrack</span>
+            <span id="more-vibe-meta" class="more-row-meta">Glass</span>
+          </button>
+          <div class="more-divider" aria-hidden="true"></div>
+          <button id="more-pure-row" class="more-row" type="button" role="menuitem">
+            <span class="more-row-icon">${ICONS.eyeOff}</span>
+            <span class="more-row-label">Pure View</span>
+            <span class="more-row-meta">Hide UI</span>
+          </button>
         </div>
 
         <div id="sound-sheet" class="sound-sheet liquid-glass liquid-glass-sheet" style="display:none;">
           <div class="sheet-header">
             <span>SOUNDTRACK</span>
-            <span id="sound-vibe-badge">F DORIAN · 100 BPM</span>
+            <span id="sound-vibe-badge">DRAMATIC · D MIN · 116 BPM</span>
           </div>
           <div id="vibe-list" class="vibe-list" role="radiogroup" aria-label="Soundtrack Vibe">
             ${MUSIC_VIBES.map(
@@ -289,7 +318,10 @@ function mountApp(): void {
                 <button class="vibe-row" data-vibe="${v.id}" role="radio" aria-checked="false">
                   <div class="vibe-row-top">
                     <span class="vibe-row-name">${v.name}</span>
-                    <span class="vibe-dot" aria-hidden="true"></span>
+                    <span class="vibe-row-right">
+                      <span class="vibe-tag">${v.genreTag}</span>
+                      <span class="vibe-dot" aria-hidden="true"></span>
+                    </span>
                   </div>
                   <div class="vibe-row-sub">${v.tagline}</div>
                 </button>`
@@ -517,6 +549,15 @@ function mountApp(): void {
   const btnVibe = document.getElementById('btn-vibe')!;
   const btnSound = document.getElementById('btn-sound')!;
   const btnPure = document.getElementById('btn-pure')!;
+  const btnMore = document.getElementById('btn-more') as HTMLButtonElement;
+
+  const moreSheet = document.getElementById('more-sheet')!;
+  const moreActivityRow = document.getElementById('more-activity-row') as HTMLButtonElement;
+  const moreBurstRow = document.getElementById('more-burst-row') as HTMLButtonElement;
+  const moreBurstMeta = document.getElementById('more-burst-meta')!;
+  const moreVibeRow = document.getElementById('more-vibe-row') as HTMLButtonElement;
+  const moreVibeMeta = document.getElementById('more-vibe-meta')!;
+  const morePureRow = document.getElementById('more-pure-row') as HTMLButtonElement;
 
   const soundSheet = document.getElementById('sound-sheet')!;
   const soundVibeBadge = document.getElementById('sound-vibe-badge')!;
@@ -560,6 +601,7 @@ function mountApp(): void {
   let activeHover: DieInspectHit | null = null;
   let showActivity = false;
   let showSoundSheet = false;
+  let showMoreMenu = false;
   let showDepthSheet = false;
   let pureView = false;
   let tourActive = false;
@@ -620,10 +662,51 @@ function mountApp(): void {
   const audio = new SiliconAudio(syncSoundButton);
   let suppressNextInspectCloseAudio = false;
 
+  const syncMoreMenuState = () => {
+    btnMore.classList.toggle('active', showMoreMenu);
+    btnMore.classList.toggle('has-activity', !showMoreMenu && (bursting || showActivity || showSoundSheet));
+    btnMore.setAttribute('aria-expanded', showMoreMenu ? 'true' : 'false');
+    moreActivityRow.classList.toggle('active', showActivity);
+    moreVibeRow.classList.toggle('active', showSoundSheet);
+  };
+
+  const setMoreMenuOpen = (open: boolean, playSound = false) => {
+    if (showMoreMenu === open) {
+      syncMoreMenuState();
+      return;
+    }
+    showMoreMenu = open;
+    if (open) {
+      if (showDepthSheet) setDepthSheetOpen(false, false);
+      if (showActivity) {
+        showActivity = false;
+        btnActivity.classList.remove('active');
+        activitySheet.style.display = 'none';
+      }
+      if (showSoundSheet) {
+        showSoundSheet = false;
+        btnVibe.classList.remove('active');
+        soundSheet.style.display = 'none';
+      }
+      if (activeInspect && window.innerWidth <= 720) {
+        suppressNextInspectCloseAudio = true;
+        engine.clearInspect();
+      }
+    }
+    moreSheet.style.display = showMoreMenu ? 'flex' : 'none';
+    syncMoreMenuState();
+    if (playSound) audio.playUiTap(showMoreMenu);
+    refreshGlassLayout();
+  };
+
   const setDepthSheetOpen = (open: boolean, playSound = true) => {
     if (showDepthSheet === open) return;
     showDepthSheet = open;
     if (open) {
+      if (showMoreMenu) {
+        showMoreMenu = false;
+        moreSheet.style.display = 'none';
+      }
       if (showActivity) {
         showActivity = false;
         btnActivity.classList.remove('active');
@@ -638,6 +721,7 @@ function mountApp(): void {
         suppressNextInspectCloseAudio = true;
         engine.clearInspect();
       }
+      syncMoreMenuState();
     }
     depthSheet.style.display = showDepthSheet ? 'flex' : 'none';
     vernierReadoutBtn.classList.toggle('open', showDepthSheet);
@@ -1189,6 +1273,10 @@ function mountApp(): void {
         setDepthSheetOpen(false, false);
       }
       if (hit && window.innerWidth <= 720) {
+        if (showMoreMenu) {
+          showMoreMenu = false;
+          moreSheet.style.display = 'none';
+        }
         if (showActivity) {
           showActivity = false;
           btnActivity.classList.remove('active');
@@ -1199,6 +1287,7 @@ function mountApp(): void {
           btnVibe.classList.remove('active');
           soundSheet.style.display = 'none';
         }
+        syncMoreMenuState();
       }
       if (hit && activeHover && activeHover.id === hit.id) {
         hoverPill.classList.remove('visible');
@@ -1313,6 +1402,10 @@ function mountApp(): void {
         const sheet = rectToGlass(soundSheet, 26, 0.14, 3.0, 1, 1.0);
         if (sheet) base.push(sheet);
       }
+      if (showMoreMenu) {
+        const sheet = rectToGlass(moreSheet, 22, 0.14, 3.0, 1, 1.0);
+        if (sheet) base.push(sheet);
+      }
       if (activeInspect) {
         const card = rectToGlass(inspectCard, 26, 0.14, 3.0, 1, 1.0);
         if (card) base.push(card);
@@ -1334,6 +1427,11 @@ function mountApp(): void {
   refreshGlassLayout = syncGlassLayout;
 
   const syncViewportLayout = () => {
+    if (window.innerWidth > 720 && showMoreMenu) {
+      showMoreMenu = false;
+      moreSheet.style.display = 'none';
+      syncMoreMenuState();
+    }
     measureVernier();
     syncGlassLayout();
   };
@@ -1346,6 +1444,7 @@ function mountApp(): void {
     ro.observe(depthSheet);
     ro.observe(activitySheet);
     ro.observe(soundSheet);
+    ro.observe(moreSheet);
     ro.observe(inspectCard);
   }
   window.addEventListener('resize', syncViewportLayout);
@@ -1782,6 +1881,7 @@ function mountApp(): void {
       btn.classList.toggle('active', btn.dataset.bgm === bgmLevel);
     }
     btnVibe.title = `Soundtrack: ${vibe.name} (V)`;
+    moreVibeMeta.textContent = vibe.name;
   };
   refreshSoundSheetUi = syncSoundSheetUi;
   syncSoundSheetUi();
@@ -1791,6 +1891,10 @@ function mountApp(): void {
     cancelVernierCoast();
     if (!tourActive) {
       if (showDepthSheet) setDepthSheetOpen(false, false);
+      if (showMoreMenu) {
+        showMoreMenu = false;
+        moreSheet.style.display = 'none';
+      }
       if (showActivity) {
         showActivity = false;
         btnActivity.classList.remove('active');
@@ -1801,6 +1905,7 @@ function mountApp(): void {
         btnVibe.classList.remove('active');
         soundSheet.style.display = 'none';
       }
+      syncMoreMenuState();
     }
     audio.playUiTap(!tourActive);
     engine.toggleTour();
@@ -1808,8 +1913,12 @@ function mountApp(): void {
 
   btnDive.addEventListener('click', toggleAutoDive);
 
-  btnActivity.addEventListener('click', () => {
+  const toggleActivitySheet = () => {
     showActivity = !showActivity;
+    if (showMoreMenu) {
+      showMoreMenu = false;
+      moreSheet.style.display = 'none';
+    }
     if (showActivity && showDepthSheet) {
       setDepthSheetOpen(false, false);
     }
@@ -1825,12 +1934,17 @@ function mountApp(): void {
     btnActivity.classList.toggle('active', showActivity);
     activitySheet.style.display = showActivity ? 'flex' : 'none';
     if (showActivity) renderActivitySheet();
+    syncMoreMenuState();
     audio.playUiTap(showActivity);
     syncGlassLayout();
-  });
+  };
 
-  btnVibe.addEventListener('click', () => {
+  const toggleSoundSheet = () => {
     showSoundSheet = !showSoundSheet;
+    if (showMoreMenu) {
+      showMoreMenu = false;
+      moreSheet.style.display = 'none';
+    }
     if (showSoundSheet && showDepthSheet) {
       setDepthSheetOpen(false, false);
     }
@@ -1846,13 +1960,33 @@ function mountApp(): void {
     btnVibe.classList.toggle('active', showSoundSheet);
     soundSheet.style.display = showSoundSheet ? 'flex' : 'none';
     if (showSoundSheet) syncSoundSheetUi();
+    syncMoreMenuState();
     audio.playUiTap(showSoundSheet);
     syncGlassLayout();
+  };
+
+  btnActivity.addEventListener('click', toggleActivitySheet);
+  btnVibe.addEventListener('click', toggleSoundSheet);
+  btnMore.addEventListener('click', () => setMoreMenuOpen(!showMoreMenu, true));
+  moreActivityRow.addEventListener('click', toggleActivitySheet);
+  moreVibeRow.addEventListener('click', toggleSoundSheet);
+  moreBurstRow.addEventListener('click', () => {
+    setMoreMenuOpen(false, false);
+    if (bursting) {
+      workloadRunner.stop();
+      audio.playUiTap(false);
+      return;
+    }
+    triggerWorkload(selectedWorkload);
+  });
+  morePureRow.addEventListener('click', () => {
+    setMoreMenuOpen(false, false);
+    setPure(true);
   });
 
   for (const btn of vibeButtons) {
     btn.addEventListener('click', () => {
-      const id = (btn.dataset.vibe ?? 'glass') as MusicVibeId;
+      const id = (btn.dataset.vibe ?? 'dramatic') as MusicVibeId;
       const meta = audio.setVibe(id, true);
       engine.setIntroCues(meta.introCues);
       audio.playUiTap(true);
@@ -1874,6 +2008,11 @@ function mountApp(): void {
     showSoundSheet = false;
     btnVibe.classList.remove('active');
     soundSheet.style.display = 'none';
+    if (showMoreMenu) {
+      showMoreMenu = false;
+      moreSheet.style.display = 'none';
+    }
+    syncMoreMenuState();
     if (audio.isMuted()) {
       audio.toggle();
     }
@@ -1899,6 +2038,11 @@ function mountApp(): void {
     if (pureView) {
       hoverPill.classList.remove('visible');
       if (showDepthSheet) setDepthSheetOpen(false, false);
+      if (showMoreMenu) {
+        showMoreMenu = false;
+        moreSheet.style.display = 'none';
+        syncMoreMenuState();
+      }
     }
     syncGlassLayout();
   };
@@ -1909,6 +2053,10 @@ function mountApp(): void {
   editorialBrandEl.addEventListener('click', () => {
     if (pureView) setPure(false);
     if (showDepthSheet) setDepthSheetOpen(false, false);
+    if (showMoreMenu) {
+      showMoreMenu = false;
+      moreSheet.style.display = 'none';
+    }
     if (showActivity) {
       showActivity = false;
       btnActivity.classList.remove('active');
@@ -1919,6 +2067,7 @@ function mountApp(): void {
       btnVibe.classList.remove('active');
       soundSheet.style.display = 'none';
     }
+    syncMoreMenuState();
     introPhase = 'idle';
     engine.setIntroCues(audio.getVibe().introCues);
     engine.startIntro();
@@ -1953,6 +2102,10 @@ function mountApp(): void {
     } else if (e.key === 'r' || e.key === 'R') {
       if (pureView) setPure(false);
       if (showDepthSheet) setDepthSheetOpen(false, false);
+      if (showMoreMenu) {
+        showMoreMenu = false;
+        moreSheet.style.display = 'none';
+      }
       if (showActivity) {
         showActivity = false;
         btnActivity.classList.remove('active');
@@ -1963,6 +2116,7 @@ function mountApp(): void {
         btnVibe.classList.remove('active');
         soundSheet.style.display = 'none';
       }
+      syncMoreMenuState();
       introPhase = 'idle';
       engine.setIntroCues(audio.getVibe().introCues);
       engine.startIntro();
@@ -1973,10 +2127,17 @@ function mountApp(): void {
       if (showDepthSheet) {
         setDepthSheetOpen(false, false);
       }
+      if (showMoreMenu) {
+        showMoreMenu = false;
+        moreSheet.style.display = 'none';
+        syncMoreMenuState();
+        syncGlassLayout();
+      }
       if (showSoundSheet) {
         showSoundSheet = false;
         btnVibe.classList.remove('active');
         soundSheet.style.display = 'none';
+        syncMoreMenuState();
         syncGlassLayout();
       }
     }
@@ -2011,7 +2172,11 @@ function mountApp(): void {
         setDepthSheetOpen(false, false);
       }
       // On narrow mobile screens, tapping the canvas outside an open sheet dismisses it cleanly
-      if (window.innerWidth <= 720 && (showActivity || showSoundSheet)) {
+      if (window.innerWidth <= 720 && (showActivity || showSoundSheet || showMoreMenu)) {
+        if (showMoreMenu) {
+          showMoreMenu = false;
+          moreSheet.style.display = 'none';
+        }
         if (showActivity) {
           showActivity = false;
           btnActivity.classList.remove('active');
@@ -2022,6 +2187,7 @@ function mountApp(): void {
           btnVibe.classList.remove('active');
           soundSheet.style.display = 'none';
         }
+        syncMoreMenuState();
         syncGlassLayout();
       }
     },
@@ -2030,14 +2196,20 @@ function mountApp(): void {
 
   const syncBurstButtonUi = () => {
     btnBurst.classList.toggle('active', bursting);
+    moreBurstRow.classList.toggle('active', bursting);
     if (!bursting) {
       btnBurstLbl.textContent = 'Burst';
+      moreBurstMeta.textContent = 'Ready';
     } else if (activePinnedPCore !== null) {
       btnBurstLbl.textContent = `Core P${activePinnedPCore}`;
+      moreBurstMeta.textContent = `Core P${activePinnedPCore}`;
     } else {
       const opt = WORKLOAD_OPTIONS.find((w) => w.id === selectedWorkload);
-      btnBurstLbl.textContent = opt ? opt.buttonLabel : 'Bursting';
+      const lbl = opt ? opt.buttonLabel : 'Bursting';
+      btnBurstLbl.textContent = lbl;
+      moreBurstMeta.textContent = lbl;
     }
+    syncMoreMenuState();
     syncGlassLayout();
   };
 
