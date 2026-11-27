@@ -633,6 +633,14 @@ function mountApp(): void {
   let loupeGlassBox = { cx: 0, cy: 0, hw: 0, hh: 17 };
   let lastLoupeW = 0;
   let lastLoupeH = 0;
+  let loupeCurW = 64;
+  let loupeCurH = 34;
+  let loupeVelW = 0;
+  let loupeVelH = 0;
+  let loupeTargetW = 64;
+  let loupeTargetH = 34;
+  let loupeSpringLastMs = 0;
+  let loupeSpringSettled = true;
 
   type GlassReg = {
     cx: number;
@@ -742,32 +750,19 @@ function mountApp(): void {
     const i0 = Math.floor(pos);
     const i1 = Math.min(ZOOM_STOPS.length - 1, i0 + 1);
     const f = pos - i0;
-    const s = f * f * (3 - 2 * f);
+    // Tight detent-hugging curve: holds snugly on the current word until crossing the midpoint, then snaps to the next
+    const u = Math.max(0, Math.min(1, (f - 0.38) / 0.24));
+    const s = u * u * (3 - 2 * u);
     const w0 = vernierStopPillWidths[i0] ?? 64;
     const w1 = vernierStopPillWidths[i1] ?? 64;
-    // Subtle liquid surface-tension swell while bridging between words or actively scrubbing
-    const midBridge = Math.sin(f * Math.PI);
     const scrubBoost = vernierScrubbing ? 1.0 : 0.0;
-    const w = w0 + (w1 - w0) * s + midBridge * 4.0 + scrubBoost * 4.0;
-    const h = loupeAnchor.baseH + scrubBoost * 2.0 + midBridge * 0.8;
+    const w = w0 + (w1 - w0) * s + scrubBoost * 4.5;
+    const h = loupeAnchor.baseH + scrubBoost * 2.5;
     return { w, h };
   };
 
-  const updateVernierDial = (z: number, magText?: string, sizeText?: string, scaleBarLabel?: string, scaleBarPx?: number) => {
-    const clampedZ = Math.max(VERNIER_MIN_Z, Math.min(VERNIER_MAX_Z, z));
-
-    const realm = realmForZoom(clampedZ);
-    if (realm !== lastActiveRealm) {
-      lastActiveRealm = realm;
-      vernierDockEl.dataset.realm = realm;
-      const accent = REALM_ACCENTS[realm];
-      vernierDockEl.style.setProperty('--realm-accent', accent.color);
-      vernierDockEl.style.setProperty('--realm-glow', accent.glow);
-    }
-
-    // Morph the single floating center Liquid Glass magnifier pill smoothly to hug the current word
-    const { w: loupeW, h: loupeH } = computeMorphingLoupeSize(clampedZ);
-    if (Math.abs(loupeW - lastLoupeW) > 0.15 || Math.abs(loupeH - lastLoupeH) > 0.15) {
+  const applyLoupeDimensions = (loupeW: number, loupeH: number) => {
+    if (Math.abs(loupeW - lastLoupeW) > 0.08 || Math.abs(loupeH - lastLoupeH) > 0.08) {
       lastLoupeW = loupeW;
       lastLoupeH = loupeH;
       vernierLoupeEl.style.width = `${loupeW.toFixed(1)}px`;
@@ -781,6 +776,98 @@ function mountApp(): void {
         };
         pushGlassToEngine();
       }
+    }
+  };
+
+  const stepVernierLoupeSpring = (nowMs: number, forceSnap = false) => {
+    if (forceSnap) {
+      loupeCurW = loupeTargetW;
+      loupeCurH = loupeTargetH;
+      loupeVelW = 0;
+      loupeVelH = 0;
+      loupeSpringSettled = true;
+      loupeSpringLastMs = nowMs;
+      applyLoupeDimensions(loupeCurW, loupeCurH);
+      return;
+    }
+    if (loupeSpringSettled) {
+      loupeSpringLastMs = nowMs;
+      return;
+    }
+
+    const rawDt = loupeSpringLastMs > 0 ? (nowMs - loupeSpringLastMs) / 1000 : 1 / 60;
+    loupeSpringLastMs = nowMs;
+    const totalDt = Math.min(0.05, Math.max(0.001, rawDt));
+    const steps = Math.max(1, Math.ceil(totalDt / 0.008));
+    const dt = totalDt / steps;
+
+    // Snappy, lightly underdamped Liquid Glass spring (~150ms rise, crisp ~6% elastic settle)
+    const omegaW = 30.0;
+    const zetaW = 0.66;
+    const omegaH = 28.0;
+    const zetaH = 0.68;
+
+    for (let i = 0; i < steps; i++) {
+      const accW = omegaW * omegaW * (loupeTargetW - loupeCurW) - 2 * zetaW * omegaW * loupeVelW;
+      loupeVelW += accW * dt;
+      loupeCurW += loupeVelW * dt;
+
+      const accH = omegaH * omegaH * (loupeTargetH - loupeCurH) - 2 * zetaH * omegaH * loupeVelH;
+      loupeVelH += accH * dt;
+      loupeCurH += loupeVelH * dt;
+    }
+
+    if (
+      Math.abs(loupeTargetW - loupeCurW) < 0.08 &&
+      Math.abs(loupeVelW) < 0.4 &&
+      Math.abs(loupeTargetH - loupeCurH) < 0.08 &&
+      Math.abs(loupeVelH) < 0.4
+    ) {
+      loupeCurW = loupeTargetW;
+      loupeCurH = loupeTargetH;
+      loupeVelW = 0;
+      loupeVelH = 0;
+      loupeSpringSettled = true;
+    }
+
+    // Subtle volume-preserving liquid surface tension while width snaps rapidly
+    const squash = Math.max(-1.4, Math.min(1.4, -loupeVelW * 0.0045));
+    applyLoupeDimensions(Math.max(40, loupeCurW), Math.max(20, loupeCurH + squash));
+  };
+
+  const updateVernierDial = (
+    z: number,
+    magText?: string,
+    sizeText?: string,
+    scaleBarLabel?: string,
+    scaleBarPx?: number,
+    snapLoupe = false
+  ) => {
+    const clampedZ = Math.max(VERNIER_MIN_Z, Math.min(VERNIER_MAX_Z, z));
+
+    const realm = realmForZoom(clampedZ);
+    if (realm !== lastActiveRealm) {
+      lastActiveRealm = realm;
+      vernierDockEl.dataset.realm = realm;
+      const accent = REALM_ACCENTS[realm];
+      vernierDockEl.style.setProperty('--realm-accent', accent.color);
+      vernierDockEl.style.setProperty('--realm-glow', accent.glow);
+    }
+
+    // Morph the single floating center Liquid Glass magnifier pill snappily with spring physics to hug the current word
+    const { w: targetW, h: targetH } = computeMorphingLoupeSize(clampedZ);
+    const targetChanged = Math.abs(targetW - loupeTargetW) > 0.08 || Math.abs(targetH - loupeTargetH) > 0.08;
+    loupeTargetW = targetW;
+    loupeTargetH = targetH;
+    const nowMs = performance.now();
+    if (snapLoupe) {
+      stepVernierLoupeSpring(nowMs, true);
+    } else {
+      if (targetChanged && loupeSpringSettled) {
+        loupeSpringSettled = false;
+        loupeSpringLastMs = nowMs - 8;
+      }
+      stepVernierLoupeSpring(nowMs, false);
     }
 
     const stopIdx = Math.max(0, Math.min(ZOOM_STOPS.length - 1, Math.round(clampedZ) + 1));
@@ -924,7 +1011,7 @@ function mountApp(): void {
     lastLoupeH = 0;
     const z = lastZoomRendered === -99 ? 0 : lastZoomRendered;
     const fmt = formatMagnification(z);
-    updateVernierDial(z, fmt.magText, fmt.sizeText, fmt.scaleBarLabel, fmt.scaleBarPx);
+    updateVernierDial(z, fmt.magText, fmt.sizeText, fmt.scaleBarLabel, fmt.scaleBarPx, true);
   };
 
   const cancelVernierCoast = () => {
@@ -1233,7 +1320,12 @@ function mountApp(): void {
         engageReticle(interacting);
       }
 
-      if (Math.abs(z - lastZoomRendered) < 0.0005) return;
+      if (Math.abs(z - lastZoomRendered) < 0.0005) {
+        if (!loupeSpringSettled) {
+          stepVernierLoupeSpring(now, false);
+        }
+        return;
+      }
       lastZoomRendered = z;
 
       const { dialDeg, bracketText, bracketAnalogy, bracketOpacity, magText, sizeText, scaleBarLabel, scaleBarPx } =
