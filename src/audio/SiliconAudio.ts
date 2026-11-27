@@ -2,7 +2,7 @@
  * Zero-Dependency Procedural Web Audio Engine for Silicon Microscope
  *
  * Combines:
- *   - Five distinct musical vibes (Cleanroom Glass, Quantum Drift, Silicon Pulse, Late-Night Lab, Cyber Noir)
+ *   - Six distinct Sci-Fi & Synthwave soundtracks (Sci-Fi, Synthwave, Darksynth, Spacesynth, Dreamwave, Deep Sci-Fi)
  *   - Synchronized 7-second Cold Boot intro scores that seamlessly hand off into an infinite,
  *     quiet, evolving background loop via a sample-accurate lookahead scheduler
  *   - Harmonically tuned tactile microscope foley (focus-ring detents, objective turret locks,
@@ -42,7 +42,7 @@ export type AudioIntroPhase =
   | 'settle'
   | 'done';
 
-const STORAGE_VIBE_KEY = 'silicon-microscope-vibe-v3';
+const STORAGE_VIBE_KEY = 'silicon-microscope-vibe-v6';
 const STORAGE_BGM_KEY = 'silicon-microscope-bgm-level';
 
 function loadStoredVibe(): MusicVibeId {
@@ -54,7 +54,7 @@ function loadStoredVibe(): MusicVibeId {
   } catch {
     // ignore storage errors
   }
-  return 'minimal';
+  return 'dreamwave';
 }
 
 function loadStoredBgmLevel(): BgmLevelId {
@@ -693,8 +693,7 @@ export class SiliconAudio {
     if (!this.ctx || !this.bgmFilter) return;
     const now = this.ctx.currentTime;
     const vibe = getVibeMeta(this.vibeId);
-    const targetCutoff =
-      this.vibeId === 'minimal' ? 5400 + this.depthNorm * 6600 : 1950 + this.depthNorm * 1850;
+    const targetCutoff = vibe.bgmFilterBaseHz + this.depthNorm * vibe.bgmFilterSpanHz;
     this.bgmFilter.frequency.setTargetAtTime(targetCutoff, now, tau);
     this.lastFilterDepth = this.depthNorm;
 
@@ -1216,8 +1215,7 @@ export class SiliconAudio {
     // Gently breathe the background loop filter with magnification depth (warm on die -> luminous at atom/quarks)
     if (this.bgmFilter && Math.abs(this.depthNorm - this.lastFilterDepth) > 0.015) {
       this.lastFilterDepth = this.depthNorm;
-      const targetCutoff =
-        this.vibeId === 'minimal' ? 5400 + this.depthNorm * 6600 : 1950 + this.depthNorm * 1850;
+      const targetCutoff = vibe.bgmFilterBaseHz + this.depthNorm * vibe.bgmFilterSpanHz;
       this.bgmFilter.frequency.setTargetAtTime(targetCutoff, this.ctx.currentTime, 0.25);
     }
 
@@ -1730,7 +1728,7 @@ export class SiliconAudio {
         this.introHandoffTimer = null;
         this.introRunning = false;
         if (!this.userMuted && !this.tabHidden && this.bgmLevel !== 'off' && this.ctx?.state === 'running') {
-          const handoffFade = this.vibeId === 'minimal' ? 0.14 : 1.1;
+          const handoffFade = vibe.handoffFadeSec;
           this.startBackgroundLoop(handoffFade, handoffAudioTime);
         }
       }, delayMs);
