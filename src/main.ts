@@ -2517,6 +2517,32 @@ function mountApp(): void {
       if (!pureView && !introActive) {
         setDepthSheetOpen(!showDepthSheet, true);
       }
+    } else if (e.key === 'l' || e.key === 'L') {
+      engine.radianceCascadesEnabled = !engine.radianceCascadesEnabled;
+      engine.notifyActivity();
+      let toast = document.getElementById('rc-gi-toast');
+      if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'rc-gi-toast';
+        toast.style.cssText =
+          'position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:60;pointer-events:none;' +
+          'padding:6px 14px;border-radius:999px;font:500 11px/1.2 -apple-system,BlinkMacSystemFont,Inter,sans-serif;' +
+          'letter-spacing:0.06em;text-transform:uppercase;color:rgba(240,248,255,0.92);' +
+          'background:rgba(10,14,22,0.72);border:1px solid rgba(255,255,255,0.14);' +
+          'backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);transition:opacity 240ms ease;';
+        document.body.appendChild(toast);
+      }
+      toast.textContent = engine.radianceCascadesEnabled
+        ? 'Radiance Cascades GI · On'
+        : 'Radiance Cascades GI · Off';
+      toast.style.opacity = '1';
+      const prevTimer = Number(toast.dataset.timerId || '0');
+      if (prevTimer) window.clearTimeout(prevTimer);
+      toast.dataset.timerId = String(
+        window.setTimeout(() => {
+          if (toast) toast.style.opacity = '0';
+        }, 1500)
+      );
     } else if (e.key === 'h' || e.key === 'H') {
       if (engine.isIntroActive) engine.skipIntro();
       setPure(!pureView);

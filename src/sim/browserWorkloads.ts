@@ -9,7 +9,16 @@
  *   - 'pin-core': Single dedicated worker pinned to a clicked P-Core on the 3D die!
  */
 
+import { WebGpuComputeEngine } from './webgpuCompute';
+
 export type WorkloadKind = 'compute' | 'matrix' | 'memory' | 'gpu';
+
+function formatFlopsLabel(gflops: number, compact = false): string {
+  if (gflops >= 1000) {
+    return `${(gflops / 1000).toFixed(2)} ${compact ? 'TF/s' : 'TFLOPS'}`;
+  }
+  return `${gflops >= 100 ? gflops.toFixed(0) : gflops.toFixed(1)} ${compact ? 'GF/s' : 'GFLOPS'}`;
+}
 
 export interface WorkloadSnapshot {
   active: boolean;
@@ -183,6 +192,9 @@ export class BrowserWorkloadRunner {
   private gpuRafId = 0;
   private gpuStartMs = 0;
   private gpuEndMs = 0;
+  private webgpu: WebGpuComputeEngine | null = null;
+  private webgpuActive = false;
+  private webgpuRunToken = 0;
 
   private active = false;
   private kind: WorkloadKind | 'pin-core' | null = null;
@@ -249,6 +261,9 @@ export class BrowserWorkloadRunner {
     if (!this.spawnWorkers(script, workerCount, durationMs)) {
       this.stopInternal(true);
       return;
+    }
+    if (kind === 'matrix' && WebGpuComputeEngine.isSupported()) {
+      this.startWebGpuLoop('matrix', durationMs, false);
     }
     this.onStateChange?.(true, kind, null);
   }
@@ -350,7 +365,65 @@ export class BrowserWorkloadRunner {
     return true;
   }
 
+  private startWebGpuLoop(mode: 'gpu' | 'matrix', durationMs: number, fallbackToWebGl: boolean): void {
+    const token = ++this.webgpuRunToken;
+    const endMs = performance.now() + durationMs;
+    if (!this.webgpu) {
+      this.webgpu = new WebGpuComputeEngine(this.isMobileDevice);
+    }
+    const engine = this.webgpu;
+
+    void (async () => {
+      const ready = await engine.ensureReady();
+      if (!this.active || this.webgpuRunToken !== token) return;
+      if (!ready) {
+        if (fallbackToWebGl && this.kind === 'gpu') {
+          this.startGpuStressWebGl(Math.max(400, endMs - performance.now()));
+        }
+        return;
+      }
+
+      this.webgpuActive = true;
+      let iter = 0;
+
+      const tick = async () => {
+        if (!this.active || this.webgpuRunToken !== token || performance.now() >= endMs) {
+          if (mode === 'gpu' && this.active && this.webgpuRunToken === token) {
+            this.stop();
+          }
+          return;
+        }
+        const res = await engine.runSlice(mode, (iter++ * 0.37) % 100);
+        if (!this.active || this.webgpuRunToken !== token) return;
+        if (res && Number.isFinite(res.gflops) && res.gflops > 0) {
+          this.gpuGflops = this.gpuGflops > 0 ? this.gpuGflops * 0.72 + res.gflops * 0.28 : res.gflops;
+          this.gpuStressLevel = mode === 'gpu' ? 0.94 : 0.74;
+        }
+        // Pace slices to animation frames so the 3D WebGL2 microscope stays silky smooth
+        this.gpuRafId = requestAnimationFrame(() => {
+          void tick();
+        });
+      };
+
+      void tick();
+    })();
+  }
+
   private startGpuStress(durationMs: number): void {
+    this.gpuStartMs = performance.now();
+    this.gpuEndMs = this.gpuStartMs + durationMs;
+    this.gpuStressLevel = 0.85;
+
+    if (WebGpuComputeEngine.isSupported()) {
+      this.startWebGpuLoop('gpu', durationMs, true);
+      this.stopTimer = window.setTimeout(() => this.stop(), durationMs + 100);
+      return;
+    }
+
+    this.startGpuStressWebGl(durationMs);
+  }
+
+  private startGpuStressWebGl(durationMs: number): void {
     const ok = this.ensureGpuStressContext();
     this.gpuStartMs = performance.now();
     this.gpuEndMs = this.gpuStartMs + durationMs;
@@ -409,6 +482,8 @@ export class BrowserWorkloadRunner {
     this.allocatedGB = 0;
     this.gpuStressLevel = 0;
     this.gpuGflops = 0;
+    this.webgpuActive = false;
+    this.webgpuRunToken++;
     this.workerRates = [];
     this.workerLastTick = [];
 
@@ -451,17 +526,20 @@ export class BrowserWorkloadRunner {
 
     if (this.kind === 'gpu') {
       const gflops = Math.max(12, Math.round(this.gpuGflops * 10) / 10);
+      const isWg = this.webgpuActive;
       return {
         active: true,
         kind: 'gpu',
         pinnedPCore: null,
         workerCount: 0,
         workerLoads: [],
-        metricLabel: `${gflops.toFixed(0)} GFLOPS`,
+        metricLabel: isWg ? `${formatFlopsLabel(gflops)} · WebGPU` : `${formatFlopsLabel(gflops)}`,
         throughputValue: gflops,
-        allocatedGB: 0.12,
+        allocatedGB: isWg ? 0.16 : 0.12,
         gpuStressLevel: this.gpuStressLevel,
-        processName: `WebGL2 ALU · ${gflops.toFixed(0)} GF/s`,
+        processName: isWg
+          ? `WebGPU Compute · ${formatFlopsLabel(gflops, true)}`
+          : `WebGL2 ALU · ${formatFlopsLabel(gflops, true)}`,
       };
     }
 
@@ -496,8 +574,11 @@ export class BrowserWorkloadRunner {
     }
 
     if (this.kind === 'matrix') {
-      const gflops = totalThroughput > 0 ? totalThroughput : 0;
-      const metricLabel = gflops > 0 ? `${gflops.toFixed(1)} GFLOPS` : 'Computing…';
+      const wgActive = this.webgpuActive && this.gpuGflops > 0;
+      const gflops = (totalThroughput > 0 ? totalThroughput : 0) + (wgActive ? this.gpuGflops : 0);
+      const metricLabel = gflops > 0
+        ? (wgActive ? `${formatFlopsLabel(gflops)} · WebGPU` : formatFlopsLabel(gflops))
+        : 'Computing…';
       return {
         active: true,
         kind: 'matrix',
@@ -506,9 +587,11 @@ export class BrowserWorkloadRunner {
         workerLoads,
         metricLabel,
         throughputValue: gflops,
-        allocatedGB: 0.04,
-        gpuStressLevel: 0,
-        processName: gflops > 0 ? `FP32 GEMM · ${gflops.toFixed(1)} GF/s` : 'FP32 Matrix GEMM',
+        allocatedGB: wgActive ? 0.08 : 0.04,
+        gpuStressLevel: wgActive ? this.gpuStressLevel : 0,
+        processName: gflops > 0
+          ? `${wgActive ? 'WebGPU GEMM' : 'FP32 GEMM'} · ${formatFlopsLabel(gflops, true)}`
+          : 'FP32 Matrix GEMM',
       };
     }
 
@@ -549,6 +632,10 @@ export class BrowserWorkloadRunner {
 
   public dispose(): void {
     this.stop();
+    if (this.webgpu) {
+      this.webgpu.dispose();
+      this.webgpu = null;
+    }
     if (this.gpuGl) {
       if (this.gpuProg) this.gpuGl.deleteProgram(this.gpuProg);
       if (this.gpuVao) this.gpuGl.deleteVertexArray(this.gpuVao);

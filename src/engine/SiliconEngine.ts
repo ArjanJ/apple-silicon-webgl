@@ -40,6 +40,9 @@ import {
   LIQUID_GL_FS,
   LIQUID_GL_VS,
   PLANAR_BLUR_FS,
+  RC_CASCADE_FS,
+  RC_EMITTER_FS,
+  RC_RESOLVE_FS,
   SCENE_CUTOUT_FS,
   SCENE_FS,
   SCENE_RESOLVE_FS,
@@ -293,6 +296,9 @@ export class SiliconEngine {
   private gtaoProg: WebGLProgram;
   private aoBlurProg: WebGLProgram;
   private ssrProg: WebGLProgram;
+  private rcEmitterProg: WebGLProgram;
+  private rcCascadeProg: WebGLProgram;
+  private rcResolveProg: WebGLProgram;
   private sceneResolveProg: WebGLProgram;
 
   private boxMesh: MeshBuffers;
@@ -351,6 +357,13 @@ export class SiliconEngine {
   private ssrRaw: FboTarget | null = null;
   private ssrTmp: FboTarget | null = null;
   private ssrBlur: FboTarget | null = null;
+  private rcEmitter: FboTarget | null = null;
+  private rcAtlasA: FboTarget | null = null;
+  private rcAtlasB: FboTarget | null = null;
+  private rcGiRaw: FboTarget | null = null;
+  private rcGiTmp: FboTarget | null = null;
+  private rcGiBlur: FboTarget | null = null;
+  public radianceCascadesEnabled = true;
   private planarReflDepthRb: WebGLRenderbuffer | null = null;
   private planarRefl!: FboTarget;
   private planarReflTmp!: FboTarget;
@@ -411,6 +424,9 @@ export class SiliconEngine {
   private uGtao: Record<string, WebGLUniformLocation | null> = {};
   private uAoBlur: Record<string, WebGLUniformLocation | null> = {};
   private uSsr: Record<string, WebGLUniformLocation | null> = {};
+  private uRcEmitter: Record<string, WebGLUniformLocation | null> = {};
+  private uRcCascade: Record<string, WebGLUniformLocation | null> = {};
+  private uRcResolve: Record<string, WebGLUniformLocation | null> = {};
   private uResolve: Record<string, WebGLUniformLocation | null> = {};
 
   // Reusable matrices (zero GC per frame)
@@ -649,6 +665,9 @@ export class SiliconEngine {
     this.gtaoProg = this.createProgram(FULLSCREEN_VS, GTAO_CS_FS);
     this.aoBlurProg = this.createProgram(FULLSCREEN_VS, AO_BLUR_FS);
     this.ssrProg = this.createProgram(FULLSCREEN_VS, SSR_FS);
+    this.rcEmitterProg = this.createProgram(FULLSCREEN_VS, RC_EMITTER_FS);
+    this.rcCascadeProg = this.createProgram(FULLSCREEN_VS, RC_CASCADE_FS);
+    this.rcResolveProg = this.createProgram(FULLSCREEN_VS, RC_RESOLVE_FS);
     this.sceneResolveProg = this.createProgram(FULLSCREEN_VS, SCENE_RESOLVE_FS);
 
     this.cacheUniforms();
@@ -1473,6 +1492,7 @@ export class SiliconEngine {
       'uTime',
       'uVoidPlunge',
       'uIntroExposure',
+      'uBounceScale',
     ]);
     this.uLiquid = grab(this.liquidGlProg, [
       'uTex',
@@ -1511,14 +1531,28 @@ export class SiliconEngine {
       'uTexelSize',
       'uSsrStrength',
     ]);
+    this.uRcEmitter = grab(this.rcEmitterProg, [
+      'uHdrTex',
+      'uGbufTex',
+      'uDepthTex',
+      'uProjParams',
+    ]);
+    this.uRcCascade = grab(this.rcCascadeProg, [
+      'uEmitterTex',
+      'uUpperTex',
+      'uCascadeParams',
+    ]);
+    this.uRcResolve = grab(this.rcResolveProg, ['uCascade0Tex', 'uAtlasSize']);
     this.uResolve = grab(this.sceneResolveProg, [
       'uHdrTex',
       'uGbufTex',
       'uAoTex',
       'uSsrTex',
       'uSsrBlurTex',
+      'uRcGiTex',
       'uAoMix',
       'uSsrMix',
+      'uRcMix',
     ]);
   }
 
@@ -1699,6 +1733,18 @@ export class SiliconEngine {
     this.ssrRaw = null;
     this.ssrTmp = null;
     this.ssrBlur = null;
+    drop(this.rcEmitter);
+    drop(this.rcAtlasA);
+    drop(this.rcAtlasB);
+    drop(this.rcGiRaw);
+    drop(this.rcGiTmp);
+    drop(this.rcGiBlur);
+    this.rcEmitter = null;
+    this.rcAtlasA = null;
+    this.rcAtlasB = null;
+    this.rcGiRaw = null;
+    this.rcGiTmp = null;
+    this.rcGiBlur = null;
     drop(this.planarRefl);
     drop(this.planarReflTmp);
     drop(this.planarReflBlur);
@@ -1817,6 +1863,15 @@ export class SiliconEngine {
       this.ssrRaw = this.createColorFbo(wHalf, hHalf);
       this.ssrTmp = this.createColorFbo(wHalf, hHalf);
       this.ssrBlur = this.createColorFbo(wHalf, hHalf);
+      // 4-Cascade Screen-Space Radiance Cascades GI targets (256x256 atlas -> 128x128 smooth GI irradiance)
+      const rcSize = 256;
+      const rcGiSize = 128;
+      this.rcEmitter = this.createColorFbo(rcSize, rcSize);
+      this.rcAtlasA = this.createColorFbo(rcSize, rcSize);
+      this.rcAtlasB = this.createColorFbo(rcSize, rcSize);
+      this.rcGiRaw = this.createColorFbo(rcGiSize, rcGiSize);
+      this.rcGiTmp = this.createColorFbo(rcGiSize, rcGiSize);
+      this.rcGiBlur = this.createColorFbo(rcGiSize, rcGiSize);
     }
 
     // Aspect-preserving World 0 Planar Reflection capped at 720px wide (4x less fillrate on 5K Retina!)
@@ -3745,6 +3800,90 @@ export class SiliconEngine {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
+    // 3.5) Hierarchical Screen-Space Radiance Cascades GI (4 cascades C3 -> C0, adapted from vgpu.sh!)
+    const hasRcTargets =
+      this.rcEmitter !== null &&
+      this.rcAtlasA !== null &&
+      this.rcAtlasB !== null &&
+      this.rcGiRaw !== null &&
+      this.rcGiTmp !== null &&
+      this.rcGiBlur !== null;
+    const rcMix =
+      this.isMobile || !this.radianceCascadesEnabled || !hasRcTargets
+        ? 0.0
+        : 0.35 + 0.65 * this.introKeyIntensity;
+
+    if (rcMix > 0.01 && this.rcEmitter && this.rcAtlasA && this.rcAtlasB && this.rcGiRaw && this.rcGiTmp && this.rcGiBlur) {
+      const rcSize = this.rcEmitter.w;
+      const aspect = this.canvasW / Math.max(1, this.canvasH);
+
+      // A) Extract HDR emissive sources + linear depth for wall occlusion
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.rcEmitter.fbo);
+      gl.viewport(0, 0, rcSize, rcSize);
+      gl.useProgram(this.rcEmitterProg);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.hdrMain.tex);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.gbufTex);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
+      gl.uniform1i(this.uRcEmitter.uHdrTex, 0);
+      gl.uniform1i(this.uRcEmitter.uGbufTex, 1);
+      gl.uniform1i(this.uRcEmitter.uDepthTex, 2);
+      gl.uniform4f(this.uRcEmitter.uProjParams, invP00, invP11, proj10, proj14);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      // B) Top-down 4-cascade probe-atlas raymarch & merge (C3 -> C2 -> C1 -> C0)
+      gl.useProgram(this.rcCascadeProg);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.rcEmitter.tex);
+      gl.uniform1i(this.uRcCascade.uEmitterTex, 0);
+      gl.uniform1i(this.uRcCascade.uUpperTex, 1);
+
+      let upperAtlas = this.rcAtlasB;
+      let dstAtlas = this.rcAtlasA;
+      for (let c = 3; c >= 0; c--) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, dstAtlas.fbo);
+        gl.viewport(0, 0, rcSize, rcSize);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, upperAtlas.tex);
+        gl.uniform4f(this.uRcCascade.uCascadeParams, c, c < 3 ? 1.0 : 0.0, rcSize, aspect);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        const prevDst = dstAtlas;
+        dstAtlas = upperAtlas;
+        upperAtlas = prevDst;
+      }
+      // After loop, Cascade 0 result lives in `upperAtlas` (rcAtlasB)
+
+      // C) Integrate Cascade 0's 4 angular sectors into 128x128 irradiance map
+      const giSize = this.rcGiRaw.w;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.rcGiRaw.fbo);
+      gl.viewport(0, 0, giSize, giSize);
+      gl.useProgram(this.rcResolveProg);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, upperAtlas.tex);
+      gl.uniform1i(this.uRcResolve.uCascade0Tex, 0);
+      gl.uniform1f(this.uRcResolve.uAtlasSize, rcSize);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      // D) Fast 128x128 separable smoothing pass so probe grid is completely invisible at 5K
+      gl.useProgram(this.planarBlurProg);
+      gl.uniform1i(this.uPlanarBlur.uTex, 0);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.rcGiTmp.fbo);
+      gl.viewport(0, 0, giSize, giSize);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.rcGiRaw.tex);
+      gl.uniform2f(this.uPlanarBlur.uDir, 1.15 / giSize, 0.0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.rcGiBlur.fbo);
+      gl.viewport(0, 0, giSize, giSize);
+      gl.bindTexture(gl.TEXTURE_2D, this.rcGiTmp.tex);
+      gl.uniform2f(this.uPlanarBlur.uDir, 0.0, 1.15 / giSize);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
     // 4) Full-Res HDR Scene Resolve -> this.hdrResolved (feeds Bloom & Optical Composite!)
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.hdrResolved.fbo);
     gl.viewport(0, 0, this.hdrResolved.w, this.hdrResolved.h);
@@ -3759,13 +3898,17 @@ export class SiliconEngine {
     gl.bindTexture(gl.TEXTURE_2D, this.ssrRaw ? this.ssrRaw.tex : this.hdrMain.tex);
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D, this.ssrBlur ? this.ssrBlur.tex : this.hdrMain.tex);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.rcGiBlur ? this.rcGiBlur.tex : this.hdrMain.tex);
     gl.uniform1i(this.uResolve.uHdrTex, 0);
     gl.uniform1i(this.uResolve.uGbufTex, 1);
     gl.uniform1i(this.uResolve.uAoTex, 2);
     gl.uniform1i(this.uResolve.uSsrTex, 3);
     gl.uniform1i(this.uResolve.uSsrBlurTex, 4);
+    gl.uniform1i(this.uResolve.uRcGiTex, 5);
     gl.uniform1f(this.uResolve.uAoMix, aoMix);
     gl.uniform1f(this.uResolve.uSsrMix, ssrMix);
+    gl.uniform1f(this.uResolve.uRcMix, rcMix);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
@@ -4650,6 +4793,8 @@ export class SiliconEngine {
     const voidPlunge = Math.exp(-Math.pow((this.zoom - 7.52) / 0.28, 2));
     gl.uniform1f(this.uComp.uVoidPlunge, voidPlunge);
     gl.uniform1f(this.uComp.uIntroExposure, this.introExposure);
+    const rcActive = !this.isMobile && this.radianceCascadesEnabled && this.rcGiBlur !== null;
+    gl.uniform1f(this.uComp.uBounceScale, rcActive ? 0.25 : 1.0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     // PASS 3B & 3C: Tight Per-Region Quad sRGB liquidGL Refraction + Stacked Droplet Lenses -> Screen
@@ -4755,6 +4900,9 @@ export class SiliconEngine {
     gl.deleteProgram(this.gtaoProg);
     gl.deleteProgram(this.aoBlurProg);
     gl.deleteProgram(this.ssrProg);
+    gl.deleteProgram(this.rcEmitterProg);
+    gl.deleteProgram(this.rcCascadeProg);
+    gl.deleteProgram(this.rcResolveProg);
     gl.deleteProgram(this.sceneResolveProg);
 
     if (this.canvas.parentElement === this.container) {

@@ -2243,6 +2243,7 @@ uniform float uMotion;
 uniform float uTime;
 uniform float uVoidPlunge;
 uniform float uIntroExposure;
+uniform float uBounceScale;
 
 // Troy Sobotka AgX Punchy Filmic Tone Map (preserves deep electric cyan & rich metallic copper highlights without violet hue shift!)
 vec3 agxDefaultContrastApprox(vec3 x) {
@@ -2361,10 +2362,10 @@ void main() {
   }
 
   vec3 bloom = texture(uBloomTex, vUv).rgb;
-  // Wide localized emissive bounce (SSGI approximation from 1/16-res radiance pyramid onto lit nearby chip surfaces!)
+  // Wide localized emissive bounce (dialed back when hierarchical Radiance Cascades GI is active so we never double-dip!)
   vec3 bounce = texture(uBounceTex, vUv).rgb;
   float surfMask = smoothstep(0.008, 0.09, max(base.r, max(base.g, base.b)));
-  vec3 col = base + bloom * 0.23 + bounce * (0.085 * surfMask + 0.015);
+  vec3 col = base + bloom * 0.23 + bounce * (0.085 * surfMask + 0.015) * uBounceScale;
 
   // Subtle luminous optical halation around the central nuclear pinpoint during the 1,800x empty-space plunge
   if (uVoidPlunge > 0.01) {
@@ -2474,6 +2475,34 @@ float edgeFactor(vec2 p_px, vec2 b_px, float r, float bevelWidth, vec2 boxSize) 
 vec3 saturateSrgb(vec3 c, float sat) {
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   return clamp(mix(vec3(l), c, sat), 0.0, 1.0);
+}
+
+// vgpu.sh physical transmission spectral weighting (continuous 5-band prism dispersion!)
+vec3 spectralWeight(float t) {
+  return vec3(
+    exp(-pow((t - 0.05) / 0.45, 2.0)),
+    exp(-pow((t - 0.50) / 0.38, 2.0)),
+    exp(-pow((t - 0.95) / 0.45, 2.0))
+  );
+}
+
+// Physical Schlick dielectric Fresnel for crown glass (IOR = 1.52)
+float dielectricFresnel(float ior, float facing) {
+  float f0 = pow((ior - 1.0) / (ior + 1.0), 2.0);
+  return f0 + (1.0 - f0) * pow(1.0 - clamp(facing, 0.0, 1.0), 5.0);
+}
+
+vec3 sampleSpectralPrism(sampler2D tex, vec2 uv, vec2 chroma) {
+  vec3 acc = vec3(0.0);
+  vec3 wSum = vec3(0.0);
+  for (int s = 0; s < 5; s++) {
+    float t = float(s) * 0.25; // 0.0 .. 1.0 across visible spectrum
+    vec3 w = spectralWeight(t);
+    vec2 uvS = clamp(uv + chroma * (t * 2.0 - 1.0), vec2(0.001), vec2(0.999));
+    acc += texture(tex, uvS).rgb * w;
+    wSum += w;
+  }
+  return acc / max(wSum, vec3(1e-4));
 }
 
 void main() {
@@ -2592,25 +2621,29 @@ void main() {
     }
     refrCol = acc * 0.1;
   } else if (isMagnifier) {
-    // Razor-sharp optical magnifier sampling (tight sub-texel AA preserves crisp typography + vivid RGB bevel dispersion!)
-    vec2 sub = (0.32) / max(uResolution, vec2(1.0));
-    vec3 g0 = texture(uTex, clamp(sampleUV, vec2(0.001), vec2(0.999))).rgb;
-    vec3 g1 = texture(uTex, clamp(sampleUV + vec2( sub.x,  sub.y), vec2(0.001), vec2(0.999))).rgb;
-    vec3 g2 = texture(uTex, clamp(sampleUV + vec2(-sub.x, -sub.y), vec2(0.001), vec2(0.999))).rgb;
-    refrCol = g0 * 0.5 + (g1 + g2) * 0.25;
-    refrCol.r = texture(uTex, clamp(sampleUV - chroma, vec2(0.001), vec2(0.999))).r;
-    refrCol.b = texture(uTex, clamp(sampleUV + chroma, vec2(0.001), vec2(0.999))).b;
+    // Razor-sharp optical magnifier sampling + smooth 5-band continuous spectral prism dispersion on the curved rim!
+    if (dot(chroma, chroma) > 1e-7) {
+      refrCol = sampleSpectralPrism(uTex, sampleUV, chroma);
+    } else {
+      vec2 sub = (0.32) / max(uResolution, vec2(1.0));
+      vec3 g0 = texture(uTex, clamp(sampleUV, vec2(0.001), vec2(0.999))).rgb;
+      vec3 g1 = texture(uTex, clamp(sampleUV + vec2( sub.x,  sub.y), vec2(0.001), vec2(0.999))).rgb;
+      vec3 g2 = texture(uTex, clamp(sampleUV + vec2(-sub.x, -sub.y), vec2(0.001), vec2(0.999))).rgb;
+      refrCol = g0 * 0.5 + (g1 + g2) * 0.25;
+    }
   } else {
-    // Pure crystal-clear liquidGL droplet lens (5-tap micro-AA + razor-sharp RGB dispersion!)
-    vec2 texel = 1.0 / max(uResolution, vec2(1.0));
-    refrCol = texture(uTex, clamp(sampleUV, vec2(0.001), vec2(0.999))).rgb;
-    refrCol += texture(uTex, clamp(sampleUV + vec2( texel.x, 0.0), vec2(0.001), vec2(0.999))).rgb;
-    refrCol += texture(uTex, clamp(sampleUV + vec2(-texel.x, 0.0), vec2(0.001), vec2(0.999))).rgb;
-    refrCol += texture(uTex, clamp(sampleUV + vec2(0.0,  texel.y), vec2(0.001), vec2(0.999))).rgb;
-    refrCol += texture(uTex, clamp(sampleUV + vec2(0.0, -texel.y), vec2(0.001), vec2(0.999))).rgb;
-    refrCol *= 0.2;
-    refrCol.r = texture(uTex, clamp(sampleUV - chroma, vec2(0.001), vec2(0.999))).r;
-    refrCol.b = texture(uTex, clamp(sampleUV + chroma, vec2(0.001), vec2(0.999))).b;
+    // Pure crystal-clear liquidGL droplet lens with continuous 5-band prism dispersion on refracting bevels!
+    if (dot(chroma, chroma) > 1e-7) {
+      refrCol = sampleSpectralPrism(uTex, sampleUV, chroma);
+    } else {
+      vec2 texel = 1.0 / max(uResolution, vec2(1.0));
+      refrCol = texture(uTex, clamp(sampleUV, vec2(0.001), vec2(0.999))).rgb;
+      refrCol += texture(uTex, clamp(sampleUV + vec2( texel.x, 0.0), vec2(0.001), vec2(0.999))).rgb;
+      refrCol += texture(uTex, clamp(sampleUV + vec2(-texel.x, 0.0), vec2(0.001), vec2(0.999))).rgb;
+      refrCol += texture(uTex, clamp(sampleUV + vec2(0.0,  texel.y), vec2(0.001), vec2(0.999))).rgb;
+      refrCol += texture(uTex, clamp(sampleUV + vec2(0.0, -texel.y), vec2(0.001), vec2(0.999))).rgb;
+      refrCol *= 0.2;
+    }
   }
 
   refrCol = saturateSrgb(refrCol, isDroplet ? 1.18 : 1.15);
@@ -2642,12 +2675,15 @@ void main() {
   float rimLine = exp(-pow(distIn / 0.88, 2.0));
   float keyCatch = pow(max(dot(refractDir, normalize(vec2(-0.55, 0.84))), 0.0), 1.9);
   float bncCatch = pow(max(dot(refractDir, normalize(vec2( 0.55,-0.84))), 0.0), 2.1);
+  // Crown-glass dielectric Fresnel (IOR 1.52) wraps grazing bevel edges with subtle realistic glass glint
+  float glassFacing = clamp(1.0 - edge * 0.92, 0.08, 1.0);
+  float fresnelRim = dielectricFresnel(1.52, glassFacing) * edge * (isDroplet ? 0.26 : 0.16);
   float rimAmt = (0.10 + 0.68 * keyCatch + 0.36 * bncCatch) * (isDroplet ? 0.60 : 0.38);
 
   float ptrDist = length(pGl - ptrGl);
   float ptrEdge = exp(-(ptrDist * ptrDist) / (115.0 * 115.0)) * rimLine * 0.28;
 
-  refrCol += vec3(0.95, 0.98, 1.0) * (rimLine * rimAmt + ptrEdge);
+  refrCol += vec3(0.94, 0.98, 1.0) * (rimLine * rimAmt + ptrEdge + fresnelRim);
 
   fragColor = vec4(mix(col, clamp(refrCol, 0.0, 1.0), inShape * alpha), 1.0);
 }
@@ -3049,8 +3085,192 @@ void main() {
 `;
 
 /**
- * Full-Res Scene Lighting Resolve (runs on HDR BEFORE Bloom so Bloom responds to real GTAO & SSR!):
+ * Screen-Space Radiance Cascades GI (adapted from vgpu.sh radiance-cascades):
+ *   Pass A (RC_EMITTER_FS): Extracts HDR emissive sources (active cores, switching gates, pulses,
+ *                           electron clouds) + linear view-space depth for wall occlusion.
+ *   Pass B (RC_CASCADE_FS): 4-level top-down probe-atlas hierarchy (C3 -> C2 -> C1 -> C0 on 256x256
+ *                           RGBA16F ping-pong targets) using probe-space bilinear merge-then-average.
+ *   Pass C (RC_RESOLVE_FS): Integrates Cascade 0's 4 angular sectors into a smooth 128x128 GI map.
+ */
+export const RC_EMITTER_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uHdrTex;
+uniform sampler2D uGbufTex;
+uniform sampler2D uDepthTex;
+uniform vec4 uProjParams; // (invP00, invP11, proj10, proj14)
+
+void main() {
+  vec3 hdr = texture(uHdrTex, vUv).rgb;
+  vec4 gbuf = texture(uGbufTex, vUv);
+  float rawD = texture(uDepthTex, vUv).r;
+  float linearZ = 0.0;
+  if (rawD < 0.9995) {
+    float ndcZ = rawD * 2.0 - 1.0;
+    linearZ = max(0.01, uProjParams.w / (ndcZ + uProjParams.z));
+  }
+
+  float emMask = smoothstep(0.05, 0.34, gbuf.b);
+  // Only bounce genuine energized silicon signals (cores, copper pulses, CMOS gates, GAA ribbons, orbitals)
+  // — never non-emissive white/grey studio reflections on the bezel, titanium, or quarter!
+  float cMax = max(hdr.r, max(hdr.g, hdr.b));
+  float cMin = min(hdr.r, min(hdr.g, hdr.b));
+  float chroma = (cMax - cMin) / max(cMax, 1e-4);
+  float chromaticFocus = 0.28 + 0.72 * smoothstep(0.08, 0.38, chroma);
+  vec3 emitter = min(hdr * emMask * chromaticFocus, vec3(3.4));
+
+  fragColor = vec4(emitter, linearZ);
+}
+`;
+
+export const RC_CASCADE_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uEmitterTex;
+uniform sampler2D uUpperTex;
+uniform vec4 uCascadeParams; // (cascadeIdx, hasUpper, atlasSize, aspect)
+
+const float PI2 = 6.28318530718;
+
+float rcIntervalStart(float c) {
+  return 1.35 * (pow(4.0, c) - 1.0) / 3.0;
+}
+
+float rcIntervalLength(float c) {
+  return 1.35 * pow(4.0, c);
+}
+
+vec4 rcMerge(vec4 nearR, vec4 farR) {
+  return vec4(nearR.rgb + nearR.a * farR.rgb, nearR.a * farR.a);
+}
+
+void main() {
+  float cascade = uCascadeParams.x;
+  float hasUpper = uCascadeParams.y;
+  float atlasSize = uCascadeParams.z;
+  float aspect = uCascadeParams.w;
+
+  vec2 texel = floor(vUv * atlasSize);
+  float block = exp2(cascade + 1.0); // C0=2, C1=4, C2=8, C3=16
+  float rays = block * block;        // C0=4, C1=16, C2=64, C3=256
+  vec2 probeGrid = vec2(atlasSize / block);
+
+  // Decode interleaved probe & direction index (exact vgpu.sh atlas layout)
+  vec2 probe = floor(texel / block);
+  vec2 localDir = texel - probe * block;
+  float dirIdx = localDir.y * block + localDir.x;
+
+  vec2 originUv = (probe + 0.5) / probeGrid;
+  float angle = (dirIdx + 0.5) / rays * PI2;
+  vec2 dir = vec2(cos(angle), sin(angle));
+  // Aspect-correct UV step so screen-space radiance propagation is isotropic on widescreen displays
+  vec2 uvStepScale = vec2(1.0 / max(aspect, 0.5), 1.0) / atlasSize;
+
+  float tStart = rcIntervalStart(cascade);
+  float tEnd = tStart + rcIntervalLength(cascade) * 1.04;
+  float originZ = texture(uEmitterTex, originUv).a;
+
+  // Energy-normalized raymarch across this cascade's geometric interval with bilateral 3D depth locality
+  vec4 rad = vec4(0.0, 0.0, 0.0, 1.0);
+  const int STEPS = 6;
+  const float INV_STEPS = 1.0 / 6.0;
+  float dt = (tEnd - tStart) * INV_STEPS;
+  for (int i = 0; i < STEPS; i++) {
+    float t = tStart + (float(i) + 0.5) * dt;
+    vec2 suv = originUv + dir * t * uvStepScale;
+    if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) {
+      break;
+    }
+    vec4 s = texture(uEmitterTex, suv);
+    float emLum = max(s.r, max(s.g, s.b));
+    float sZ = s.a;
+
+    // Occlusion test: block light sharply across abrupt depth cliffs / raised walls
+    if (originZ > 0.01 && sZ > 0.01 && sZ < originZ * 0.88 && emLum < 0.08) {
+      rad.a *= 0.52;
+      if (rad.a < 0.02) break;
+    }
+
+    if (emLum > 0.01) {
+      // Keep bounce light tightly coupled to the emitting 3D depth neighborhood (zero bleed across foreground/background!)
+      float depthMatch = (originZ <= 0.01 || sZ <= 0.01)
+        ? 0.30
+        : exp(-abs(sZ - originZ) / max(originZ * 0.18, 0.06));
+      float falloff = 1.0 / (1.0 + t * 0.055 + t * t * 0.0022);
+      float contrib = rad.a * depthMatch * falloff * INV_STEPS;
+      rad.rgb += s.rgb * contrib * 2.25;
+      rad.a *= exp(-emLum * (0.35 + 0.65 * depthMatch) * 0.55);
+      if (rad.a < 0.02) break;
+    }
+  }
+
+  // Top-down cascade merge-then-average with probe-space clamping (prevents direction bleed at borders!)
+  if (hasUpper > 0.5) {
+    float upperBlock = block * 2.0;
+    vec2 upperGrid = vec2(atlasSize / upperBlock);
+    vec2 pos = originUv * upperGrid - 0.5;
+    vec2 base = floor(pos);
+    vec2 f = clamp(pos - base, vec2(0.0), vec2(1.0));
+    float w00 = (1.0 - f.x) * (1.0 - f.y);
+    float w10 = f.x * (1.0 - f.y);
+    float w01 = (1.0 - f.x) * f.y;
+    float w11 = f.x * f.y;
+
+    vec2 p00 = clamp(base + vec2(0.0, 0.0), vec2(0.0), upperGrid - 1.0);
+    vec2 p10 = clamp(base + vec2(1.0, 0.0), vec2(0.0), upperGrid - 1.0);
+    vec2 p01 = clamp(base + vec2(0.0, 1.0), vec2(0.0), upperGrid - 1.0);
+    vec2 p11 = clamp(base + vec2(1.0, 1.0), vec2(0.0), upperGrid - 1.0);
+
+    vec4 farAcc = vec4(0.0);
+    for (int b = 0; b < 4; b++) {
+      float upperDir = dirIdx * 4.0 + float(b);
+      vec2 uOff = vec2(mod(upperDir, upperBlock), floor(upperDir / upperBlock));
+      vec4 c00 = texelFetch(uUpperTex, ivec2(p00 * upperBlock + uOff), 0);
+      vec4 c10 = texelFetch(uUpperTex, ivec2(p10 * upperBlock + uOff), 0);
+      vec4 c01 = texelFetch(uUpperTex, ivec2(p01 * upperBlock + uOff), 0);
+      vec4 c11 = texelFetch(uUpperTex, ivec2(p11 * upperBlock + uOff), 0);
+      farAcc += (c00 * w00 + c10 * w10 + c01 * w01 + c11 * w11) * 0.25;
+    }
+    rad = rcMerge(rad, farAcc);
+  }
+
+  fragColor = rad;
+}
+`;
+
+export const RC_RESOLVE_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uCascade0Tex;
+uniform float uAtlasSize;
+
+void main() {
+  // Cascade 0 has block=2 (4 angular sectors per probe) over a (atlasSize/2) probe grid
+  float probeGrid = uAtlasSize * 0.5;
+  vec2 probe = clamp(floor(vUv * probeGrid), vec2(0.0), vec2(probeGrid - 1.0));
+  ivec2 base = ivec2(probe * 2.0);
+
+  vec3 sum = (
+    texelFetch(uCascade0Tex, base + ivec2(0, 0), 0).rgb +
+    texelFetch(uCascade0Tex, base + ivec2(1, 0), 0).rgb +
+    texelFetch(uCascade0Tex, base + ivec2(0, 1), 0).rgb +
+    texelFetch(uCascade0Tex, base + ivec2(1, 1), 0).rgb
+  ) * 0.25;
+
+  fragColor = vec4(min(sum, vec3(3.5)), 1.0);
+}
+`;
+
+/**
+ * Full-Res Scene Lighting Resolve (runs on HDR BEFORE Bloom so Bloom responds to real GTAO, SSR & Radiance Cascades GI!):
  *   - Combines hdrMain + depth-blurred GTAO + Contact Shadows + Screen-Space Inter-Surface Reflections
+ *   - Adds hierarchical Screen-Space Radiance Cascades emissive GI (multi-bounce colored glow with wall occlusion!)
  *   - Applies Lagarde Specular Occlusion & protects emissive signals/orbitals cleanly
  *   - Preserves optical CoC in alpha!
  */
@@ -3064,8 +3284,10 @@ uniform sampler2D uGbufTex;
 uniform sampler2D uAoTex;
 uniform sampler2D uSsrTex;
 uniform sampler2D uSsrBlurTex;
+uniform sampler2D uRcGiTex;
 uniform float uAoMix;
 uniform float uSsrMix;
+uniform float uRcMix;
 
 void main() {
   vec4 hdr = texture(uHdrTex, vUv);
@@ -3087,6 +3309,21 @@ void main() {
     // Lagarde-inspired metallic contrast: crevices in metals darken cleanly without crushing flat exposed faces
     float occ = mix(1.0, gtao * mix(1.0, contactSh, 0.72), shadeProt * (0.78 + 0.22 * metal));
     col *= occ;
+
+    // Hierarchical Screen-Space Radiance Cascades GI: localized colored bounce from active silicon signals ONLY!
+    // Preserves deep obsidian studio shadows (via gtao^2 & lit-surface coupling) and avoids double-bloom blowouts!
+    if (uRcMix > 0.01) {
+      vec3 gi = texture(uRcGiTex, vUv).rgb;
+      float baseLum = max(col.r, max(col.g, col.b));
+      float litSurf = smoothstep(0.008, 0.075, baseLum);
+      // Couple strongly to metallic copper/silicon walls & crisp surfaces while keeping deep shadow recesses dark
+      float surfResp = (0.32 + 0.68 * metal) * (0.25 + 0.75 * litSurf) * (gtao * gtao) * (0.18 + 0.82 * shadeProt);
+      // Enrich chromatic purity of bounced silicon light so it glows jewel-like rather than greying out dark surfaces
+      float giLum = dot(gi, vec3(0.2126, 0.7152, 0.0722));
+      vec3 giRich = max(vec3(giLum) + (gi - vec3(giLum)) * 1.28, vec3(0.0));
+      vec3 bounce = min(giRich * surfResp * uRcMix * 0.58, vec3(0.75));
+      col += bounce;
+    }
 
     // Inter-Surface Screen-Space Reflections (skip World 0 plinth where gbuf.a ~ 0.5 already has exact planar reflection)
     if (uSsrMix > 0.01 && gbuf.a > 0.75 && metal > 0.20 && rough < 0.46) {
