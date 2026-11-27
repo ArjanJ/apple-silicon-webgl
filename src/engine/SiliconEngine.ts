@@ -176,7 +176,7 @@ const STAGE_FLOOR_Y = [-0.598, -0.26, -0.14, -0.075, -0.35, -6.0, -6.0, -6.0, -6
 const WORLD0_GRID_STEP = WORLD1_PITCH / STAGE_RATIOS[0]; // 0.095 (exact World 1 grid pitch on World 0!)
 
 /** "Cold Boot" Centered Title Card -> Dark Silhouette Build -> Major-Beat Ignition & Hero Crane-Up */
-const DEFAULT_INTRO_CUES: IntroCueMap = getVibeMeta('orbital').introCues;
+const DEFAULT_INTRO_CUES: IntroCueMap = getVibeMeta('minimal').introCues;
 const INTRO_START_ZOOM = -0.5;
 const INTRO_START_PITCH = 0.18; // ~10.3° sleek sculptural low horizon angle -> cranes up to HERO_PITCH (49°)
 const INTRO_START_YAW = 0.0;    // Dead-straight architectural symmetry (zero crookedness!)

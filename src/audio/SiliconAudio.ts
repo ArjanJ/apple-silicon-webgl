@@ -42,7 +42,7 @@ export type AudioIntroPhase =
   | 'settle'
   | 'done';
 
-const STORAGE_VIBE_KEY = 'silicon-microscope-vibe-v2';
+const STORAGE_VIBE_KEY = 'silicon-microscope-vibe-v3';
 const STORAGE_BGM_KEY = 'silicon-microscope-bgm-level';
 
 function loadStoredVibe(): MusicVibeId {
@@ -54,7 +54,7 @@ function loadStoredVibe(): MusicVibeId {
   } catch {
     // ignore storage errors
   }
-  return 'orbital';
+  return 'minimal';
 }
 
 function loadStoredBgmLevel(): BgmLevelId {
@@ -70,7 +70,7 @@ function loadStoredBgmLevel(): BgmLevelId {
 }
 
 function getBgmGainForLevel(level: BgmLevelId): number {
-  return BGM_LEVEL_OPTIONS.find((o) => o.id === level)?.gain ?? 0.24;
+  return BGM_LEVEL_OPTIONS.find((o) => o.id === level)?.gain ?? 0.44;
 }
 
 export class SiliconAudio {
@@ -115,6 +115,12 @@ export class SiliconAudio {
   private bgmFilter!: BiquadFilterNode;
   private bgmDuckGain!: GainNode;
   private bgmLevelGain!: GainNode;
+  private bgmDelaySend!: GainNode;
+  private bgmDelayL!: DelayNode;
+  private bgmDelayR!: DelayNode;
+  private introDelaySend!: GainNode;
+  private introDelayL!: DelayNode;
+  private introDelayR!: DelayNode;
 
   // Active cinematic Cold Boot score state (for clean sync, mid-intro unlock, & early skip fadeout)
   private introRunning = false;
@@ -604,6 +610,21 @@ export class SiliconAudio {
     bgmDry.connect(this.dryBus);
     bgmHall.connect(this.cinemaSend);
 
+    // Tempo-synced stereo ping-pong dotted-8th delay buses (separate BGM & Intro returns so levels/ducking stay exact)
+    const bgmDelay = this.buildPingPongDelay(ctx, 0.416, this.bgmDuckGain);
+    this.bgmDelaySend = bgmDelay.send;
+    this.bgmDelayL = bgmDelay.delayL;
+    this.bgmDelayR = bgmDelay.delayR;
+
+    const introDelayReturn = ctx.createGain();
+    introDelayReturn.gain.setValueAtTime(0.75, now);
+    introDelayReturn.connect(this.dryBus);
+    introDelayReturn.connect(this.cinemaSend);
+    const introDelay = this.buildPingPongDelay(ctx, 0.416, introDelayReturn);
+    this.introDelaySend = introDelay.send;
+    this.introDelayL = introDelay.delayL;
+    this.introDelayR = introDelay.delayR;
+
     this.dryBus.connect(this.compressor);
     this.roomSend.connect(this.convolver);
     this.convolver.connect(this.roomGain);
@@ -619,7 +640,74 @@ export class SiliconAudio {
     this.warmDriveCurve = this.buildWarmDriveCurve(2.0);
 
     this.initialized = true;
+    this.syncVibeShaping(0.01);
     this.emitState();
+  }
+
+  /** Clean tempo-synced stereo ping-pong delay with bandpass-filtered feedback */
+  private buildPingPongDelay(
+    ctx: AudioContext,
+    initialDelaySec: number,
+    dest: AudioNode
+  ): { send: GainNode; delayL: DelayNode; delayR: DelayNode } {
+    const now = ctx.currentTime;
+    const send = ctx.createGain();
+    send.gain.setValueAtTime(0.36, now);
+
+    const delayL = ctx.createDelay(1.5);
+    const delayR = ctx.createDelay(1.5);
+    delayL.delayTime.setValueAtTime(initialDelaySec, now);
+    delayR.delayTime.setValueAtTime(initialDelaySec, now);
+
+    const fbL = ctx.createGain();
+    const fbR = ctx.createGain();
+    fbL.gain.setValueAtTime(0.36, now);
+    fbR.gain.setValueAtTime(0.36, now);
+
+    const fbFilter = ctx.createBiquadFilter();
+    fbFilter.type = 'bandpass';
+    fbFilter.frequency.setValueAtTime(1650, now);
+    fbFilter.Q.setValueAtTime(0.55, now);
+
+    const panL = ctx.createStereoPanner();
+    const panR = ctx.createStereoPanner();
+    panL.pan.setValueAtTime(-0.68, now);
+    panR.pan.setValueAtTime(0.68, now);
+
+    send.connect(delayL);
+    delayL.connect(panL);
+    panL.connect(dest);
+    delayL.connect(fbL);
+    fbL.connect(delayR);
+    delayR.connect(panR);
+    panR.connect(dest);
+    delayR.connect(fbFilter);
+    fbFilter.connect(fbR);
+    fbR.connect(delayL);
+
+    return { send, delayL, delayR };
+  }
+
+  /** Tune BGM filter ceiling & dotted-8th stereo delay time to the active vibe */
+  private syncVibeShaping(tau = 0.08): void {
+    if (!this.ctx || !this.bgmFilter) return;
+    const now = this.ctx.currentTime;
+    const vibe = getVibeMeta(this.vibeId);
+    const targetCutoff =
+      this.vibeId === 'minimal' ? 5400 + this.depthNorm * 6600 : 1950 + this.depthNorm * 1850;
+    this.bgmFilter.frequency.setTargetAtTime(targetCutoff, now, tau);
+    this.lastFilterDepth = this.depthNorm;
+
+    const beatSec = vibe.stepSec >= 0.4 ? vibe.stepSec : vibe.stepSec * 4;
+    const dottedEighth = clamp(beatSec * 0.75, 0.18, 0.9);
+    if (this.bgmDelayL && this.bgmDelayR) {
+      this.bgmDelayL.delayTime.setTargetAtTime(dottedEighth, now, tau);
+      this.bgmDelayR.delayTime.setTargetAtTime(dottedEighth, now, tau);
+    }
+    if (this.introDelayL && this.introDelayR) {
+      this.introDelayL.delayTime.setTargetAtTime(dottedEighth, now, tau);
+      this.introDelayR.delayTime.setTargetAtTime(dottedEighth, now, tau);
+    }
   }
 
   /** Tight studio/lab room IR (~480 ms) with crisp early reflections for physical weight */
@@ -916,12 +1004,13 @@ export class SiliconAudio {
     return osc;
   }
 
-  private makeToolkit(trackFn: (node: AudioScheduledSourceNode) => void): SynthToolkit {
+  private makeToolkit(trackFn: (node: AudioScheduledSourceNode) => void, delaySend?: AudioNode): SynthToolkit {
     return {
       ctx: this.ctx!,
       crispNoiseBuf: this.crispNoiseBuf,
       brushedNoiseBuf: this.brushedNoiseBuf,
       warmDriveCurve: this.warmDriveCurve,
+      delaySend,
       track: trackFn,
       triggerStrike: (t, f, q, d, g, dest) => this.triggerStrike(t, f, q, d, g, dest),
       triggerThock: (t, s, e, d, g, dest, type) => this.triggerThock(t, s, e, d, g, dest, type),
@@ -992,6 +1081,7 @@ export class SiliconAudio {
     this.bgmStepIdx = 0;
     this.bgmCycleIdx = 0;
     this.bgmNextStepTime = startAt;
+    this.syncVibeShaping(0.05);
     this.syncBgmLevelGain(0.08);
     if (!this.burstDucking) {
       this.syncBgmDuckGain(1.0, 0.14);
@@ -1025,7 +1115,7 @@ export class SiliconAudio {
       node.onended = () => {
         this.bgmTrackedNodes.delete(node);
       };
-    });
+    }, this.bgmDelaySend);
 
     while (this.bgmNextStepTime < horizon) {
       scheduleVibeLoopStep(
@@ -1123,10 +1213,11 @@ export class SiliconAudio {
       return;
     }
 
-    // Gently breathe the background loop low-pass filter with magnification depth (warm on die -> luminous at atom/quarks)
+    // Gently breathe the background loop filter with magnification depth (warm on die -> luminous at atom/quarks)
     if (this.bgmFilter && Math.abs(this.depthNorm - this.lastFilterDepth) > 0.015) {
       this.lastFilterDepth = this.depthNorm;
-      const targetCutoff = 1950 + this.depthNorm * 1850;
+      const targetCutoff =
+        this.vibeId === 'minimal' ? 5400 + this.depthNorm * 6600 : 1950 + this.depthNorm * 1850;
       this.bgmFilter.frequency.setTargetAtTime(targetCutoff, this.ctx.currentTime, 0.25);
     }
 
@@ -1592,9 +1683,9 @@ export class SiliconAudio {
     }
 
     const drySend = ctx.createGain();
-    drySend.gain.setValueAtTime(0.88, now);
+    drySend.gain.setValueAtTime(0.76, now);
     const hallSend = ctx.createGain();
-    hallSend.gain.setValueAtTime(0.86, now);
+    hallSend.gain.setValueAtTime(0.74, now);
 
     scoreBus.connect(drySend);
     drySend.connect(this.dryBus);
@@ -1606,7 +1697,8 @@ export class SiliconAudio {
     this.introSources = sources;
 
     // 1) Render the active vibe's full beat-locked Cold Boot composition
-    const tk = this.makeToolkit((node) => sources.push(node));
+    this.syncVibeShaping(0.02);
+    const tk = this.makeToolkit((node) => sources.push(node), this.introDelaySend);
     scheduleVibeIntro(vibe.id, tk, t0, now, scoreBus);
 
     // 2) Optical reticle lock on lockSec + whisper-clean Liquid Glass HUD arrival on hudSec
@@ -1638,7 +1730,8 @@ export class SiliconAudio {
         this.introHandoffTimer = null;
         this.introRunning = false;
         if (!this.userMuted && !this.tabHidden && this.bgmLevel !== 'off' && this.ctx?.state === 'running') {
-          this.startBackgroundLoop(1.75, handoffAudioTime);
+          const handoffFade = this.vibeId === 'minimal' ? 0.14 : 1.1;
+          this.startBackgroundLoop(handoffFade, handoffAudioTime);
         }
       }, delayMs);
     }

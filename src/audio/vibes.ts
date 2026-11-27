@@ -11,7 +11,7 @@
  *   3) A harmonically matched scale table so hover taps, turret stops, and bursts stay in key.
  */
 
-export type MusicVibeId = 'glass' | 'orbital' | 'pulse' | 'velvet' | 'noir';
+export type MusicVibeId = 'minimal' | 'glass' | 'orbital' | 'pulse' | 'velvet' | 'noir';
 
 export type BgmLevelId = 'off' | 'whisper' | 'quiet' | 'present';
 
@@ -68,12 +68,41 @@ export const BGM_LEVEL_OPTIONS: readonly {
   readonly gain: number;
 }[] = [
   { id: 'off', label: 'Off', gain: 0.0 },
-  { id: 'whisper', label: 'Whisper', gain: 0.13 },
-  { id: 'quiet', label: 'Quiet', gain: 0.24 },
-  { id: 'present', label: 'Present', gain: 0.38 },
+  { id: 'whisper', label: 'Whisper', gain: 0.22 },
+  { id: 'quiet', label: 'Quiet', gain: 0.44 },
+  { id: 'present', label: 'Present', gain: 0.68 },
 ];
 
 export const MUSIC_VIBES: readonly MusicVibeMeta[] = [
+  {
+    id: 'minimal',
+    name: 'Precision Minimalism',
+    shortLabel: 'Minimal',
+    tagline: '5-over-4 muted felt ostinato, stepper clicks & bowed bloom',
+    metaBadge: 'D MINOR · 108 BPM',
+    stepSec: 0.13889,
+    loopSteps: 64,
+    loopHandoffSec: 5.756,
+    introCues: {
+      durationSec: 7.15,
+      heldStartSec: 0.72,
+      revealSec: 1.311,
+      pulseBeats: [2.422, 2.978, 3.533, 4.089],
+      riseSec: 2.422,
+      preDropSec: 4.36,
+      dropSec: 4.644,
+      bloomSec: 5.2,
+      lockSec: 5.756,
+      hudSec: 6.311,
+    },
+    turretScaleHz: [73.42, 110.0, 146.83, 164.81, 174.61, 220.0, 246.94, 261.63, 293.66, 55.0, 36.71],
+    pCoreScaleHz: [146.83, 164.81, 174.61, 220.0, 246.94, 261.63, 293.66, 329.63],
+    rootHz: 146.83,
+    fifthHz: 220.0,
+    octaveHz: 293.66,
+    subHz: 36.71,
+    burstNotes: [73.42, 73.42, 146.83, 73.42, 110.0, 73.42, 87.31, 110.0],
+  },
   {
     id: 'orbital',
     name: 'Quantum Drift',
@@ -230,6 +259,7 @@ export interface SynthToolkit {
   crispNoiseBuf: AudioBuffer;
   brushedNoiseBuf: AudioBuffer;
   warmDriveCurve: Float32Array<ArrayBuffer>;
+  delaySend?: AudioNode;
   track: (node: AudioScheduledSourceNode) => void;
   triggerStrike: (time: number, freqHz: number, q: number, durSec: number, gain: number, dest: AudioNode) => void;
   triggerThock: (
@@ -569,6 +599,240 @@ function playMicroHat(
   tk.track(src);
 }
 
+/** Muted felt piano / damped hammer-pluck (Precision Minimalism core voice) */
+function playFeltNote(
+  tk: SynthToolkit,
+  time: number,
+  freqHz: number,
+  durSec: number,
+  gain: number,
+  panVal: number,
+  dest: AudioNode,
+  bright = 0.45,
+  sendDelay = 0.38
+): void {
+  const { ctx } = tk;
+  const pan = ctx.createStereoPanner();
+  pan.pan.setValueAtTime(clamp(panVal, -0.78, 0.78), time);
+  pan.connect(dest);
+
+  const osc1 = ctx.createOscillator();
+  osc1.type = 'triangle';
+  osc1.frequency.setValueAtTime(freqHz, time);
+
+  const osc2 = ctx.createOscillator();
+  osc2.type = 'sine';
+  osc2.frequency.setValueAtTime(freqHz * 2.0, time);
+
+  const g2 = ctx.createGain();
+  g2.gain.setValueAtTime(0.22 + bright * 0.28, time);
+  g2.gain.exponentialRampToValueAtTime(0.01, time + Math.min(durSec * 0.45, 0.35));
+
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.setValueAtTime(Math.min(5400, freqHz * (2.6 + bright * 4.5)), time);
+  lp.frequency.exponentialRampToValueAtTime(Math.max(260, freqHz * 1.4), time + durSec * 0.8);
+
+  const env = ctx.createGain();
+  env.gain.setValueAtTime(0.0001, time);
+  env.gain.linearRampToValueAtTime(gain, time + 0.004);
+  env.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain * 0.28), time + durSec * 0.35);
+  env.gain.exponentialRampToValueAtTime(0.0001, time + durSec);
+
+  osc1.connect(lp);
+  osc2.connect(g2);
+  g2.connect(lp);
+  lp.connect(env);
+  env.connect(pan);
+
+  if (sendDelay > 0 && tk.delaySend) {
+    const ds = ctx.createGain();
+    ds.gain.setValueAtTime(sendDelay, time);
+    env.connect(ds);
+    ds.connect(tk.delaySend);
+  }
+
+  // Subtle felt hammer contact transient
+  const h = ctx.createBufferSource();
+  h.buffer = tk.crispNoiseBuf;
+  const offset = Math.random() * Math.max(0.01, tk.crispNoiseBuf.duration - 0.03);
+  const hbp = ctx.createBiquadFilter();
+  hbp.type = 'bandpass';
+  hbp.frequency.setValueAtTime(1400 + bright * 1800, time);
+  hbp.Q.setValueAtTime(2.2, time);
+
+  const hg = ctx.createGain();
+  hg.gain.setValueAtTime(0.0001, time);
+  hg.gain.linearRampToValueAtTime(gain * 0.14, time + 0.002);
+  hg.gain.exponentialRampToValueAtTime(0.0001, time + 0.018);
+
+  h.connect(hbp);
+  hbp.connect(hg);
+  hg.connect(pan);
+
+  osc1.start(time);
+  osc2.start(time);
+  h.start(time, offset, 0.025);
+  osc1.stop(time + durSec + 0.04);
+  osc2.stop(time + durSec + 0.04);
+  tk.track(osc1);
+  tk.track(osc2);
+  tk.track(h);
+}
+
+/** Formant-shaped bowed chamber string (woody cello/viola harmonics, not raw sawtooth) */
+function playBowedString(
+  tk: SynthToolkit,
+  time: number,
+  freqHz: number,
+  durSec: number,
+  gain: number,
+  panVal: number,
+  dest: AudioNode,
+  bright = 0.55
+): void {
+  const { ctx } = tk;
+  const pan = ctx.createStereoPanner();
+  pan.pan.setValueAtTime(clamp(panVal, -0.78, 0.78), time);
+  pan.connect(dest);
+
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(freqHz, time);
+
+  const lfo = ctx.createOscillator();
+  lfo.frequency.setValueAtTime(4.8, time);
+  const lfoG = ctx.createGain();
+  lfoG.gain.setValueAtTime(0.0, time);
+  lfoG.gain.linearRampToValueAtTime(freqHz * 0.0045, time + Math.min(1.1, durSec * 0.45));
+  lfo.connect(lfoG);
+  lfoG.connect(osc.frequency);
+
+  const f1 = ctx.createBiquadFilter();
+  f1.type = 'bandpass';
+  f1.frequency.setValueAtTime(Math.max(220, freqHz * 1.8), time);
+  f1.Q.setValueAtTime(1.6, time);
+
+  const f2 = ctx.createBiquadFilter();
+  f2.type = 'bandpass';
+  f2.frequency.setValueAtTime(720 + bright * 1100, time);
+  f2.Q.setValueAtTime(2.0, time);
+
+  const g2 = ctx.createGain();
+  g2.gain.setValueAtTime(0.55, time);
+
+  const env = ctx.createGain();
+  const atk = Math.min(1.05, durSec * 0.36);
+  const rel = Math.min(1.25, durSec * 0.38);
+  env.gain.setValueAtTime(0.0001, time);
+  env.gain.linearRampToValueAtTime(gain, time + atk);
+  env.gain.setValueAtTime(gain * 0.92, Math.max(time + atk + 0.04, time + durSec - rel));
+  env.gain.exponentialRampToValueAtTime(0.0001, time + durSec);
+
+  osc.connect(f1);
+  f1.connect(env);
+  osc.connect(f2);
+  f2.connect(g2);
+  g2.connect(env);
+  env.connect(pan);
+
+  osc.start(time);
+  lfo.start(time);
+  osc.stop(time + durSec + 0.05);
+  lfo.stop(time + durSec + 0.05);
+  tk.track(osc);
+  tk.track(lfo);
+}
+
+/** Surgical Swiss-watch / laser-stepper micro-click */
+function playStepperClick(
+  tk: SynthToolkit,
+  time: number,
+  freqHz: number,
+  gain: number,
+  panVal: number,
+  dest: AudioNode,
+  durSec = 0.014
+): void {
+  const { ctx } = tk;
+  const src = ctx.createBufferSource();
+  src.buffer = tk.crispNoiseBuf;
+  const offset = Math.random() * Math.max(0.01, tk.crispNoiseBuf.duration - durSec - 0.02);
+
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.setValueAtTime(freqHz, time);
+  bp.Q.setValueAtTime(4.2, time);
+
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, time);
+  g.gain.linearRampToValueAtTime(gain, time + 0.0012);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + durSec);
+
+  const pan = ctx.createStereoPanner();
+  pan.pan.setValueAtTime(clamp(panVal, -0.7, 0.7), time);
+
+  src.connect(bp);
+  bp.connect(g);
+  g.connect(pan);
+  pan.connect(dest);
+  src.start(time, offset, durSec + 0.01);
+  tk.track(src);
+}
+
+/** Glassy metallic harmonic ping with subtle inharmonic ring */
+function playHarmonicPing(
+  tk: SynthToolkit,
+  time: number,
+  freqHz: number,
+  durSec: number,
+  gain: number,
+  panVal: number,
+  dest: AudioNode,
+  sendDelay = 0.55
+): void {
+  const { ctx } = tk;
+  const pan = ctx.createStereoPanner();
+  pan.pan.setValueAtTime(clamp(panVal, -0.78, 0.78), time);
+  pan.connect(dest);
+
+  const car = ctx.createOscillator();
+  car.type = 'sine';
+  car.frequency.setValueAtTime(freqHz, time);
+
+  const mod = ctx.createOscillator();
+  mod.type = 'sine';
+  mod.frequency.setValueAtTime(freqHz * 2.76, time);
+
+  const mg = ctx.createGain();
+  mg.gain.setValueAtTime(freqHz * 0.42, time);
+  mg.gain.exponentialRampToValueAtTime(0.01, time + Math.min(0.28, durSec * 0.35));
+
+  const env = ctx.createGain();
+  env.gain.setValueAtTime(0.0001, time);
+  env.gain.linearRampToValueAtTime(gain, time + 0.004);
+  env.gain.exponentialRampToValueAtTime(0.0001, time + durSec);
+
+  mod.connect(mg);
+  mg.connect(car.frequency);
+  car.connect(env);
+  env.connect(pan);
+
+  if (sendDelay > 0 && tk.delaySend) {
+    const ds = ctx.createGain();
+    ds.gain.setValueAtTime(sendDelay, time);
+    env.connect(ds);
+    ds.connect(tk.delaySend);
+  }
+
+  car.start(time);
+  mod.start(time);
+  car.stop(time + durSec + 0.04);
+  mod.stop(time + durSec + 0.04);
+  tk.track(car);
+  tk.track(mod);
+}
+
 // ============================================================================
 // INTRO SCORES (0.00s -> ~7.5s, synced to Cold Boot visual reveal)
 // ============================================================================
@@ -581,6 +845,9 @@ export function scheduleVibeIntro(
   scoreBus: AudioNode
 ): void {
   switch (vibeId) {
+    case 'minimal':
+      scheduleMinimalIntro(tk, t0, now, scoreBus);
+      break;
     case 'glass':
       scheduleGlassIntro(tk, t0, now, scoreBus);
       break;
@@ -596,6 +863,107 @@ export function scheduleVibeIntro(
     case 'noir':
       scheduleNoirIntro(tk, t0, now, scoreBus);
       break;
+  }
+}
+
+/** 0) PRECISION MINIMALISM — D-Minor 108 BPM muted felt ostinato & stepper clicks -> 4.644s Dm9 Bowed Ignition Drop */
+function scheduleMinimalIntro(tk: SynthToolkit, t0: number, now: number, scoreBus: AudioNode): void {
+  const step = 0.13889; // 16th note at 108 BPM
+  const beat = step * 4; // 0.55556s
+  const b0 = 0.2;
+  const chord = [146.83, 220.0, 293.66, 329.63, 440.0]; // Dm9
+
+  // Act 0-1 (0.20 - 2.422s): Sparse surgical stepper clicks & solitary felt pings on black / dark silhouette
+  for (let i = 0; i < 4; i++) {
+    const cue = b0 + i * beat;
+    if (t0 + cue >= now - 0.02) {
+      const ct = Math.max(now, t0 + cue);
+      playStepperClick(tk, ct, 3600 + i * 700, 0.055 + i * 0.016, i % 2 === 0 ? -0.3 : 0.3, scoreBus);
+      playFeltNote(
+        tk,
+        ct,
+        chord[i % 3] * 2,
+        0.85,
+        0.075 + i * 0.015,
+        i % 2 === 0 ? 0.25 : -0.25,
+        scoreBus,
+        0.35 + i * 0.1,
+        0.4
+      );
+    }
+  }
+
+  // Act 2 (2.422 - 4.366s): 14 steps of rising 5-note felt ostinato + sub pulses, cutting cleanly for 2-16th breath!
+  const riseStart = b0 + beat * 4; // 2.422s
+  const ostinato = [293.66, 349.23, 440.0, 523.25, 329.63]; // D4 F4 A4 C5 E4
+  for (let i = 0; i < 14; i++) {
+    const cue = riseStart + i * step;
+    if (t0 + cue + 0.14 <= now) continue;
+    const ct = Math.max(now, t0 + cue);
+    const prog = i / 13;
+
+    if (i % 4 === 0 && t0 + cue >= now - 0.02) {
+      const subHz = i < 8 ? 73.42 : 58.27;
+      playSoftSub(tk, ct, subHz, 0.36, 0.22 + prog * 0.12, scoreBus, subHz * 2.2);
+      playStepperClick(tk, ct, 5200 + prog * 2400, 0.065 + prog * 0.035, i % 8 === 0 ? -0.32 : 0.32, scoreBus);
+    }
+    if (i % 2 === 0) {
+      const nIdx = (i / 2) % ostinato.length;
+      const hz = ostinato[nIdx] * (i >= 10 ? 2 : 1);
+      playFeltNote(
+        tk,
+        ct,
+        hz,
+        0.38 + prog * 0.12,
+        0.09 + prog * 0.065,
+        ((nIdx - 2) / 2) * 0.38,
+        scoreBus,
+        0.35 + prog * 0.55,
+        0.36
+      );
+    }
+  }
+
+  // Rising formant bowed tension string + air swell cutting right before the 4.644s drop
+  if (t0 + 4.38 > now) {
+    const sT = Math.max(now, t0 + riseStart);
+    const dur = Math.max(0.2, t0 + 4.38 - sT);
+    playBowedString(tk, sT, 293.66, dur, 0.16, -0.22, scoreBus, 0.68);
+    playBowedString(tk, sT, 440.0, dur, 0.12, 0.22, scoreBus, 0.72);
+    playAirSwell(tk, sT, Math.max(0.2, t0 + 4.36 - sT), 320, 1520, 0.042, scoreBus);
+  }
+
+  // Act 3 (4.644s = MAJOR DROP BEAT): Deep D1 sub-impact + wide Dm9 bowed-chamber bloom & harmonic pings!
+  const drop = 4.644;
+  if (t0 + 7.6 > now) {
+    const tRes = Math.max(now, t0 + drop);
+    const dur = Math.max(0.5, t0 + 7.65 - tRes);
+    if (t0 + drop >= now - 0.03) {
+      playCinemaImpact(tk, tRes, 118, 36.71, 2.4, 0.44, scoreBus);
+      playStepperClick(tk, tRes, 4800, 0.11, 0, scoreBus, 0.018);
+      chord.forEach((hz, i) => {
+        const pan = ((i / (chord.length - 1)) * 2 - 1) * 0.56;
+        playHarmonicPing(tk, tRes + i * 0.028, hz * 2, 2.2, 0.058, pan, scoreBus, 0.52);
+      });
+    }
+    chord.forEach((hz, i) => {
+      const pan = ((i / (chord.length - 1)) * 2 - 1) * 0.58;
+      playBowedString(tk, tRes, hz, dur, 0.145, pan, scoreBus, 0.65);
+    });
+  }
+
+  // Act 4 (5.200s = BLOOM BEAT): Crisp felt cascade + rhythmic pickup right into the 5.756s Bar 0 main groove!
+  const bloom = 5.2;
+  if (t0 + bloom >= now - 0.02) {
+    const ct = Math.max(now, t0 + bloom);
+    playSoftSub(tk, ct, 73.42, 0.52, 0.24, scoreBus, 132);
+    const cascade = [587.33, 659.25, 880.0];
+    cascade.forEach((hz, i) => {
+      playFeltNote(tk, ct + i * 0.055, hz, 1.3, 0.095, (i - 1) * 0.3, scoreBus, 0.65, 0.48);
+    });
+    // Crisp 2-16th pickup ticks leading directly into Bar 0 downbeat (5.756s) so momentum never drops
+    playStepperClick(tk, ct + step * 2, 6200, 0.055, -0.3, scoreBus, 0.012);
+    playStepperClick(tk, ct + step * 3, 7400, 0.072, 0.3, scoreBus, 0.014);
   }
 }
 
@@ -1259,6 +1627,9 @@ export function scheduleVibeLoopStep(
   depthNorm: number
 ): void {
   switch (vibeId) {
+    case 'minimal':
+      stepMinimalLoop(tk, stepIdx, cycleIdx, time, stepSec, bgmDest, depthNorm);
+      break;
     case 'glass':
       stepGlassLoop(tk, stepIdx, cycleIdx, time, stepSec, bgmDest, depthNorm);
       break;
@@ -1274,6 +1645,135 @@ export function scheduleVibeLoopStep(
     case 'noir':
       stepNoirLoop(tk, stepIdx, cycleIdx, time, stepSec, bgmDest, depthNorm);
       break;
+  }
+}
+
+/**
+ * 0) PRECISION MINIMALISM LOOP — 16-bar evolving cinematic score (4 distinct 4-bar phrases):
+ *    Phrase 0 (Ignition Arrival): Full-momentum 5-over-4 felt ostinato + pulsing sub bass + stepper groove + cello anchor
+ *    Phrase 1 (Harmonic Lift)   : Upper felt counter-melody answers the ostinato as bowed strings open up
+ *    Phrase 2 (Cinematic Stride): Full drive with sculpted heartbeat sub-kick, soaring upper strings & metallic delay pings
+ *    Phrase 3 (Spacious Breath) : Strips back to warm pedal + lingering stereo echoes before resetting seamlessly to Phrase 0
+ */
+function stepMinimalLoop(
+  tk: SynthToolkit,
+  step: number,
+  cycle: number,
+  time: number,
+  stepSec: number,
+  dest: AudioNode,
+  depthNorm: number
+): void {
+  const phrase = cycle % 4; // 0: Arrival, 1: Lift, 2: Stride, 3: Breath
+  const bar = Math.floor(step / 16);
+  const inBar = step % 16;
+  const barDur = stepSec * 16;
+
+  // 4-bar harmonic progression: Dm9 -> Bbmaj7 -> C6/9 -> Am11
+  const bassRoots = [73.42, 58.27, 65.41, 55.0];
+  const celloChord: readonly (readonly number[])[] = [
+    [146.83, 220.0, 329.63], // Dm9
+    [116.54, 174.61, 293.66], // Bbmaj7
+    [130.81, 196.0, 329.63], // C6/9
+    [110.0, 164.81, 261.63], // Am11
+  ];
+
+  // 1) 5-over-4 asymmetric muted felt ostinato (shifts phrasing across every bar)
+  const cellA = [293.66, 349.23, 440.0, 523.25, 329.63]; // D4 F4 A4 C5 E4
+  const cellB = [293.66, 349.23, 440.0, 587.33, 392.0]; // D4 F4 A4 D5 G4
+  const cell = (bar % 2 === 0) ? cellA : cellB;
+
+  if (step % 2 === 0) {
+    const idx = (cycle * 32 + step / 2) % 5;
+    const hz = cell[idx];
+    const accent = idx === 0 ? 1.18 : 0.82;
+    const phraseGain = phrase === 3 ? 0.78 : phrase === 2 ? 1.12 : 1.0;
+    const pan = ((idx - 2) / 2) * 0.42;
+    playFeltNote(
+      tk,
+      time,
+      hz,
+      0.52,
+      0.16 * accent * phraseGain,
+      pan,
+      dest,
+      0.42 + (phrase === 2 ? 0.22 : 0.08) + depthNorm * 0.32,
+      0.42
+    );
+  }
+
+  // 2) Sculpted pulsing bassline (carries real forward momentum after the intro drop!)
+  const root = bassRoots[bar];
+  if (phrase === 3) {
+    // Phrase 3 (Breath): warm sustained pedal on bar downbeat
+    if (inBar === 0) {
+      playSoftSub(tk, time, root, barDur * 0.92, 0.24, dest);
+    }
+  } else {
+    // Phrases 0, 1, 2: driving dotted-quarter / syncopated architectural bass pulse
+    if (inBar === 0 || inBar === 6 || inBar === 12) {
+      const amp = inBar === 0 ? 0.29 : 0.2;
+      const drop = inBar === 0 ? root * 1.9 : 0;
+      playSoftSub(tk, time, root, stepSec * (inBar === 0 ? 5.5 : 4.2), amp, dest, drop || undefined);
+    }
+    // Subtle octave-up bass accent in Phrase 2 (Cinematic Stride)
+    if (phrase === 2 && inBar === 10) {
+      playSoftSub(tk, time, root * 2, stepSec * 3.5, 0.14, dest);
+    }
+  }
+
+  // 3) Subtle heartbeat sub-kick on Phrase 0 (arrival) & Phrase 2 (stride)
+  if ((phrase === 0 || phrase === 2) && (inBar === 0 || inBar === 8)) {
+    const kickAmp = phrase === 2 ? 0.22 : 0.16;
+    playSoftSub(tk, time, 46.0, 0.18, kickAmp, dest, 112);
+  }
+
+  // 4) Precision Swiss-watch / laser-stepper micro-percussion
+  if (inBar === 0 || inBar === 6 || inBar === 12) {
+    const clickGain = (inBar === 0 ? 0.072 : 0.044) * (phrase === 3 ? 0.65 : 1.0);
+    playStepperClick(tk, time, 5400 + inBar * 210, clickGain, inBar === 6 ? -0.36 : 0.36, dest);
+  }
+  if (phrase !== 3 && (inBar === 4 || inBar === 14)) {
+    playStepperClick(tk, time, 7900, 0.032 + (phrase === 2 ? 0.016 : 0), inBar === 4 ? -0.48 : 0.48, dest, 0.011);
+  }
+
+  // 5) Expressive formant-bowed chamber strings (always present so the score feels cinematic, swelling on Phrases 1 & 2)
+  if (inBar === 0) {
+    const voices = celloChord[bar];
+    const strGain = phrase === 2 ? 0.135 : phrase === 1 ? 0.115 : phrase === 0 ? 0.095 : 0.075;
+    const strBright = 0.35 + (phrase === 2 ? 0.3 : phrase === 1 ? 0.18 : 0.05) + depthNorm * 0.25;
+    voices.forEach((hz, i) => {
+      const pan = ((i / (voices.length - 1)) * 2 - 1) * 0.54;
+      playBowedString(tk, time + i * 0.025, hz, barDur * 1.12, strGain, pan, dest, strBright);
+    });
+
+    // High-register soaring string harmonic in Phrase 2 (or deep microscope zoom)
+    if (phrase === 2 || depthNorm > 0.42) {
+      const hiNotes = [587.33, 523.25, 659.25, 587.33]; // D5 -> C5 -> E5 -> D5
+      const hiGain = (phrase === 2 ? 0.085 : 0.045) + depthNorm * 0.045;
+      playBowedString(tk, time + 0.06, hiNotes[bar], barDur * 1.08, hiGain, bar % 2 === 0 ? -0.46 : 0.46, dest, 0.72);
+    }
+  }
+
+  // 6) Upper felt counter-melody entering in Phrases 1 & 2 (gives the music a memorable, sophisticated theme!)
+  if (phrase === 1 || phrase === 2) {
+    const melody: readonly (readonly number[])[] = [
+      [880.0, 0, 0, 0, 0, 0, 783.99, 0, 0, 0, 659.25, 0, 0, 0, 587.33, 0], // Bar 0: A5 -> G5 -> E5 -> D5
+      [698.46, 0, 0, 0, 0, 0, 659.25, 0, 0, 0, 587.33, 0, 0, 0, 523.25, 0], // Bar 1: F5 -> E5 -> D5 -> C5
+      [659.25, 0, 0, 0, 0, 0, 783.99, 0, 0, 0, 880.0, 0, 0, 0, 659.25, 0], // Bar 2: E5 -> G5 -> A5 -> E5
+      [587.33, 0, 0, 0, 0, 0, 523.25, 0, 0, 0, 659.25, 0, 0, 0, 0, 0], // Bar 3: D5 -> C5 -> E5
+    ];
+    const mHz = melody[bar][inBar];
+    if (mHz > 0) {
+      const pan = bar % 2 === 0 ? 0.34 : -0.34;
+      playFeltNote(tk, time, mHz, 1.35, phrase === 2 ? 0.115 : 0.095, pan, dest, 0.58 + depthNorm * 0.28, 0.54);
+    }
+  }
+
+  // 7) Crystalline metallic pings in Phrase 2 & Phrase 3 (stereo delay tail catches them)
+  if ((phrase === 2 && inBar === 0 && bar % 2 === 0) || (phrase === 3 && inBar === 8 && bar % 2 === 1)) {
+    const pingHz = bar === 0 ? 1174.66 : bar === 2 ? 1318.51 : 880.0;
+    playHarmonicPing(tk, time, pingHz, 2.0, 0.048 + depthNorm * 0.025, bar % 2 === 0 ? -0.45 : 0.45, dest, 0.62);
   }
 }
 
