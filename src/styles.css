@@ -1309,115 +1309,6 @@ body,
   transform: scale(1.22);
 }
 
-/* Soft Edge-Faded Viewport for Open Floating Ticks & Words */
-.vernier-viewport {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 18%, #000 82%, transparent 100%);
-  mask-image: linear-gradient(90deg, transparent 0%, #000 18%, #000 82%, transparent 100%);
-  z-index: 2;
-}
-
-.vernier-tape {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 50%;
-  width: 0;
-  overflow: visible;
-  will-change: transform;
-}
-
-/* Engraved Logarithmic Ticks Floating Directly Above the Words */
-.vernier-tick {
-  position: absolute;
-  top: 7px;
-  left: calc(var(--tick-z) * var(--vernier-pitch));
-  transform: translateX(-50%);
-  transform-origin: center bottom;
-  width: 1px;
-  height: 5px;
-  border-radius: 1px;
-  background: rgba(242, 246, 255, 0.24);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.72);
-  pointer-events: none;
-  will-change: transform;
-}
-
-.vernier-tick.mid {
-  top: 6px;
-  height: 6.5px;
-  background: rgba(242, 246, 255, 0.36);
-}
-
-.vernier-tick.major {
-  top: 5px;
-  width: 1.5px;
-  height: 8.5px;
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.vernier-tick.major.realm-macro {
-  background: rgba(220, 230, 245, 0.72);
-}
-.vernier-tick.major.realm-beol {
-  background: rgba(243, 177, 114, 0.82);
-}
-.vernier-tick.major.realm-feol {
-  background: rgba(127, 226, 255, 0.85);
-}
-.vernier-tick.major.realm-quantum {
-  background: rgba(196, 161, 255, 0.88);
-}
-
-/* Gliding Landmark Words Passing Through the Morphing Center Liquid Glass Pill */
-.vernier-stop {
-  position: absolute;
-  bottom: 2px;
-  height: 34px;
-  left: calc(var(--stop-z) * var(--vernier-pitch));
-  transform: translateX(-50%);
-  appearance: none;
-  outline: none;
-  border: none;
-  background: transparent;
-  padding: 0 10px;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--sans);
-  font-size: 12.5px;
-  font-weight: 500;
-  letter-spacing: -0.014em;
-  color: rgba(248, 250, 255, 0.84);
-  text-shadow:
-    0 1px 8px rgba(0, 0, 0, 0.92),
-    0 0 14px rgba(0, 0, 0, 0.6);
-  white-space: nowrap;
-  pointer-events: auto;
-  cursor: pointer;
-  transition: color 0.16s ease;
-}
-
-.vernier-stop .vc {
-  display: inline-block;
-  transform-origin: center center;
-  will-change: transform;
-}
-
-.vernier-stop:hover:not(.active) {
-  color: #ffffff;
-}
-
-.vernier-stop.active {
-  color: #ffffff;
-  font-weight: 600;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.78);
-}
-
 /* 1-Tap Liquid Glass Depth Map Sheet (Centered above Vernier Dock) */
 .depth-sheet {
   position: absolute;
@@ -1813,12 +1704,6 @@ body,
     height: 38px;
   }
 
-  .vernier-stop {
-    bottom: 2px;
-    height: 38px;
-    font-size: 13px;
-  }
-
   .depth-sheet {
     bottom: calc(max(12px, calc(env(safe-area-inset-bottom) + 8px)) + 96px);
     width: calc(100vw - 20px);
@@ -1877,12 +1762,6 @@ body,
   .vernier-loupe {
     bottom: 2px;
     height: 30px;
-  }
-
-  .vernier-stop {
-    bottom: 2px;
-    height: 30px;
-    font-size: 11.5px;
   }
 
   .depth-sheet {

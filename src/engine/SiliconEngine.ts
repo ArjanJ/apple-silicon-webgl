@@ -1977,6 +1977,56 @@ export class SiliconEngine {
     this.glassPointerActive = active ? 1.0 : 0.0;
   }
 
+  /** Upload Retina 2D canvas containing engraved Vernier ticks + landmark labels (premultiplied RGBA) */
+  public uploadVernierTexture(source: HTMLCanvasElement, originCss: number, texWidthCss: number): void {
+    if (this.contextLost) return;
+    const gl = this.gl;
+    if (!this.vernierTex) {
+      this.vernierTex = gl.createTexture();
+    }
+    if (!this.vernierTex) return;
+    gl.bindTexture(gl.TEXTURE_2D, this.vernierTex);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.vernierTexOriginCss = originCss;
+    this.vernierTexWidthCss = Math.max(1, texWidthCss);
+    this.markActivity();
+  }
+
+  /** Update Vernier strip screen placement, pitch, center glass half-width, and fade alpha */
+  public setVernierStrip(
+    cx: number,
+    cy: number,
+    halfW: number,
+    halfH: number,
+    pitchCss: number,
+    loupeHalfW: number,
+    alpha: number
+  ): void {
+    const a = clamp(alpha, 0, 1);
+    const changed =
+      Math.abs(this.vernierRect[0] - cx) > 0.1 ||
+      Math.abs(this.vernierRect[1] - cy) > 0.1 ||
+      Math.abs(this.vernierRect[2] - halfW) > 0.1 ||
+      Math.abs(this.vernierRect[3] - halfH) > 0.1 ||
+      Math.abs(this.vernierPitchCss - pitchCss) > 0.1 ||
+      Math.abs(this.vernierLoupeHalfW - loupeHalfW) > 0.1 ||
+      Math.abs(this.vernierAlpha - a) > 0.002;
+    this.vernierRect[0] = cx;
+    this.vernierRect[1] = cy;
+    this.vernierRect[2] = halfW;
+    this.vernierRect[3] = halfH;
+    this.vernierPitchCss = Math.max(1, pitchCss);
+    this.vernierLoupeHalfW = Math.max(16, loupeHalfW);
+    this.vernierAlpha = a;
+    if (changed) this.markActivity();
+  }
+
   /**
    * Steady center-reticle zoom on scroll/pinch (zero lateral cursor-drift).
    * Lateral targeting is handled deliberately via click-to-inspect ("Dive to...") or Shift/Right-drag pan.

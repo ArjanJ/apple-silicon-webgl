@@ -1973,36 +1973,38 @@ void main() {
   bool isMagnifier = (style == 3);
   bool isDroplet   = (style >= 2);
 
-  float refraction = isMagnifier ? 0.030 : (style == 2 ? 0.022 : (style == 1 ? 0.015 : 0.014));
-  float bevelDepth = isMagnifier ? 0.088 : (style == 2 ? 0.062 : (style == 1 ? 0.088 : 0.068));
+  float refraction = (style == 2) ? 0.022 : (style == 1 ? 0.015 : 0.014);
+  float bevelDepth = (style == 2) ? 0.062 : (style == 1 ? 0.088 : 0.068);
   float bevelWidth = uGlassParams.y;
-  float aberration = isMagnifier ? 1.25  : (style == 2 ? 0.95  : (style == 1 ? 0.65  : 0.72));
-  float magnify    = isMagnifier ? 1.15  : (style == 2 ? 1.10  : (style == 1 ? 1.03  : 1.045));
+  float aberration = isMagnifier ? 0.28  : (style == 2 ? 0.95  : (style == 1 ? 0.65  : 0.72));
+  float magnify    = isMagnifier ? 1.14  : (style == 2 ? 1.10  : (style == 1 ? 1.03  : 1.045));
   float frost      = uGlassParams.z;
 
   vec2 lensUV = (p_px + b_px) / boxSize;
   vec2 pNorm = p_px / max(boxSize.y, 1.0);
 
   float edge = edgeFactor(p_px, b_px, radius, bevelWidth, boxSize);
-  float offsetAmt = isMagnifier
-    ? (pow(edge, 1.85) * refraction + pow(edge, 5.2) * bevelDepth)
-    : (edge * refraction + pow(edge, 10.0) * bevelDepth);
-  float centreBlend = isMagnifier ? 1.0 : smoothstep(0.12, 0.44, length(pNorm));
-
   vec2 refractDir;
+  vec2 offsetUv;
   if (isMagnifier) {
-    // Exact analytical rounded-capsule SDF normal so text & scene bend smoothly around the rounded glass rim!
+    // Analytical rounded-capsule SDF normal + pill-radius-calibrated convex edge refraction:
+    // crystal-clear 1.14x magnification in the center, smooth rounded-edge optical wrap & refined prism glint on the rim!
     float eps = 0.75;
     float gx = udRoundBox(p_px + vec2(eps, 0.0), b_px, radius) - udRoundBox(p_px - vec2(eps, 0.0), b_px, radius);
     float gy = udRoundBox(p_px + vec2(0.0, eps), b_px, radius) - udRoundBox(p_px - vec2(0.0, eps), b_px, radius);
     refractDir = normalize(vec2(gx, gy) + vec2(1e-6));
+    float bevelPx = (pow(edge, 1.9) * 0.22 + pow(edge, 4.5) * 0.46) * radius;
+    // Keep full horizontal rounded-end wrap while moderating vertical pull so centered letters never echo on top/bottom rim
+    offsetUv = (vec2(-refractDir.x, -refractDir.y * 0.38) * bevelPx) / cssSize;
   } else {
+    float offsetAmt = edge * refraction + pow(edge, 10.0) * bevelDepth;
+    float centreBlend = smoothstep(0.12, 0.44, length(pNorm));
     refractDir = cornerNormal(p_px, b_px, radius, normalize(pNorm + vec2(1e-6)));
+    vec2 offset = refractDir * offsetAmt * centreBlend;
+    vec2 aspectScale = vec2(min(cssSize.x, cssSize.y)) / cssSize;
+    offsetUv = offset * aspectScale;
   }
-  vec2 offset = refractDir * offsetAmt * centreBlend;
 
-  vec2 aspectScale = vec2(min(cssSize.x, cssSize.y)) / cssSize;
-  vec2 offsetUv = offset * aspectScale;
   vec2 localUV = (lensUV - 0.5) / magnify + 0.5;
   vec2 mapped = (centerGl + (localUV - 0.5) * boxSize) / cssSize;
   vec2 refracted = mapped + offsetUv;

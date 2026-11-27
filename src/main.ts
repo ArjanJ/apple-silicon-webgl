@@ -100,30 +100,6 @@ const ICONS = {
   chevronUp: `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>`,
 };
 
-function buildVernierTapeHtml(): string {
-  // Build engraved ticks from z = -2.4 to z = 9.0 in steps of 0.2 (5 subdivisions per landmark)
-  const startStep = Math.round(VERNIER_MIN_Z * VERNIER_SUBDIVS); // -12
-  const endStep = Math.round(VERNIER_MAX_Z * VERNIER_SUBDIVS);   // 45
-  let ticks = '';
-  for (let s = startStep; s <= endStep; s++) {
-    const zVal = s / VERNIER_SUBDIVS;
-    const isMajor = s % VERNIER_SUBDIVS === 0 && zVal >= -1.0;
-    const isHalf = Math.abs(s % VERNIER_SUBDIVS) === 2 || Math.abs(s % VERNIER_SUBDIVS) === 3;
-    const realm = realmForZoom(zVal);
-    const kind = isMajor ? 'major' : isHalf ? 'mid' : 'minor';
-    ticks += `<span class="vernier-tick ${kind} realm-${realm}" data-z="${zVal.toFixed(1)}" style="--tick-z:${zVal.toFixed(1)}"></span>`;
-  }
-
-  const labels = ZOOM_STOPS.map((st, idx) => {
-    const chars = Array.from(st.label)
-      .map((ch) => `<span class="vc">${ch}</span>`)
-      .join('');
-    return `<button type="button" class="vernier-stop realm-${st.realm} ${st.z === 0 ? 'active' : ''}" data-idx="${idx}" data-z="${st.z}" style="--stop-z:${st.z}">${chars}</button>`;
-  }).join('');
-
-  return `${ticks}${labels}`;
-}
-
 function buildDepthSheetHtml(): string {
   return DEPTH_REALMS.map((realm) => {
     const stops = ZOOM_STOPS.filter((s) => s.realm === realm.id);
@@ -479,11 +455,6 @@ function mountApp(): void {
               <div class="vernier-hairline" aria-hidden="true">
                 <span class="vernier-pip"></span>
               </div>
-              <div class="vernier-viewport">
-                <div id="vernier-tape" class="vernier-tape">
-                  ${buildVernierTapeHtml()}
-                </div>
-              </div>
             </div>
           </div>
         </div>
@@ -505,9 +476,6 @@ function mountApp(): void {
   const vernierSizeEl = document.getElementById('vernier-size')!;
   const vernierCapsuleEl = document.getElementById('vernier-capsule')!;
   const vernierLoupeEl = document.getElementById('vernier-loupe')!;
-  const vernierTapeEl = document.getElementById('vernier-tape')!;
-  const vernierStopButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#vernier-tape .vernier-stop'));
-  const vernierTickEls = Array.from(document.querySelectorAll<HTMLElement>('#vernier-tape .vernier-tick'));
   const depthSheet = document.getElementById('depth-sheet')!;
   const depthTileButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#depth-sheet .depth-tile'));
   const zeissScaleBarEl = document.getElementById('zeiss-scale-bar')!;
@@ -599,29 +567,13 @@ function mountApp(): void {
   const cpuHistory: number[] = Array(SPARK_MAX).fill(0.16);
   const gpuHistory: number[] = Array(SPARK_MAX).fill(0.18);
 
-  // Optical Vernier Dial state (zero-reflow 120 FPS tape translation + morphing glass pill + optical refraction!)
-  let vernierPitch = 84;
+  // Optical Vernier Dial state (Retina WebGL2 text strip composited directly UNDER the rounded Liquid Glass magnifier!)
+  let vernierPitch = 90;
   let vernierCoastRaf = 0;
   let vernierScrubbing = false;
-
-  interface VernierCharMetric {
-    el: HTMLSpanElement;
-    stopZ: number;
-    localX: number;
-    warped: boolean;
-  }
-  interface VernierTickMetric {
-    el: HTMLElement;
-    z: number;
-    warped: boolean;
-  }
-  let vernierChars: VernierCharMetric[] = [];
-  const vernierTicks: VernierTickMetric[] = vernierTickEls.map((el) => ({
-    el,
-    z: Number(el.dataset.z ?? 0),
-    warped: false,
-  }));
+  let vernierCanvas: HTMLCanvasElement | null = null;
   let vernierStopPillWidths: number[] = ZOOM_STOPS.map(() => 64);
+  let vernierStripBox = { cx: 0, cy: 0, hw: 0, hh: 27 };
   let loupeAnchor = { cx: 0, cy: 0, baseH: 34 };
   let loupeGlassBox = { cx: 0, cy: 0, hw: 0, hh: 17 };
   let lastLoupeW = 0;
@@ -635,7 +587,7 @@ function mountApp(): void {
     radius: number;
     bevel: number;
     frost: number;
-    style: 0 | 1 | 2;
+    style: 0 | 1 | 2 | 3;
     alpha: number;
   };
   let staticGlassBase: GlassReg[] = [];
@@ -699,73 +651,13 @@ function mountApp(): void {
     // Subtle liquid surface-tension swell while bridging between words or actively scrubbing
     const midBridge = Math.sin(f * Math.PI);
     const scrubBoost = vernierScrubbing ? 1.0 : 0.0;
-    const w = w0 + (w1 - w0) * s + midBridge * 4.5 + scrubBoost * 4.0;
+    const w = w0 + (w1 - w0) * s + midBridge * 4.0 + scrubBoost * 4.0;
     const h = loupeAnchor.baseH + scrubBoost * 2.0 + midBridge * 0.8;
     return { w, h };
   };
 
-  const applyVernierOpticalRefraction = (clampedZ: number, loupeHalfW: number) => {
-    const R = Math.max(24, loupeHalfW);
-
-    // 1. Per-character cylindrical glass refraction: convex magnification inside + squeeze & RGB dispersion on curved rim!
-    for (let i = 0; i < vernierChars.length; i++) {
-      const ch = vernierChars[i];
-      const rawX = (ch.stopZ - clampedZ) * vernierPitch + ch.localX;
-      const u = rawX / R;
-      const au = Math.abs(u);
-
-      if (au >= 1.32) {
-        if (ch.warped) {
-          ch.el.style.transform = '';
-          ch.el.style.textShadow = '';
-          ch.warped = false;
-        }
-        continue;
-      }
-
-      const dome = au < 1.0 ? Math.cos(au * Math.PI * 0.5) : 0.0;
-      const rim = Math.exp(-Math.pow((au - 0.93) / 0.20, 2));
-      const sx = 1.0 + 0.11 * dome - 0.27 * rim;
-      const sy = 1.0 + 0.11 * dome + 0.16 * rim;
-      const sign = rawX >= 0 ? 1 : -1;
-      const shiftX = rawX * 0.085 * dome - sign * 4.2 * rim;
-      const shiftY = -0.65 * dome;
-
-      ch.el.style.transform = `translate3d(${shiftX.toFixed(2)}px, ${shiftY.toFixed(2)}px, 0) scale(${sx.toFixed(3)}, ${sy.toFixed(3)})`;
-      if (rim > 0.14) {
-        const cOff = (1.55 * rim).toFixed(2);
-        const aC = (0.72 * rim).toFixed(2);
-        const aW = (0.60 * rim).toFixed(2);
-        ch.el.style.textShadow = `${(-sign * Number(cOff)).toFixed(2)}px 0 1px rgba(108, 224, 255, ${aC}), ${(sign * Number(cOff)).toFixed(2)}px 0 1px rgba(255, 148, 112, ${aW}), 0 1px 6px rgba(0, 0, 0, 0.88)`;
-      } else if (ch.warped) {
-        ch.el.style.textShadow = '';
-      }
-      ch.warped = true;
-    }
-
-    // 2. Subtle optical swell on the engraved ruler ticks passing above the center glass pill
-    for (let i = 0; i < vernierTicks.length; i++) {
-      const tk = vernierTicks[i];
-      const rawX = (tk.z - clampedZ) * vernierPitch;
-      const au = Math.abs(rawX) / (R * 1.15);
-      if (au >= 1.25) {
-        if (tk.warped) {
-          tk.el.style.transform = '';
-          tk.warped = false;
-        }
-        continue;
-      }
-      const dome = au < 1.0 ? Math.cos(au * Math.PI * 0.5) : 0.0;
-      const sy = 1.0 + 0.34 * dome;
-      const shiftX = rawX * 0.05 * dome;
-      tk.el.style.transform = `translate3d(calc(-50% + ${shiftX.toFixed(2)}px), 0, 0) scaleY(${sy.toFixed(3)})`;
-      tk.warped = true;
-    }
-  };
-
   const updateVernierDial = (z: number, magText?: string, sizeText?: string, scaleBarLabel?: string, scaleBarPx?: number) => {
     const clampedZ = Math.max(VERNIER_MIN_Z, Math.min(VERNIER_MAX_Z, z));
-    vernierTapeEl.style.transform = `translate3d(${(-clampedZ * vernierPitch).toFixed(2)}px, 0, 0)`;
 
     const realm = realmForZoom(clampedZ);
     if (realm !== lastActiveRealm) {
@@ -776,7 +668,7 @@ function mountApp(): void {
       vernierDockEl.style.setProperty('--realm-glow', accent.glow);
     }
 
-    // Morph the single floating center Liquid Glass pill smoothly to hug the current word
+    // Morph the single floating center Liquid Glass magnifier pill smoothly to hug the current word
     const { w: loupeW, h: loupeH } = computeMorphingLoupeSize(clampedZ);
     if (Math.abs(loupeW - lastLoupeW) > 0.15 || Math.abs(loupeH - lastLoupeH) > 0.15) {
       lastLoupeW = loupeW;
@@ -794,21 +686,8 @@ function mountApp(): void {
       }
     }
 
-    // Smooth proximity emphasis on neighboring stop words + real optical refraction inside/across glass pill
-    for (let i = 0; i < ZOOM_STOPS.length; i++) {
-      const btn = vernierStopButtons[i];
-      if (!btn) continue;
-      const dist = Math.abs(clampedZ - ZOOM_STOPS[i].z);
-      const focus = Math.max(0, 1 - dist * 0.44);
-      const op = 0.42 + focus * 0.58;
-      btn.style.opacity = op.toFixed(2);
-    }
-    applyVernierOpticalRefraction(clampedZ, loupeW * 0.5);
-
     const stopIdx = Math.max(0, Math.min(ZOOM_STOPS.length - 1, Math.round(clampedZ) + 1));
     if (stopIdx !== lastActiveStop) {
-      vernierStopButtons[lastActiveStop]?.classList.remove('active');
-      vernierStopButtons[stopIdx]?.classList.add('active');
       depthTileButtons[lastActiveStop]?.classList.remove('active');
       depthTileButtons[stopIdx]?.classList.add('active');
       lastActiveStop = stopIdx;
@@ -830,59 +709,122 @@ function mountApp(): void {
     }
   };
 
+  let uploadVernierStripToEngine: (canvas: HTMLCanvasElement, originCss: number, texWidthCss: number) => void =
+    () => {};
+
+  const paintVernierStripTexture = (stripH: number, baseH: number) => {
+    const padStops = 1.6;
+    const minTexZ = VERNIER_MIN_Z - padStops; // -4.0
+    const maxTexZ = VERNIER_MAX_Z + padStops; // 10.6
+    const texWidthCss = (maxTexZ - minTexZ) * vernierPitch;
+    const originCss = -minTexZ * vernierPitch; // pixel X for z = 0.0
+
+    const maxDpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    const dpr = Math.max(1.0, Math.min(maxDpr, 4096 / Math.max(1, texWidthCss)));
+    const cw = Math.max(1, Math.round(texWidthCss * dpr));
+    const ch = Math.max(1, Math.round(stripH * dpr));
+
+    if (!vernierCanvas) {
+      vernierCanvas = document.createElement('canvas');
+    }
+    vernierCanvas.width = cw;
+    vernierCanvas.height = ch;
+
+    const ctx = vernierCanvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, texWidthCss, stripH);
+
+    // 1. Engraved logarithmic ticks along the top band (z = -2.4 .. 9.0 in steps of 0.2)
+    const startStep = Math.round(VERNIER_MIN_Z * VERNIER_SUBDIVS);
+    const endStep = Math.round(VERNIER_MAX_Z * VERNIER_SUBDIVS);
+    const realmTickColors: Record<RealmId, string> = {
+      macro: 'rgba(220, 230, 245, 0.78)',
+      beol: 'rgba(243, 177, 114, 0.88)',
+      feol: 'rgba(127, 226, 255, 0.90)',
+      quantum: 'rgba(196, 161, 255, 0.92)',
+    };
+
+    for (let s = startStep; s <= endStep; s++) {
+      const zVal = s / VERNIER_SUBDIVS;
+      const x = originCss + zVal * vernierPitch;
+      const isMajor = s % VERNIER_SUBDIVS === 0 && zVal >= -1.0;
+      const isHalf = Math.abs(s % VERNIER_SUBDIVS) === 2 || Math.abs(s % VERNIER_SUBDIVS) === 3;
+      const realm = realmForZoom(zVal);
+
+      ctx.save();
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.78)';
+      ctx.shadowBlur = 4;
+      ctx.shadowOffsetY = 1;
+      if (isMajor) {
+        ctx.fillStyle = realmTickColors[realm];
+        ctx.fillRect(x - 0.8, 5, 1.6, 8.5);
+      } else if (isHalf) {
+        ctx.fillStyle = 'rgba(242, 246, 255, 0.38)';
+        ctx.fillRect(x - 0.5, 6, 1.0, 6.5);
+      } else {
+        ctx.fillStyle = 'rgba(242, 246, 255, 0.24)';
+        ctx.fillRect(x - 0.5, 7, 1.0, 5.0);
+      }
+      ctx.restore();
+    }
+
+    // 2. Crisp Retina landmark typography centered vertically inside the exact Liquid Glass pill band
+    const fontSize = window.innerHeight <= 500 ? 11.5 : window.innerWidth <= 720 ? 13 : 12.5;
+    const wordCenterY = stripH - 2 - baseH * 0.5 + 0.5;
+    const padX = window.innerWidth <= 720 ? 32 : 34;
+    const minPillW = window.innerWidth <= 720 ? 58 : 56;
+
+    ctx.font = `600 ${fontSize}px -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.90)';
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 1;
+
+    const nextWidths: number[] = [];
+    for (let i = 0; i < ZOOM_STOPS.length; i++) {
+      const st = ZOOM_STOPS[i];
+      const x = originCss + st.z * vernierPitch;
+      const textW = ctx.measureText(st.label).width;
+      // Extra margin accounts for 1.15x convex magnification inside the rounded Liquid Glass pill!
+      nextWidths.push(Math.max(minPillW, textW * 1.15 + padX));
+      ctx.fillText(st.label, x, wordCenterY);
+    }
+    vernierStopPillWidths = nextWidths;
+
+    uploadVernierStripToEngine(vernierCanvas, originCss, texWidthCss);
+  };
+
   const measureVernier = () => {
     vernierPitch = computeVernierPitch();
     vernierCapsuleEl.style.setProperty('--vernier-pitch', `${vernierPitch}px`);
 
-    // Reset character warps momentarily to measure exact natural glyph offsets & word widths
-    for (let i = 0; i < vernierChars.length; i++) {
-      vernierChars[i].el.style.transform = '';
-      vernierChars[i].el.style.textShadow = '';
-      vernierChars[i].warped = false;
-    }
-
-    const padX = window.innerWidth <= 720 ? 30 : 32;
-    const minPillW = window.innerWidth <= 720 ? 58 : 56;
-    const nextChars: VernierCharMetric[] = [];
-    const nextWidths: number[] = [];
-
-    for (let i = 0; i < vernierStopButtons.length; i++) {
-      const btn = vernierStopButtons[i];
-      const st = ZOOM_STOPS[i];
-      const spans = Array.from(btn.querySelectorAll<HTMLSpanElement>('.vc'));
-      const btnRect = btn.getBoundingClientRect();
-      const btnCenter = btnRect.left + btnRect.width * 0.5;
-      let minL = Infinity;
-      let maxR = -Infinity;
-      for (const sp of spans) {
-        const sr = sp.getBoundingClientRect();
-        if (sr.left < minL) minL = sr.left;
-        if (sr.right > maxR) maxR = sr.right;
-        nextChars.push({
-          el: sp,
-          stopZ: st.z,
-          localX: sr.left + sr.width * 0.5 - btnCenter,
-          warped: false,
-        });
-      }
-      const textW = Number.isFinite(minL) && Number.isFinite(maxR) ? maxR - minL : btnRect.width;
-      nextWidths.push(Math.max(minPillW, textW + padX));
-    }
-
-    vernierChars = nextChars;
-    vernierStopPillWidths = nextWidths;
-
     const baseH = window.innerHeight <= 500 ? 30 : window.innerWidth <= 720 ? 38 : 34;
     vernierLoupeEl.style.height = `${baseH}px`;
+
+    const cr = vernierCapsuleEl.getBoundingClientRect();
+    const stripH = Math.max(36, cr.height || (window.innerHeight <= 500 ? 46 : window.innerWidth <= 720 ? 58 : 54));
+    vernierStripBox = {
+      cx: cr.left + cr.width * 0.5,
+      cy: cr.top + cr.height * 0.5,
+      hw: cr.width * 0.5,
+      hh: cr.height * 0.5,
+    };
+
     const lr = vernierLoupeEl.getBoundingClientRect();
     loupeAnchor = {
       cx: lr.left + lr.width * 0.5,
       cy: lr.top + lr.height * 0.5,
       baseH,
     };
+
+    paintVernierStripTexture(stripH, baseH);
+
     lastLoupeW = 0;
     lastLoupeH = 0;
-
     const z = lastZoomRendered === -99 ? 0 : lastZoomRendered;
     const fmt = formatMagnification(z);
     updateVernierDial(z, fmt.magText, fmt.sizeText, fmt.scaleBarLabel, fmt.scaleBarPx);
@@ -1250,8 +1192,23 @@ function mountApp(): void {
     };
   };
 
+  uploadVernierStripToEngine = (canvas, originCss, texWidthCss) => {
+    engine.uploadVernierTexture(canvas, originCss, texWidthCss);
+  };
+
   pushGlassToEngine = () => {
     const hudAlpha = pureView ? 1.0 : introHudAlpha;
+    const vernierAlpha = pureView ? 0.0 : introHudAlpha;
+    engine.setVernierStrip(
+      vernierStripBox.cx,
+      vernierStripBox.cy,
+      vernierStripBox.hw,
+      vernierStripBox.hh,
+      vernierPitch,
+      loupeGlassBox.hw || 30,
+      vernierAlpha
+    );
+
     if (hudAlpha < 0.005) {
       engine.setLiquidGlassRegions([]);
       return;
@@ -1261,7 +1218,7 @@ function mountApp(): void {
       const g = staticGlassBase[i];
       out.push(hudAlpha < 0.999 ? { ...g, alpha: g.alpha * hudAlpha } : g);
     }
-    // Elevated crystal droplet lenses rendered in Stage 1 so they refract Stage 0 glass + raw 3D scene!
+    // Style-3 Rounded Optical Magnifier Glass Pill: genuinely refracts & bends the Retina Vernier text + 3D silicon underneath!
     if (!pureView && loupeGlassBox.hw > 1) {
       out.push({
         cx: loupeGlassBox.cx,
@@ -1269,9 +1226,9 @@ function mountApp(): void {
         hw: loupeGlassBox.hw,
         hh: loupeGlassBox.hh,
         radius: loupeGlassBox.hh,
-        bevel: 0.30,
+        bevel: 0.44,
         frost: 0.0,
-        style: 2,
+        style: 3,
         alpha: hudAlpha,
       });
     }
@@ -1478,7 +1435,6 @@ function mountApp(): void {
   let scrubCurrentZ = 0;
   let scrubMoved = false;
   let scrubLastIntStop = 0;
-  let scrubDownTarget: EventTarget | null = null;
 
   const launchVernierCoast = (initialZ: number, initialVelZ: number) => {
     cancelVernierCoast();
@@ -1527,7 +1483,6 @@ function mountApp(): void {
     scrubVelZ = 0;
     scrubMoved = false;
     scrubLastIntStop = Math.round(scrubStartZ);
-    scrubDownTarget = ev.target;
     vernierScrubbing = true;
     updateVernierDial(scrubStartZ);
     engageReticle(true);
@@ -1591,22 +1546,19 @@ function mountApp(): void {
     if (cancelled) return;
 
     if (!scrubMoved) {
-      const targetEl = scrubDownTarget instanceof Element ? scrubDownTarget : null;
-      const stopBtn = targetEl?.closest<HTMLButtonElement>('.vernier-stop');
-      if (stopBtn) {
-        const z = Number(stopBtn.dataset.z ?? 0);
-        if (Math.abs(z - scrubStartZ) < 0.14) {
-          setDepthSheetOpen(!showDepthSheet, true);
-        } else {
-          flyToStop(z);
-        }
+      const rect = vernierCapsuleEl.getBoundingClientRect();
+      const offsetX = ev.clientX - (rect.left + rect.width * 0.5);
+      const centerHitHalfW = Math.max(30, lastLoupeW * 0.48);
+      if (Math.abs(offsetX) < centerHitHalfW) {
+        setDepthSheetOpen(!showDepthSheet, true);
         return;
       }
 
-      const rect = vernierCapsuleEl.getBoundingClientRect();
-      const offsetX = ev.clientX - (rect.left + rect.width * 0.5);
-      if (Math.abs(offsetX) < 34) {
-        setDepthSheetOpen(!showDepthSheet, true);
+      // Compute which visible word along the Vernier strip was tapped and fly straight to it!
+      const tappedZ = scrubStartZ + offsetX / vernierPitch;
+      const tappedIdx = Math.max(0, Math.min(ZOOM_STOPS.length - 1, Math.round(tappedZ) + 1));
+      if (tappedIdx !== lastActiveStop) {
+        flyToStop(ZOOM_STOPS[tappedIdx].z);
       } else {
         const dir = offsetX > 0 ? 1 : -1;
         const nextIdx = Math.max(0, Math.min(ZOOM_STOPS.length - 1, lastActiveStop + dir));
