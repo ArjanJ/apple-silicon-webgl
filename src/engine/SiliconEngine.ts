@@ -76,7 +76,14 @@ export interface IntroFrameState {
 }
 
 export interface EngineHooks {
-  onZoomFrame: (zoom: number, fps: number, motion: number, interacting: boolean) => void;
+  onZoomFrame: (
+    zoom: number,
+    fps: number,
+    motion: number,
+    interacting: boolean,
+    yawVel: number,
+    regionKind: number
+  ) => void;
   onInspect: (hit: DieInspectHit | null) => void;
   onHover?: (hit: DieInspectHit | null, clientX: number, clientY: number) => void;
   onTourChange?: (active: boolean) => void;
@@ -129,14 +136,16 @@ export const MAX_ZOOM = 9.0;
 const STAGE_FLOOR_Y = [-0.598, -0.26, -0.14, -0.075, -0.35, -6.0, -6.0, -6.0, -6.0, -6.0];
 const WORLD0_GRID_STEP = WORLD1_PITCH / STAGE_RATIOS[0]; // 0.095 (exact World 1 grid pitch on World 0!)
 
-/** "First Light" Apple Keynote entrance choreography constants */
-const INTRO_DURATION = 4.0;
-const INTRO_START_ZOOM = -0.68;
-const INTRO_START_PITCH = 0.24;
-const INTRO_START_YAW = -0.78;
+/** "First Light" Mysterious Monolith -> Hero Silicon Reveal choreography constants */
+const INTRO_DURATION = 5.4;
+const INTRO_START_ZOOM = 0.52;
+const INTRO_START_PITCH = 0.16;
+const INTRO_START_YAW = -1.14;
+const INTRO_START_LOOK_X = -0.78;
+const INTRO_START_LOOK_Z = -0.34;
 const HERO_ZOOM = 0.0;
 const HERO_PITCH = 0.86;
-const HERO_YAW = -0.18;
+const HERO_YAW = 0.0;
 
 /** Keyframed Cinematic Dive choreography: [timeSec, zoom, pitch, yawOffset] */
 const TOUR_KEYS: readonly [number, number, number, number][] = [
@@ -308,6 +317,11 @@ export class SiliconEngine {
   private introKeyIntensity = 1.0;
   private introRimBoost = 1.0;
   private introWakePulse = 0.0;
+  private introBladePos = 0.0;
+  private introBladeStrength = 0.0;
+  private introFogBoost = 0.0;
+  private introLookX = 0.0;
+  private introLookZ = 0.0;
   private introExposure = 1.0;
   private introDofBoost = 0.0;
 
@@ -973,6 +987,7 @@ export class SiliconEngine {
       'uInspectBox',
       'uHoverBox',
       'uIntroLight',
+      'uIntroBlade',
     ]);
 
     this.uPrefilter = grab(this.prefilterProg, ['uTex', 'uTexelSize']);
@@ -1340,11 +1355,16 @@ export class SiliconEngine {
     this.targetYaw = INTRO_START_YAW;
 
     this.introLightSweep = 0.0;
-    this.introKeyIntensity = 0.06;
-    this.introRimBoost = 2.4;
+    this.introKeyIntensity = 0.015;
+    this.introRimBoost = 2.6;
     this.introWakePulse = 0.0;
+    this.introBladePos = -4.2;
+    this.introBladeStrength = 1.0;
+    this.introFogBoost = 0.036;
+    this.introLookX = INTRO_START_LOOK_X;
+    this.introLookZ = INTRO_START_LOOK_Z;
     this.introExposure = 0.0;
-    this.introDofBoost = 0.52;
+    this.introDofBoost = 0.72;
     this.hooks.onIntroFrame?.({ active: true, progress: 0, elapsed: 0 });
   }
 
@@ -1500,10 +1520,10 @@ export class SiliconEngine {
     }
     if (z < -0.5) {
       this.targetPitch = 0.96;
-      this.targetYaw = -0.14;
+      this.targetYaw = 0.0;
     } else if (z < 0.5) {
-      this.targetPitch = 0.86;
-      this.targetYaw = -0.18;
+      this.targetPitch = HERO_PITCH;
+      this.targetYaw = HERO_YAW;
     } else if (z < 1.5) {
       this.targetPitch = 0.76;
       this.targetYaw = 0.08;
@@ -1944,6 +1964,7 @@ export class SiliconEngine {
       this.introRimBoost,
       this.introWakePulse
     );
+    gl.uniform2f(this.uScene.uIntroBlade, this.introBladePos, this.introBladeStrength);
 
     for (let i = 0; i < activeStages.length; i++) {
       const { idx, scale } = activeStages[i];
@@ -2081,30 +2102,46 @@ export class SiliconEngine {
     this.smoothCamShiftY *= shiftDecay;
     this.smoothCamShiftZ *= shiftDecay;
 
-    // "First Light" Apple Keynote entrance choreography (Grazing Obsidian Edge -> Softbox Sweep -> Hero Crane-Up)
+    // "First Light" Mysterious Monolith -> Hero Reveal choreography (5.4s, C2 quintic, instantly interruptible)
     const prevZ = this.zoom;
+    const prevYaw = this.yaw;
     if (this.introActive) {
       this.introElapsed += dt;
       const t = this.introElapsed;
       const progress = clamp(t / INTRO_DURATION, 0, 1);
 
-      const uYaw = this.smootherstep(0.0, 3.75, t);
-      const uPitch = this.smootherstep(0.22, 3.85, t);
-      const uZoom = this.smootherstep(0.35, 3.95, t);
+      // Act I (0-1.8s): slow hypnotic skim across the dark chamfered silicon corridors
+      // Act II-III (1.6-5.2s): grand pullback & crane rise revealing the full Apple Silicon die
+      const uDrift = this.smootherstep(0.0, 2.2, t);
+      const uYaw = this.smootherstep(0.35, 5.15, t);
+      const uPitch = this.smootherstep(1.35, 5.20, t);
+      const uZoom = this.smootherstep(1.50, 5.30, t);
+      const uLook = this.smootherstep(1.40, 4.75, t);
 
-      this.yaw = INTRO_START_YAW + (HERO_YAW - INTRO_START_YAW) * uYaw;
+      this.yaw = INTRO_START_YAW + 0.14 * uDrift + (HERO_YAW - (INTRO_START_YAW + 0.14)) * uYaw;
       this.pitch = INTRO_START_PITCH + (HERO_PITCH - INTRO_START_PITCH) * uPitch;
       this.zoom = INTRO_START_ZOOM + (HERO_ZOOM - INTRO_START_ZOOM) * uZoom;
+      this.introLookX = INTRO_START_LOOK_X * (1.0 - uLook);
+      this.introLookZ = INTRO_START_LOOK_Z * (1.0 - uLook);
       this.targetYaw = this.yaw;
       this.targetPitch = this.pitch;
       this.targetZoom = this.zoom;
 
-      this.introExposure = this.smoothstep(0.0, 0.58, t);
-      this.introLightSweep = this.smootherstep(0.20, 2.85, t);
-      this.introKeyIntensity = 0.06 + 0.94 * this.smootherstep(0.40, 2.45, t);
-      this.introRimBoost = 2.40 - 1.40 * this.smootherstep(1.15, 3.15, t);
-      this.introWakePulse = t >= 0.90 && t <= 2.65 ? clamp((t - 0.90) / 1.75, 0, 1) : 0.0;
-      this.introDofBoost = 0.52 * (1.0 - this.smootherstep(1.25, 3.10, t));
+      // Silky emergence from pure obsidian black, knife-edge studio slit blade sweeping through shadow,
+      // ghostly sub-surface cobalt trace pulse, then full cleanroom softbox reveal as camera cranes out!
+      this.introExposure = this.smoothstep(0.0, 0.85, t);
+      this.introLightSweep = this.smootherstep(0.50, 4.30, t);
+      this.introKeyIntensity = 0.015 + 0.985 * this.smootherstep(1.85, 4.40, t);
+      this.introRimBoost = 2.60 - 1.60 * this.smootherstep(2.20, 4.50, t);
+
+      const uBlade = this.smoothstep(0.15, 3.65, t);
+      this.introBladePos = -4.2 + 9.4 * uBlade;
+      this.introBladeStrength =
+        this.smoothstep(0.05, 0.55, t) * (1.0 - this.smootherstep(2.60, 4.15, t));
+
+      this.introWakePulse = t >= 1.55 && t <= 3.65 ? clamp((t - 1.55) / 2.10, 0, 1) : 0.0;
+      this.introFogBoost = 0.036 * (1.0 - this.smootherstep(1.75, 4.25, t));
+      this.introDofBoost = 0.72 * (1.0 - this.smootherstep(2.10, 4.55, t));
 
       if (t >= INTRO_DURATION) {
         this.introActive = false;
@@ -2115,6 +2152,11 @@ export class SiliconEngine {
         this.introKeyIntensity = 1.0;
         this.introRimBoost = 1.0;
         this.introWakePulse = 0.0;
+        this.introBladePos = 0.0;
+        this.introBladeStrength = 0.0;
+        this.introFogBoost = 0.0;
+        this.introLookX = 0.0;
+        this.introLookZ = 0.0;
         this.introExposure = 1.0;
         this.introDofBoost = 0.0;
         this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
@@ -2122,11 +2164,15 @@ export class SiliconEngine {
         this.hooks.onIntroFrame?.({ active: true, progress, elapsed: t });
       }
     } else {
-      // Smoothly settle any interrupted intro lighting back to steady state (zero harsh flash on skip!)
+      // Smoothly settle any interrupted intro lighting/fog/offset back to steady state (zero harsh flash on skip!)
       const settle = 1 - Math.exp(-7.5 * dt);
       this.introLightSweep += (1.0 - this.introLightSweep) * settle;
       this.introKeyIntensity += (1.0 - this.introKeyIntensity) * settle;
       this.introRimBoost += (1.0 - this.introRimBoost) * settle;
+      this.introBladeStrength += (0.0 - this.introBladeStrength) * settle;
+      this.introFogBoost += (0.0 - this.introFogBoost) * settle;
+      this.introLookX += (0.0 - this.introLookX) * settle;
+      this.introLookZ += (0.0 - this.introLookZ) * settle;
       this.introExposure += (1.0 - this.introExposure) * settle;
       this.introDofBoost += (0.0 - this.introDofBoost) * settle;
       if (this.introWakePulse > 0.001) {
@@ -2171,11 +2217,23 @@ export class SiliconEngine {
     }
 
     const zoomVel = this.introActive ? 0.0 : Math.abs(this.zoom - prevZ) / dt;
+    const yawVel = this.introActive ? 0.0 : (this.yaw - prevYaw) / dt;
     const targetMotion = Math.min(1.0, zoomVel * 0.20);
     this.smoothMotion += (targetMotion - this.smoothMotion) * (1 - Math.exp(-14.0 * dt));
 
+    // Track active functional die region (0 = Logic/CPU, 1 = SRAM/SLC, 2 = GPU)
+    const dieRegion = pickDieRegion(this.anchors[0][0], this.anchors[0][2], this.dieSpec);
+    this.activeRegionKind = dieRegion ? dieRegion.regionKind : 0;
+
     const fps = Math.round(1000 / Math.max(4, this.emaFrameMs));
-    this.hooks.onZoomFrame(this.zoom, fps, this.smoothMotion, this.dragging || this.tourActive);
+    this.hooks.onZoomFrame(
+      this.zoom,
+      fps,
+      this.smoothMotion,
+      this.dragging || this.tourActive,
+      yawVel,
+      this.activeRegionKind
+    );
 
     // Compute exact continuous log-scale for EVERY nested world (0..9) relative to current zoom z
     const z = Math.max(0, Math.min(MAX_ZOOM, this.zoom));
@@ -2183,10 +2241,6 @@ export class SiliconEngine {
     const f = z >= MAX_ZOOM ? 1.0 : z - idx;
     const logCamScale = LOG_CUM_SCALE[idx] * (1.0 - f) + LOG_CUM_SCALE[idx + 1] * f;
     const semFactor = this.smoothstep(0.9, 2.1, z);
-
-    // Track active functional die region (0 = Logic/CPU, 1 = SRAM/SLC, 2 = GPU)
-    const dieRegion = pickDieRegion(this.anchors[0][0], this.anchors[0][2], this.dieSpec);
-    this.activeRegionKind = dieRegion ? dieRegion.regionKind : 0;
 
     for (let k = 0; k < this.stages.length; k++) {
       this.stageScales[k] = Math.exp(logCamScale - LOG_CUM_SCALE[k]);
@@ -2207,17 +2261,23 @@ export class SiliconEngine {
     const outT = Math.max(0.0, -this.zoom);
     const macroOut = this.smoothstep(0.0, -0.85, this.zoom);
     const diveFocus = this.smoothstep(0.02, 0.68, this.zoom);
+    const heroFrameMask =
+      (1.0 - diveFocus) *
+      (1.0 - macroOut) *
+      (this.introActive ? this.smootherstep(1.5, 5.2, this.introElapsed) : 1.0);
+    const heroLookZ = 0.72 * heroFrameMask;
 
-    const lookX = -this.effOffsets[0][0] * (1.0 - diveFocus) + this.smoothCamShiftX;
+    const lookX = -this.effOffsets[0][0] * (1.0 - diveFocus) + this.smoothCamShiftX + this.introLookX;
     const lookY = this.smoothCamShiftY;
-    const lookZ = -this.effOffsets[0][2] * (1.0 - diveFocus) + this.smoothCamShiftZ;
+    const lookZ = -this.effOffsets[0][2] * (1.0 - diveFocus) + this.smoothCamShiftZ + this.introLookZ + heroLookZ;
 
     const aspectBoost = Math.max(1.0, 1.62 / Math.max(0.85, aspect));
     const subatomicBackoff = this.smoothstep(7.6, 8.2, this.zoom);
+    const heroDist = 11.2;
     const dist =
       this.zoom < 0
-        ? 10.2 * Math.pow(2.55, outT) * (1.0 + 0.25 * macroOut) * (1.0 + (aspectBoost - 1.0) * Math.min(1.0, outT))
-        : (10.2 + (5.4 - 10.2) * this.smoothstep(0.0, 0.95, this.zoom) + subatomicBackoff * 1.15) *
+        ? heroDist * Math.pow(2.55, outT) * (1.0 + 0.25 * macroOut) * (1.0 + (aspectBoost - 1.0) * Math.min(1.0, outT))
+        : (heroDist + (5.4 - heroDist) * this.smoothstep(0.0, 0.95, this.zoom) + subatomicBackoff * 1.15) *
           (1.0 + (aspectBoost - 1.0) * subatomicBackoff * 0.35);
     const cp = Math.cos(this.pitch);
     const camX = lookX + Math.sin(this.yaw) * cp * dist;
@@ -2232,7 +2292,7 @@ export class SiliconEngine {
     mat4Multiply(this.viewProjMat, this.projMat, this.viewMat);
 
     this.updateLightMatrix(lookX, lookZ, 7.2 + macroOut * 8.6);
-    const fogDensity = 0.0082 * Math.pow(0.10, outT);
+    const fogDensity = 0.0082 * Math.pow(0.10, outT) + this.introFogBoost;
 
     // Collect all physically visible nested scales (allow deeper visibility for World 8 during the 1800x empty-space plunge!)
     const distLogAdj = Math.log(5.4 / Math.max(5.4, dist));

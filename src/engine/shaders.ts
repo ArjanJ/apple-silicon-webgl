@@ -457,6 +457,7 @@ uniform vec4 uHoleBox;    // Dynamic recessed aperture (cx, cz, hx, hz)
 uniform float uHoleMinY;
 uniform float uHoleMode;
 uniform vec4 uIntroLight; // (lightSweep 0..1, keyIntensity 0..1, rimBoost 1..2.5, wakePulse 0..1)
+uniform vec2 uIntroBlade; // (bladePos along diagonal, bladeStrength 0..1)
 
 out vec4 fragColor;
 
@@ -1301,16 +1302,28 @@ void main() {
   float introKey = clamp(uIntroLight.y, 0.0, 1.0);
   float introRim = max(uIntroLight.z, 1.0);
 
+  // Mysterious traveling studio slit-light blade during the obsidian monolith opening (zero cost once settled!)
+  float bladeCore = 0.0;
+  float bladeHalo = 0.0;
+  if (uIntroBlade.y > 0.001) {
+    float bladeCoord = dot(p.xz, vec2(0.82, 0.57)) - uIntroBlade.x;
+    bladeCore = exp(-pow(bladeCoord / 0.62, 2.0)) * uIntroBlade.y;
+    bladeHalo = exp(-pow(bladeCoord / 1.85, 2.0)) * uIntroBlade.y;
+  }
+
+  float localKey = clamp(introKey + bladeCore * 1.12, 0.0, 1.32);
+  float envLift = clamp(mix(0.035, 1.0, introKey) + bladeHalo * 0.68, 0.0, 1.0);
+  float localRim = mix(introRim * (0.28 + 1.05 * bladeHalo), 1.0, introKey);
+
   vec3 direct = vec3(0.0);
-  direct += (kDk * diffAlbedo + specK + vec3(ccSpecK)) * keyTint * (ndotlK * 2.65) * sh * introKey;
-  direct += ((vec3(1.0) - Fr) * diffAlbedo * 0.60 + specR * 0.82) * rimTint * (ndotlR * mix(1.38, 1.95, uSemFactor)) * introRim;
+  direct += (kDk * diffAlbedo + specK + vec3(ccSpecK)) * keyTint * (ndotlK * 2.65) * sh * localKey;
+  direct += ((vec3(1.0) - Fr) * diffAlbedo * 0.60 + specR * 0.82) * rimTint * (ndotlR * mix(1.38, 1.95, uSemFactor)) * localRim;
   direct += diffAlbedo * ndotlF * vec3(0.24, 0.30, 0.42) * 1.10 * introKey;
 
   // Prefiltered HDR Studio Softbox + Negative-Fill Environment Reflection + Clearcoat Reflection
   vec3 reflDir = reflect(-v, n);
   vec3 reflCol = sampleStudioEnv(reflDir, rough, uSemFactor);
   vec3 Fenv = F_SchlickRoughness(ndotv, F0, rough);
-  float envLift = mix(0.14, 1.0, introKey);
   vec3 envReflection = reflCol * Fenv * mix(0.82, 0.32, rough * rough) * (0.48 + 0.52 * metal) * ao * envLift;
   if (clearcoat > 0.01) {
     vec3 ccEnv = sampleStudioEnv(reflDir, 0.04, uSemFactor);
@@ -1318,31 +1331,35 @@ void main() {
     envReflection += ccEnv * ccF * clearcoat * 0.68 * ao * envLift;
   }
 
-  // Subtle machined chamfer glint catching the overhead studio lightbars (accentuated during obsidian opening!)
-  vec3 bevelGlint = vec3(0.80, 0.89, 1.04) * bevelMask * pow(1.0 - ndotv, 1.85) * (0.06 + 0.24 * metal) * (0.42 + 0.58 * sh) * ao * mix(introRim * 1.25, 1.0, introKey);
+  // Machined chamfer glint: catches a knife-edge molten-platinum gleam strictly as the studio slit sweeps across!
+  float bevelBlade = mix(0.18 + bladeCore * 2.85 + bladeHalo * 0.65, 1.0, introKey);
+  vec3 bevelGlint = vec3(0.80, 0.89, 1.04) * bevelMask * pow(1.0 - ndotv, 1.85) * (0.06 + 0.24 * metal) * (0.42 + 0.58 * sh) * ao * bevelBlade;
 
   // Dark-Field / SEM Grazing Rim Light
-  vec3 semRim = vec3(0.46, 0.68, 0.96) * pow(1.0 - ndotv, 3.4) * (0.04 + 0.32 * uSemFactor) * ao * introRim;
+  vec3 semRim = vec3(0.46, 0.68, 0.96) * pow(1.0 - ndotv, 3.4) * (0.04 + 0.32 * uSemFactor) * ao * localRim;
   vec3 envDiff = sampleStudioEnv(n, 0.95, uSemFactor);
-  vec3 ambient = baseCol * (vec3(0.042, 0.056, 0.084) + envDiff * (1.0 - metal) * 0.16) * ao * mix(0.10, 1.0, introKey);
+  vec3 ambient = baseCol * (vec3(0.042, 0.056, 0.084) + envDiff * (1.0 - metal) * 0.16) * ao * mix(0.025, 1.0, introKey);
 
-  // First Light silicon ignition wavefront radiating cleanly across the bare die & package substrate
+  // Ghostly sub-surface cobalt-sapphire whisper pulse tracing ONLY fine circuitry & chamfers in the dark
   vec3 wakeGlow = vec3(0.0);
   if (uIntroLight.w > 0.001 && uZoom < 0.75 && p.y > -0.48) {
     float wp = uIntroLight.w;
     float radialR = length(p.xz * vec2(0.84, 1.0));
-    float front = wp * 5.8;
+    float front = wp * 5.2;
     float dWave = radialR - front;
-    float crest = exp(-pow(dWave / 0.24, 2.0));
-    float tail = exp(-max(-dWave, 0.0) / 0.85) * step(dWave, 0.18);
-    float envFade = smoothstep(0.0, 0.10, wp) * (1.0 - smoothstep(0.72, 1.0, wp));
-    float dieMaskW = smoothstep(5.6, 2.8, radialR);
-    float traceBoost = (hasDieAtlas > 0.01) ? mix(0.28, 1.55, dieFeat.a) : (0.35 + bevelMask * 0.95);
-    float pkt = clamp(crest + tail * 0.42, 0.0, 1.0);
-    wakeGlow = keynoteSignalColor(pkt) * (crest * 0.78 + tail * 0.24) * traceBoost * dieMaskW * envFade;
+    float crest = exp(-pow(dWave / 0.20, 2.0));
+    float tail = exp(-max(-dWave, 0.0) / 1.15) * step(dWave, 0.16);
+    float envFade = smoothstep(0.0, 0.14, wp) * (1.0 - smoothstep(0.68, 1.0, wp));
+    float dieMaskW = smoothstep(5.4, 2.4, radialR);
+    // Heavily selective: traces and beveled edges whisper softly while flat slabs stay dark and mysterious!
+    float circuitSelect = (hasDieAtlas > 0.01)
+      ? (pow(dieFeat.a, 1.65) * 1.45 + bevelMask * 0.55)
+      : (bevelMask * 0.75 + 0.06);
+    vec3 deepCobalt = mix(vec3(0.04, 0.22, 0.76), vec3(0.18, 0.64, 1.04), clamp(crest, 0.0, 1.0));
+    wakeGlow = deepCobalt * (crest * 0.52 + tail * 0.18) * circuitSelect * dieMaskW * envFade;
   }
 
-  vec3 col = ambient + direct * ao + envReflection + bevelGlint + semRim + emissive * mix(0.12, 1.0, introKey) + wakeGlow;
+  vec3 col = ambient + direct * ao + envReflection + bevelGlint + semRim + emissive * mix(0.08, 1.0, introKey) + wakeGlow;
 
   // Whisper-thin Platinum Hover Frame on World 0 die blocks / US Quarter (before clicking!)
   if (uHoverBox.z > 0.001 && uZoom < 0.85) {
@@ -1580,6 +1597,10 @@ void main() {
   float vigOuter = mix(0.92, 1.26, clamp(uIntroExposure, 0.0, 1.0));
   float vig = smoothstep(vigOuter, 0.34, rDist);
   col *= (mix(0.28, 0.50, clamp(uIntroExposure, 0.0, 1.0)) + mix(0.72, 0.50, clamp(uIntroExposure, 0.0, 1.0)) * vig);
+
+  // Subtle dark obsidian bottom floor scrim so the Liquid Glass zoom rail stays crisp even over bright copper/gold layers
+  float bottomScrim = mix(0.32, 1.0, smoothstep(0.0, 0.16, vUv.y));
+  col *= mix(1.0, bottomScrim, clamp(uIntroExposure, 0.0, 1.0));
 
   // ACES Filmic Tone Map & Gamma (with silky fade-in from pure #000 on launch)
   col = acesToneMap(col * 1.02 * clamp(uIntroExposure, 0.0, 1.0));

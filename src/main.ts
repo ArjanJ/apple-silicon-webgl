@@ -1,4 +1,5 @@
 import './styles.css';
+import { SiliconAudio } from './audio/SiliconAudio';
 import { DieInspectHit } from './engine/inspect';
 import { SiliconEngine } from './engine/SiliconEngine';
 import { BrowserTelemetrySource } from './sim/browserTelemetry';
@@ -46,6 +47,8 @@ const ICONS = {
   zap: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
   eyeOff: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>`,
   eye: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`,
+  volumeOn: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`,
+  volumeOff: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/></svg>`,
   close: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
 };
 
@@ -136,11 +139,10 @@ function mountApp(): void {
         </div>
       </div>
 
-      <!-- "First Light" Hybrid Keynote Title Whisper (Auto-dissolves before crane settle) -->
+      <!-- "First Light" Mysterious Whisper Title (Emerges out of darkness, dissolves before full reveal) -->
       <div id="intro-title" class="intro-title" aria-hidden="true">
-        <div class="intro-eyebrow">SILICON MICROSCOPE</div>
+        <div id="intro-eyebrow" class="intro-eyebrow">INSIDE YOUR MAC</div>
         <div id="intro-chip-name" class="intro-chip-name">Apple Silicon</div>
-        <div class="intro-subline">10× TO 150T× · LIVE HARDWARE X-RAY</div>
       </div>
 
       <!-- Whisper-Quiet Hover Preview Pill -->
@@ -170,6 +172,9 @@ function mountApp(): void {
               ${ICONS.zap}<span id="btn-burst-lbl">Burst</span>
             </button>
             <div class="capsule-divider"></div>
+            <button id="btn-sound" class="glass-btn icon-only" title="Sound (M)">
+              ${ICONS.volumeOn}
+            </button>
             <button id="btn-pure" class="glass-btn icon-only" title="Pure View — Hide UI (H)">
               ${ICONS.eyeOff}
             </button>
@@ -263,6 +268,7 @@ function mountApp(): void {
   const editorialBrandEl = document.getElementById('editorial-brand')!;
   const chipNameEl = document.getElementById('chip-name')!;
   const introTitleEl = document.getElementById('intro-title')!;
+  const introEyebrowEl = document.getElementById('intro-eyebrow')!;
   const introChipNameEl = document.getElementById('intro-chip-name')!;
   const editorialMetaEl = document.getElementById('editorial-meta')!;
   const hudChromeEl = document.getElementById('hud-chrome')!;
@@ -271,6 +277,7 @@ function mountApp(): void {
   const btnActivity = document.getElementById('btn-activity')!;
   const btnBurst = document.getElementById('btn-burst')!;
   const btnBurstLbl = document.getElementById('btn-burst-lbl')!;
+  const btnSound = document.getElementById('btn-sound')!;
   const btnPure = document.getElementById('btn-pure')!;
 
   const activitySheet = document.getElementById('activity-sheet')!;
@@ -330,6 +337,17 @@ function mountApp(): void {
   let staticGlassBase: GlassReg[] = [];
   let staticGlassElevated: GlassReg[] = [];
   let pushGlassToEngine: () => void = () => {};
+  let refreshGlassLayout: () => void = () => {};
+
+  const syncSoundButton = (active: boolean, muted: boolean) => {
+    btnSound.innerHTML = muted ? ICONS.volumeOff : ICONS.volumeOn;
+    btnSound.classList.toggle('active', active);
+    btnSound.title = active ? 'Mute Sound (M)' : muted ? 'Unmute Sound (M)' : 'Enable Sound (M)';
+    refreshGlassLayout();
+  };
+
+  const audio = new SiliconAudio(syncSoundButton);
+  let suppressNextInspectCloseAudio = false;
 
   const measureRail = () => {
     railMetrics = railButtons.map((btn) => ({ x: btn.offsetLeft, w: btn.offsetWidth }));
@@ -442,11 +460,11 @@ function mountApp(): void {
       return;
     }
 
-    const nextHudAlpha = elapsed < 2.72 ? 0.0 : Math.min(1.0, (elapsed - 2.72) / 0.75);
+    const nextHudAlpha = elapsed < 4.20 ? 0.0 : Math.min(1.0, (elapsed - 4.20) / 0.85);
     const alphaChanged = Math.abs(nextHudAlpha - introHudAlpha) > 0.008;
     introHudAlpha = nextHudAlpha;
 
-    if (elapsed < 0.25) {
+    if (elapsed < 0.95) {
       if (introPhase !== 'hidden') {
         introPhase = 'hidden';
         introTitleEl.classList.remove('visible', 'exiting', 'skipped');
@@ -456,33 +474,36 @@ function mountApp(): void {
         nmBracket.style.display = 'none';
         pushGlassToEngine();
       }
-    } else if (elapsed < 2.2) {
+    } else if (elapsed < 2.95) {
       if (introPhase !== 'title') {
         introPhase = 'title';
         introTitleEl.classList.remove('exiting', 'skipped');
         introTitleEl.classList.add('visible');
+        audio.onIntroPhase('title');
       }
-    } else if (elapsed < 2.45) {
+    } else if (elapsed < 3.85) {
       if (introPhase !== 'dissolve') {
         introPhase = 'dissolve';
         introTitleEl.classList.remove('visible', 'skipped');
         introTitleEl.classList.add('exiting');
       }
-    } else if (elapsed < 2.72) {
+    } else if (elapsed < 4.20) {
       if (introPhase !== 'lock') {
         introPhase = 'lock';
         introTitleEl.classList.remove('visible', 'skipped');
         introTitleEl.classList.add('exiting');
         reticleLayer.classList.remove('intro-hidden');
         reticleLayer.classList.add('intro-lock');
+        audio.onIntroPhase('lock');
       }
-    } else if (elapsed < 3.55) {
+    } else if (elapsed < 4.95) {
       if (introPhase !== 'hud') {
         introPhase = 'hud';
         reticleLayer.classList.remove('intro-hidden');
         reticleLayer.classList.add('intro-lock');
         hudChromeEl.classList.remove('intro-staging');
         syncGlassLayout();
+        audio.onIntroPhase('hud');
       }
     } else if (introPhase !== 'settle') {
       introPhase = 'settle';
@@ -500,8 +521,10 @@ function mountApp(): void {
     onIntroFrame: ({ active, elapsed }) => {
       syncIntroUi(active, elapsed);
     },
-    onZoomFrame: (z, fps, motion, interacting) => {
+    onZoomFrame: (z, fps, motion, interacting, yawVel, regionKind) => {
       currentFps = fps;
+      audio.updateFrame(z, motion, interacting, yawVel, regionKind, introActive);
+
       const now = performance.now();
       if (showActivity && now - lastFpsUpdate > 350) {
         lastFpsUpdate = now;
@@ -540,14 +563,25 @@ function mountApp(): void {
       }
     },
     onInspect: (hit) => {
+      const prevId = activeInspect?.id ?? null;
+      const nextId = hit?.id ?? null;
       activeInspect = hit;
       if (hit && activeHover && activeHover.id === hit.id) {
         hoverPill.classList.remove('visible');
+      }
+      if (prevId !== nextId) {
+        if (!hit && suppressNextInspectCloseAudio) {
+          suppressNextInspectCloseAudio = false;
+        } else {
+          audio.playInspect(Boolean(hit), nextId ?? undefined);
+        }
       }
       renderInspectCard();
     },
     onHover: (hit, clientX, clientY) => {
       renderHoverPill(hit, clientX, clientY);
+      const suppressHover = !hit || pureView || (activeInspect && activeInspect.id === hit.id);
+      audio.playHover(suppressHover ? null : hit.id, clientX);
     },
   });
 
@@ -644,6 +678,7 @@ function mountApp(): void {
     railViewportRect = { left: rr.left, top: rr.top };
     pushGlassToEngine();
   };
+  refreshGlassLayout = syncGlassLayout;
 
   // Re-sync automatically whenever text width or viewport changes
   if (typeof ResizeObserver !== 'undefined') {
@@ -677,13 +712,27 @@ function mountApp(): void {
     engine.setGlassPointer(0, 0, false);
   });
 
+  // Unlock procedural Web Audio smoothly on the first user interaction (unless explicitly muted)
+  const unlockAudioOnGesture = (ev: Event) => {
+    const target = ev.target as HTMLElement | null;
+    if (target && (target === btnSound || btnSound.contains(target))) return;
+    if (ev instanceof KeyboardEvent && (ev.key === 'm' || ev.key === 'M')) return;
+    audio.unlockFromGesture();
+  };
+  window.addEventListener('pointerdown', unlockAudioOnGesture, { capture: true, passive: true });
+  window.addEventListener('touchstart', unlockAudioOnGesture, { capture: true, passive: true });
+  window.addEventListener('keydown', unlockAudioOnGesture, { capture: true });
+
   inspectClose.addEventListener('click', () => engine.clearInspect());
   inspectDive.addEventListener('click', () => {
     if (!activeInspect) return;
     const z = activeInspect.diveZoom;
+    const fromZ = lastZoomRendered === -99 ? 0 : lastZoomRendered;
     const targetXZ: [number, number] | undefined =
       activeInspect.id !== 'us-quarter' ? [activeInspect.box[0], activeInspect.box[1]] : undefined;
+    suppressNextInspectCloseAudio = true;
     engine.clearInspect();
+    audio.playDive(fromZ, z);
     engine.flyToZoom(z, targetXZ);
   });
 
@@ -691,6 +740,8 @@ function mountApp(): void {
   for (const btn of railButtons) {
     btn.addEventListener('click', () => {
       const z = Number(btn.dataset.z ?? 0);
+      const fromZ = lastZoomRendered === -99 ? 0 : lastZoomRendered;
+      audio.playDive(fromZ, z);
       engine.flyToZoom(z);
     });
   }
@@ -769,10 +820,18 @@ function mountApp(): void {
     btnActivity.classList.toggle('active', showActivity);
     activitySheet.style.display = showActivity ? 'flex' : 'none';
     if (showActivity) renderActivitySheet();
+    audio.playUiTap(showActivity);
     syncGlassLayout();
   });
 
+  btnSound.addEventListener('click', () => {
+    audio.toggle();
+  });
+
   const setPure = (next: boolean) => {
+    if (pureView !== next) {
+      audio.playUiTap(!next);
+    }
     pureView = next;
     hudChromeEl.classList.toggle('hidden', pureView);
     restoreHudBtn.style.display = pureView ? 'inline-flex' : 'none';
@@ -798,7 +857,9 @@ function mountApp(): void {
 
   window.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.key === 'h' || e.key === 'H') {
+    if (e.key === 'm' || e.key === 'M') {
+      audio.toggle();
+    } else if (e.key === 'h' || e.key === 'H') {
       if (engine.isIntroActive) engine.skipIntro();
       setPure(!pureView);
     } else if (e.key === 'r' || e.key === 'R') {
@@ -822,6 +883,7 @@ function mountApp(): void {
     if (bursting) return;
     bursting = true;
     browserTelemetry.setBurst(true);
+    audio.triggerBurst(3.5);
     btnBurst.classList.add('active');
     btnBurstLbl.textContent = 'Bursting';
     syncGlassLayout();
@@ -862,6 +924,7 @@ function mountApp(): void {
 
     chipNameEl.textContent = data.chipName;
     introChipNameEl.textContent = data.chipName;
+    introEyebrowEl.textContent = data.live ? 'INSIDE YOUR MAC' : 'SILICON ARCHITECTURE';
     const cpuPct = Math.round(data.cpuTotal * 100);
     const gpuPct = Math.round(data.gpuEst * 100);
     const tempPart = data.socTempC !== null ? `${data.socTempC.toFixed(0)}°C · ` : '';
