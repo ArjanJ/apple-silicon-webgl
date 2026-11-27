@@ -34,17 +34,17 @@ interface ZoomStopMeta {
 }
 
 const ZOOM_STOPS: readonly ZoomStopMeta[] = [
-  { z: -1.0, label: 'Package', size: '72 mm', mag: '1×', realm: 'macro' },
-  { z: 0.0, label: 'Die', size: '21 mm', mag: '4×', realm: 'macro' },
-  { z: 1.0, label: 'Grid', size: '120 µm', mag: '1K×', realm: 'beol' },
-  { z: 2.0, label: 'Routing', size: '3.0 µm', mag: '40K×', realm: 'beol' },
-  { z: 3.0, label: 'Logic', size: '600 nm', mag: '200K×', realm: 'feol' },
-  { z: 4.0, label: 'Cell', size: '120 nm', mag: '1M×', realm: 'feol' },
-  { z: 5.0, label: 'Gate', size: '12 nm', mag: '10M×', realm: 'feol' },
-  { z: 6.0, label: 'Lattice', size: '0.54 nm', mag: '220M×', realm: 'quantum' },
-  { z: 7.0, label: 'Atom', size: '111 pm', mag: '1.1B×', realm: 'quantum' },
-  { z: 8.0, label: 'Nucleus', size: '3.1 fm', mag: '40T×', realm: 'quantum' },
-  { z: 9.0, label: 'Proton', size: '0.84 fm', mag: '150T×', realm: 'quantum' },
+  { z: -1.0, label: 'Package', size: '75 mm', mag: '3×', realm: 'macro' },
+  { z: 0.0, label: 'Die', size: '23 mm', mag: '10×', realm: 'macro' },
+  { z: 1.0, label: 'Grid', size: '134 µm', mag: '1.8K×', realm: 'beol' },
+  { z: 2.0, label: 'Routing', size: '8.9 µm', mag: '27K×', realm: 'beol' },
+  { z: 3.0, label: 'Logic', size: '990 nm', mag: '240K×', realm: 'feol' },
+  { z: 4.0, label: 'Cell', size: '124 nm', mag: '1.9M×', realm: 'feol' },
+  { z: 5.0, label: 'Gate', size: '15.5 nm', mag: '15M×', realm: 'feol' },
+  { z: 6.0, label: 'Lattice', size: '1.55 nm', mag: '154M×', realm: 'quantum' },
+  { z: 7.0, label: 'Atom', size: '310 pm', mag: '770M×', realm: 'quantum' },
+  { z: 8.0, label: 'Nucleus', size: '10.5 fm', mag: '23T×', realm: 'quantum' },
+  { z: 9.0, label: 'Proton', size: '1.24 fm', mag: '192T×', realm: 'quantum' },
 ];
 
 const DEPTH_REALMS: readonly { id: RealmId; title: string; range: string }[] = [
@@ -73,17 +73,17 @@ function realmForZoom(z: number): RealmId {
 }
 
 const DIAL_TICKS = [
-  { deg: -144, label: '1×' },
-  { deg: -115, label: '4×' },
-  { deg: -86, label: '1K×' },
-  { deg: -58, label: '40K×' },
-  { deg: -29, label: '200K×' },
-  { deg: 0, label: '1M×' },
-  { deg: 29, label: '10M×' },
-  { deg: 58, label: '220M×' },
-  { deg: 86, label: '1.1B×' },
-  { deg: 115, label: '40T×' },
-  { deg: 144, label: '150T×' },
+  { deg: -144, label: '3×' },
+  { deg: -115, label: '10×' },
+  { deg: -86, label: '1.8K×' },
+  { deg: -58, label: '27K×' },
+  { deg: -29, label: '240K×' },
+  { deg: 0, label: '1.9M×' },
+  { deg: 29, label: '15M×' },
+  { deg: 58, label: '154M×' },
+  { deg: 86, label: '770M×' },
+  { deg: 115, label: '23T×' },
+  { deg: 144, label: '192T×' },
 ];
 
 const REPO_URL = 'https://github.com/ArjanJ/apple-silicon-webgl';
@@ -669,6 +669,7 @@ function mountApp(): void {
   let activePinnedPCore: number | null = null;
   let lastRawSample: LiveMacTelemetry | null = null;
   let lastZoomRendered = -99;
+  let lastFmPerCssPx = -1;
   let lastActiveStop = 1;
   let lastActiveRealm: RealmId = 'macro';
   let lastFpsUpdate = 0;
@@ -1368,7 +1369,7 @@ function mountApp(): void {
       audio.playDive(fromZ, toZ);
       triggerHaptic('dive');
     },
-    onZoomFrame: (z, fps, motion, interacting, yawVel, regionKind) => {
+    onZoomFrame: (z, fps, motion, interacting, yawVel, regionKind, optical) => {
       currentFps = fps;
       audio.updateFrame(z, motion, interacting, yawVel, regionKind, introActive);
 
@@ -1382,16 +1383,20 @@ function mountApp(): void {
         engageReticle(interacting);
       }
 
-      if (Math.abs(z - lastZoomRendered) < 0.0005) {
+      const opticalChanged =
+        lastFmPerCssPx <= 0 ||
+        Math.abs(optical.fmPerCssPx - lastFmPerCssPx) / Math.max(1e-6, lastFmPerCssPx) > 0.002;
+      if (Math.abs(z - lastZoomRendered) < 0.0005 && !opticalChanged) {
         if (!loupeSpringSettled) {
           stepVernierLoupeSpring(now, false);
         }
         return;
       }
       lastZoomRendered = z;
+      lastFmPerCssPx = optical.fmPerCssPx;
 
       const { dialDeg, bracketText, bracketAnalogy, bracketOpacity, magText, sizeText, scaleBarLabel, scaleBarPx } =
-        formatMagnification(z);
+        formatMagnification(z, optical);
       const frac = Math.max(0.015, Math.min(0.8, ((z + 1) / 10) * 0.8));
       reticleArc.setAttribute('stroke-dasharray', `${(circ * frac).toFixed(1)} ${circ.toFixed(1)}`);
       reticleDial.setAttribute('transform', `rotate(${(-dialDeg * 0.55).toFixed(2)} 270 270)`);

@@ -1698,12 +1698,23 @@ body,
 
 .zeiss-scale-bar {
   position: relative;
-  height: 5px;
-  border-bottom: 1px solid rgba(245, 248, 255, 0.82);
-  border-left: 1px solid rgba(245, 248, 255, 0.82);
-  border-right: 1px solid rgba(245, 248, 255, 0.82);
+  height: 6px;
+  border-bottom: 1px solid rgba(245, 248, 255, 0.84);
+  border-left: 1px solid rgba(245, 248, 255, 0.84);
+  border-right: 1px solid rgba(245, 248, 255, 0.84);
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
   will-change: width;
+}
+
+.zeiss-scale-bar::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 1px;
+  height: 3px;
+  background: rgba(245, 248, 255, 0.62);
+  transform: translateX(-0.5px);
 }
 
 /* Tiny Pure-View Restore Pill (only visible when HUD is hidden) */

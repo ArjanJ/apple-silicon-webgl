@@ -64,8 +64,10 @@ import {
   STAGE_RATIOS,
   WORLD0_DIE_CLAMP_X,
   WORLD0_DIE_CLAMP_Z,
+  WORLD0_FM_PER_UNIT,
   WORLD1_HOLE_HALF,
   WORLD1_PITCH,
+  WORLD1_SPAN,
   WORLD2_HOLE_HALF,
   WORLD2_PITCH,
   WORLD3_HOLE_HALF,
@@ -77,6 +79,8 @@ import {
   WORLD4_HOLE_HX,
   WORLD4_HOLE_HZ,
   WORLD5_LATTICE_A,
+  WORLD6_HALF_X,
+  WORLD6_HALF_Z,
   WorldInstances,
 } from './worlds';
 
@@ -99,6 +103,13 @@ export interface IntroFrameState {
   elapsed: number;
 }
 
+export interface OpticalScaleMetrics {
+  /** Exact physical length of 1 CSS pixel at the focal plane, in femtometers */
+  fmPerCssPx: number;
+  /** Exact physical vertical field of view at the focal plane, in femtometers */
+  fovHeightFm: number;
+}
+
 export interface EngineHooks {
   onZoomFrame: (
     zoom: number,
@@ -106,7 +117,8 @@ export interface EngineHooks {
     motion: number,
     interacting: boolean,
     yawVel: number,
-    regionKind: number
+    regionKind: number,
+    optical: OpticalScaleMetrics
   ) => void;
   onInspect: (hit: DieInspectHit | null) => void;
   onHover?: (hit: DieInspectHit | null, clientX: number, clientY: number) => void;
@@ -327,6 +339,7 @@ export class SiliconEngine {
   private world0Version = 0;
   private activeStagesBuf: { idx: number; scale: number }[] = Array.from({ length: 10 }, () => ({ idx: 0, scale: 1 }));
   private tmpHole: HoleConfig = { cx: 0, cz: 0, hx: 0, hz: 0, minY: -10, mode: 0, open: 0, atomX: 0, atomY: 0, atomZ: 0, atomR: 0 };
+  private opticalMetrics: OpticalScaleMetrics = { fmPerCssPx: 1, fovHeightFm: 1 };
 
   // GPU liquidGL HUD regions (sRGB two-stage stacked refraction, zero CSS readback tax!)
   private glassCount = 0;
@@ -782,14 +795,14 @@ export class SiliconEngine {
 
     switch (stageIdx) {
       case 0:
-        if (z < 0.74) return h;
+        if (z < 0.76) return h;
         h.cx = a[0];
         h.cz = a[2];
-        h.hx = 0.70;
-        h.hz = 0.70;
+        h.hx = (WORLD1_SPAN - 0.20) / STAGE_RATIOS[0];
+        h.hz = (WORLD1_SPAN - 0.20) / STAGE_RATIOS[0];
         h.minY = -0.35;
         h.mode = 2.0;
-        h.open = this.smootherstep(0.74, 0.92, z);
+        h.open = this.smootherstep(0.76, 0.94, z);
         return h;
       case 1:
         if (z < 1.22) return h;
@@ -835,8 +848,8 @@ export class SiliconEngine {
         if (z < 4.96) return h;
         h.cx = a[0];
         h.cz = 0;
-        h.hx = 2.45 / STAGE_RATIOS[5];
-        h.hz = 1.75 / STAGE_RATIOS[5];
+        h.hx = WORLD6_HALF_X / STAGE_RATIOS[5];
+        h.hz = WORLD6_HALF_Z / STAGE_RATIOS[5];
         h.minY = -0.25;
         h.mode = 4.0;
         h.open = this.smootherstep(4.96, 5.28, z);
@@ -862,7 +875,7 @@ export class SiliconEngine {
   /** Minimum zoom before child stage `k` activates (aligned with parent smooth cutout ramp!) */
   private isStageRevealed(k: number, z: number): boolean {
     if (k === 0) return true;
-    if (k === 1) return z >= 0.64;
+    if (k === 1) return z >= 0.70;
     if (k === 2) return z >= 1.22;
     if (k === 3) return z >= 2.12;
     if (k === 4) return z >= 2.94;
@@ -876,7 +889,7 @@ export class SiliconEngine {
 
   /** Smooth physical 3D relief extrusion factor (floor >= 0.16..0.42 prevents 24-bit depth Z-fighting!) */
   private getStageExtrude(k: number, z: number): number {
-    if (k === 1) return 0.42 + 0.58 * this.smootherstep(0.64, 0.90, z);
+    if (k === 1) return 0.42 + 0.58 * this.smootherstep(0.70, 0.92, z);
     if (k === 2) return 0.16 + 0.84 * this.smootherstep(1.22, 1.66, z);
     if (k === 3) return 0.16 + 0.84 * this.smootherstep(2.12, 2.58, z);
     if (k === 4) return 0.16 + 0.84 * this.smootherstep(2.94, 3.38, z);
@@ -885,7 +898,7 @@ export class SiliconEngine {
 
   /** Smooth vertical emergence offset for World 1 so its 3D rails rise seamlessly out of World 0's matching surface grid */
   private getStageSinkY(k: number, z: number): number {
-    if (k === 1) return 0.32 * (1.0 - this.smootherstep(0.64, 0.78, z));
+    if (k === 1) return 0.32 * (1.0 - this.smootherstep(0.70, 0.84, z));
     return 0.0;
   }
 
@@ -953,7 +966,7 @@ export class SiliconEngine {
       ny = 0;
       nz = cellIz * WORLD4_CELL_PITCH + WORLD4_GATE_Z;
     } else if (k === 5) {
-      const ix = clamp(Math.round(lx / WORLD5_LATTICE_A), -4, 4);
+      const ix = clamp(Math.round(lx / WORLD5_LATTICE_A), -8, 8);
       nx = ix * WORLD5_LATTICE_A;
       ny = 0;
       nz = 0;
@@ -1201,6 +1214,7 @@ export class SiliconEngine {
       'uClipPlane',
       'uCoinSpec',
       'uDieGridOrigin',
+      'uStage0Ratio',
       'uFocusXZ',
       'uFocusDist',
       'uDofStrength',
@@ -2798,6 +2812,7 @@ export class SiliconEngine {
     gl.uniform4f(locs.uClipPlane, -1000.0, 0.0, 0.0, 0.0);
     gl.uniform4f(locs.uCoinSpec, QUARTER_X, QUARTER_Z, QUARTER_RADIUS, QUARTER_HY);
     gl.uniform2f(locs.uDieGridOrigin, this.anchors[0][0], this.anchors[0][2]);
+    gl.uniform1f(locs.uStage0Ratio, STAGE_RATIOS[0]);
     gl.uniform2f(locs.uFocusXZ, focusX, focusZ);
     gl.uniform1f(locs.uFocusDist, focusDist);
     gl.uniform1f(locs.uDofStrength, dofStrength);
@@ -3912,14 +3927,6 @@ export class SiliconEngine {
     this.activeRegionKind = getDieRegionKind(this.anchors[0][0], this.anchors[0][2]);
 
     const fps = Math.round(1000 / Math.max(4, this.emaFrameMs));
-    this.hooks.onZoomFrame(
-      this.zoom,
-      fps,
-      this.smoothMotion,
-      this.dragging || this.tourActive,
-      yawVel,
-      this.activeRegionKind
-    );
 
     // Compute exact continuous log-scale for EVERY nested world (0..9) relative to current zoom z
     const z = Math.max(0, Math.min(MAX_ZOOM, this.zoom));
@@ -4039,6 +4046,20 @@ export class SiliconEngine {
     mat4Perspective(this.projMat, fovY, aspect, nearClip, farClip);
     mat4LookAt(this.viewMat, camX, camY, camZ, lookX, lookY, lookZ, 0, 1, 0);
     mat4Multiply(this.viewProjMat, this.projMat, this.viewMat);
+
+    // Exact live camera-calibrated physical scale at the focal plane (anchored to 1:1 US Quarter = 24.26 mm; zero GC)
+    const fovHeightFm = (dist / (1.68 * Math.max(1e-12, this.world0Scale))) * WORLD0_FM_PER_UNIT;
+    this.opticalMetrics.fovHeightFm = fovHeightFm;
+    this.opticalMetrics.fmPerCssPx = fovHeightFm / Math.max(1, this.cssH);
+    this.hooks.onZoomFrame(
+      this.zoom,
+      fps,
+      this.smoothMotion,
+      this.dragging || this.tourActive,
+      yawVel,
+      this.activeRegionKind,
+      this.opticalMetrics
+    );
 
     this.updateLightMatrix(lookX, lookZ, 7.2 + macroOut * 8.6);
     const fogDensity = 0.0082 * Math.pow(0.10, outT) + this.introFogBoost;

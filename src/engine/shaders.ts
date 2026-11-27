@@ -475,6 +475,7 @@ uniform float uPlanarReflActive;
 uniform vec4 uClipPlane; // (planeY, enabled, 0, 0)
 uniform vec4 uCoinSpec; // (cx, cz, radius, hy)
 uniform vec2 uDieGridOrigin; // World 0 anchor aligned to World 1 BEOL M12-M16 grid
+uniform float uStage0Ratio;  // Exact World 0 -> World 1 physical scale ratio (STAGE_RATIOS[0])
 uniform vec2 uFocusXZ;
 uniform float uFocusDist;
 uniform float uDofStrength;
@@ -1559,14 +1560,14 @@ ${holeDiscardBlock}
   // Machined micro-chamfer edge polish: crisper specular gleam specifically along machined bevels!
   rough = mix(rough, max(0.06, rough * 0.52), bevelMask * 0.76);
 
-  // Continuous Optical BEOL M12-M16 Power & Clock Mesh Emergence on World 0 Die (z: 0.18 -> 0.85):
+  // Continuous Optical BEOL M12-M16 Power & Clock Mesh Emergence on World 0 Die (z: 0.28 -> 0.85):
   // Physically resolves the top-level global power grid edge-to-edge across the entire bare silicon die
-  // at exact 1:16 pitch & phase alignment with World 1 so 3D rails rise seamlessly out of the die plane!
-  if (hasDieAtlas > 0.01 && uZoom > 0.18 && uZoom < 1.08 && uClipPlane.y < 0.5) {
-    float gridResolve = smoothstep(0.18, 0.68, uZoom) * hasDieAtlas;
-    float bayResolve = smoothstep(0.34, 0.68, uZoom) * hasDieAtlas;
+  // at exact 1:uStage0Ratio pitch & phase alignment with World 1 so 3D rails rise seamlessly out of the die plane!
+  if (hasDieAtlas > 0.01 && uZoom > 0.28 && uZoom < 1.08 && uClipPlane.y < 0.5) {
+    float gridResolve = smoothstep(0.28, 0.76, uZoom) * hasDieAtlas;
+    float bayResolve = smoothstep(0.42, 0.78, uZoom) * hasDieAtlas;
     bevelMask *= (1.0 - bayResolve);
-    vec2 gPos = (p.xz - uDieGridOrigin) * 16.0;
+    vec2 gPos = (p.xz - uDieGridOrigin) * uStage0Ratio;
     const float gPitch = 1.52;
     vec2 fw = max(fwidth(gPos), vec2(0.004));
 

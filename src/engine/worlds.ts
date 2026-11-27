@@ -32,7 +32,10 @@
  *   17 = Glossy Jet-Black Capillary Epoxy Underfill Meniscus
  */
 
-export const STAGE_RATIOS = [16.0, 9.0, 9.0, 8.0, 8.0, 6.0, 5.0, 1800.0, 10.0] as const;
+export const STAGE_RATIOS = [84.0, 15.0, 9.0, 8.0, 8.0, 10.0, 5.0, 35800.0, 8.5] as const;
+
+/** Exact physical calibration anchored to the 1:1 US Quarter Dollar (24.26 mm dia / (2 * 3.465) = 3.5007215 mm/unit) */
+export const WORLD0_FM_PER_UNIT = 3_500_721_500_000;
 
 export interface DieFloorplanSpec {
   pCores: number;
@@ -208,6 +211,7 @@ export const QUARTER_CENTER_Y = -0.348; // Flush on World 0 ground plane (-0.598
 export const WORLD0_DIE_CLAMP_X = 2.66;
 export const WORLD0_DIE_CLAMP_Z = 2.04;
 export const WORLD1_PITCH = 1.52;
+export const WORLD1_SPAN = 11.40;
 export const WORLD1_HOLE_HALF = 0.64;
 export const WORLD2_PITCH = 1.84;
 export const WORLD2_HOLE_HALF = 0.64;
@@ -220,7 +224,10 @@ export const WORLD4_GATE_Z = 0.72; // NMOS hero nanosheet row (unobstructed +Z t
 export const WORLD4_HOLE_HX = 0.48;
 export const WORLD4_HOLE_HZ = 0.24;
 export const WORLD6_LATTICE_A = 1.12;
-export const WORLD5_LATTICE_A = WORLD6_LATTICE_A / STAGE_RATIOS[5]; // 0.186667
+export const WORLD6_HALF_X = 2.45;
+export const WORLD6_HALF_Y = 1.40;
+export const WORLD6_HALF_Z = 1.75;
+export const WORLD5_LATTICE_A = WORLD6_LATTICE_A / STAGE_RATIOS[5]; // 0.112 exact physical Si lattice!
 
 /**
  * WORLD 0: Telemetry-Accurate Apple Silicon Package + Die + 4x LPDDR5 + 1:1 US Quarter (10× · 21 mm)
@@ -389,7 +396,7 @@ export function buildWorld1(): WorldInstances {
 
   const pitch = WORLD1_PITCH; // 1.52
   const R = 7; // 15x15 global power grid cells => ±11.40
-  const span = 11.40;
+  const span = WORLD1_SPAN;
 
   // Deep ILD oxide base well (stays intact underneath whichever cell opens into World 2; top at -0.21)
   b.addBox(0, -0.24, 0, span, 0.03, span, 0.004, 0);
@@ -492,7 +499,7 @@ export function buildWorld1(): WorldInstances {
 export function buildWorld2(): WorldInstances {
   const b = new InstanceBuilder();
 
-  const span = 5.76;
+  const span = WORLD1_HOLE_HALF * STAGE_RATIOS[1]; // 0.64 * 15.0 = 9.60 exact tile fit into World 1 bay!
 
   // Sub-floor well below World 3's silicon wafer
   b.addBox(0, -0.13, 0, span, 0.03, span, 0.004, 0);
@@ -500,7 +507,7 @@ export function buildWorld2(): WorldInstances {
   b.addBox(0, -0.08, 0, span, 0.06, span, 0.005, 0);
 
   // Layer M2/M3: Fine Cobalt/Tungsten Local Interconnect Grid (y = +0.06, pitch = 0.64)
-  for (let i = -8; i <= 8; i++) {
+  for (let i = -14; i <= 14; i++) {
     const p = i * 0.64;
     if (Math.abs(p) > span - 0.1) continue;
     b.addBox(p, 0.06, 0, 0.044, 0.030, span, 0.008, 4);
@@ -508,7 +515,7 @@ export function buildWorld2(): WorldInstances {
   }
 
   // Layer M4/M5: Rich Manhattan Copper Damascene Signal Routing Tracks (y = +0.16, fine 0.46 pitch!)
-  for (let i = -11; i <= 11; i++) {
+  for (let i = -20; i <= 20; i++) {
     const p = i * 0.46;
     if (Math.abs(p) > span - 0.15) continue;
     // Skip dead center of courtyard openings so you can still look down into FEOL World 3
@@ -525,16 +532,16 @@ export function buildWorld2(): WorldInstances {
 
   // Layer M6/M7: Mid Copper Damascene Signal Buses (y = +0.26, pitch = 1.84 half-offset!)
   const pitch = WORLD2_PITCH;
-  for (let i = -3; i <= 2; i++) {
-    const g = (i + 0.5) * pitch; // ±0.92, ±2.76, ±4.60
+  for (let i = -5; i <= 4; i++) {
+    const g = (i + 0.5) * pitch; // ±0.92, ±2.76, ±4.60, ±6.44, ±8.28
     const hBus = hash12(i * 4.71 + 2.3, 19.1);
     const dir = (i & 1) === 0 ? 1 : -1;
     b.addBox(0, 0.26, g - 0.14, span, 0.044, 0.044, 0.012, 3, 9, 3, hBus, dir * 0.50);
     b.addBox(0, 0.26, g + 0.14, span, 0.044, 0.044, 0.012, 3, 9, 3, (hBus + 0.52) % 1, -dir * 0.46);
     b.addBox(g, 0.26, 0,        0.072, 0.044, span, 0.014, 3, 9, 2, (hBus + 0.24) % 1, dir * 0.54);
   }
-  for (let iz = -3; iz <= 2; iz++) {
-    for (let ix = -3; ix <= 2; ix++) {
+  for (let iz = -5; iz <= 4; iz++) {
+    for (let ix = -5; ix <= 4; ix++) {
       const gx = (ix + 0.5) * pitch;
       const gz = (iz + 0.5) * pitch;
       b.addCyl(gx, 0.26, gz, 0.14, 0.050, 0.014, 3);
@@ -542,7 +549,7 @@ export function buildWorld2(): WorldInstances {
   }
 
   // Layer M8/M9: Upper Semi-Global Brushed-Silver/Copper Damascene Canyons + Dual-Damascene Vias (y = +0.43)
-  for (let i = -3; i <= 2; i++) {
+  for (let i = -5; i <= 4; i++) {
     const pos = (i + 0.5) * pitch;
     const hTop = hash12(i * 5.93 + 8.1, 3.7);
     const dir = (i & 1) === 0 ? 1 : -1;
@@ -553,8 +560,8 @@ export function buildWorld2(): WorldInstances {
   }
 
   // Dual-Damascene Circular Vias & Vertical Copper Pillars coupled directly to the M8/M9 X-bus directly overhead!
-  for (let iz = -3; iz <= 2; iz++) {
-    for (let ix = -3; ix <= 2; ix++) {
+  for (let iz = -5; iz <= 4; iz++) {
+    for (let ix = -5; ix <= 4; ix++) {
       const cx = (ix + 0.5) * pitch;
       const cz = (iz + 0.5) * pitch;
       const isLiveVia = ((ix + iz) & 1) === 0;
@@ -770,30 +777,30 @@ export function buildWorldGate3nm(): WorldInstances {
   b.addBox( 1.62, 0.0, -0.08, 0.18, 0.88, 0.96, 0.028, 14);
 
   // Cutaway C-Shaped Tungsten (W) Gate Fill + Thin TiN Work-Function Liner (NO banned gold!)
-  // Back wall sits at z = -1.04 (-6.24 at 6x scale > camera dist 5.4!)
+  // Back wall sits at z = -1.04 (-10.4 at 10x scale > camera dist 5.4!)
   // param = 3 marks the single 12nm hero gate (uniform gate voltage, not World 4's 3-gate cell tiling)
-  b.addBox(0,  0.76, -0.14, 1.32, 0.16, 0.96, 0.042, 4, 13, 3); // Top Tungsten (W) gate fill
-  b.addBox(0, -0.76, -0.14, 1.32, 0.16, 0.96, 0.042, 4, 13, 3); // Bottom Tungsten (W) gate fill
-  b.addBox(0,  0.0,  -1.04, 1.32, 0.76, 0.14, 0.040, 4, 13, 3); // Back Tungsten gate bridge
+  b.addBox(0,  0.60, -0.14, 1.32, 0.15, 0.96, 0.040, 4, 13, 3); // Top Tungsten (W) gate fill
+  b.addBox(0, -0.60, -0.14, 1.32, 0.15, 0.96, 0.040, 4, 13, 3); // Bottom Tungsten (W) gate fill
+  b.addBox(0,  0.0,  -1.04, 1.32, 0.62, 0.14, 0.040, 4, 13, 3); // Back Tungsten gate bridge
   // Thin TiN (Titanium Nitride) bronze-slate work-function metal liner right inside the Tungsten fill
-  b.addBox(0,  0.58, -0.10, 1.30, 0.042, 0.86, 0.014, 3);
-  b.addBox(0, -0.58, -0.10, 1.30, 0.042, 0.86, 0.014, 3);
-  b.addBox(0,  0.0,  -0.88, 1.30, 0.58,  0.042, 0.014, 3);
+  b.addBox(0,  0.42, -0.10, 1.30, 0.042, 0.86, 0.014, 3);
+  b.addBox(0, -0.42, -0.10, 1.30, 0.042, 0.86, 0.014, 3);
+  b.addBox(0,  0.0,  -0.88, 1.30, 0.44,  0.042, 0.014, 3);
   // Vertical Tungsten gate sidewall risers linking the GAA stack
   b.addBox(-1.26, 0.0, -0.92, 0.12, 1.32, 0.22, 0.030, 4);
   b.addBox( 1.26, 0.0, -0.92, 0.12, 1.32, 0.22, 0.030, 4);
 
   // Dual-Layer Gate Dielectric:
   //   1) Amorphous Sapphire-Blue High-k HfO2 (~1.2 nm)
-  b.addBox(0,  0.46, -0.08, 1.28, 0.052, 0.78, 0.016, 9, 0, 0.32);
-  b.addBox(0, -0.46, -0.08, 1.28, 0.052, 0.78, 0.016, 9, 0, 0.32);
-  b.addBox(0,  0.0,  -0.78, 1.28, 0.46,  0.052, 0.016, 9, 0, 0.32);
+  b.addBox(0,  0.30, -0.08, 1.28, 0.048, 0.78, 0.014, 9, 0, 0.32);
+  b.addBox(0, -0.30, -0.08, 1.28, 0.048, 0.78, 0.014, 9, 0, 0.32);
+  b.addBox(0,  0.0,  -0.78, 1.28, 0.32,  0.048, 0.014, 9, 0, 0.32);
   //   2) Ultra-thin Interfacial SiO2 (~0.5 nm) right between HfO2 and the Silicon channel!
-  b.addBox(0,  0.38, -0.06, 1.26, 0.024, 0.74, 0.008, 14);
-  b.addBox(0, -0.38, -0.06, 1.26, 0.024, 0.74, 0.008, 14);
+  b.addBox(0,  0.20, -0.06, 1.26, 0.022, 0.74, 0.008, 14);
+  b.addBox(0, -0.20, -0.06, 1.26, 0.022, 0.74, 0.008, 14);
 
   // Pure UNDOPED Diamond-Cubic Silicon Channel inside the cutaway 5 nm nanosheet ribbon!
-  // Exact scaled match to World 6: a5 = 1.12 / 6.0 = 0.186667!
+  // Exact scaled match to World 6: a5 = 1.12 / 10.0 = 0.112 (true 0.540 nm Si lattice constant)!
   const R5 = STAGE_RATIOS[5];
   const a5 = WORLD5_LATTICE_A;
   const basis: [number, number, number][] = [
@@ -808,11 +815,12 @@ export function buildWorldGate3nm(): WorldInstances {
   ];
 
   const ribbonAtoms: { x: number; y: number; z: number }[] = [];
-  const ribbonMaxX = 1.48;
-  const ribbonMaxY = 1.40 / R5; // 0.2333
-  const ribbonMaxZ = 1.75 / R5; // 0.2917 (wide flat ribbon!)
+  const ribbonMaxX = 1.44;
+  const ribbonMaxY = WORLD6_HALF_Y / R5; // 0.140
+  const ribbonMaxZ = WORLD6_HALF_Z / R5; // 0.175 (wide flat ribbon!)
+  const maxIx = Math.ceil(ribbonMaxX / a5);
 
-  for (let ix = -8; ix <= 8; ix++) {
+  for (let ix = -maxIx; ix <= maxIx; ix++) {
     for (let iy = -2; iy <= 1; iy++) {
       for (let iz = -2; iz <= 2; iz++) {
         for (let bi = 0; bi < basis.length; bi++) {
@@ -847,15 +855,18 @@ export function buildWorldGate3nm(): WorldInstances {
   }
 
   // Covalent lattice bonds carrying delocalized Bloch electron wavepackets (NO flying marbles!)
+  // Atoms are generated monotonically by ix, so breaking once dx > bondMax + a5 keeps this O(N)!
   const bondMax = a5 * 0.4330127 * 1.12;
   const bondMax2 = bondMax * bondMax;
+  const xBreak = bondMax + a5;
   const bondRad = 0.026 / R5;
   for (let i = 0; i < ribbonAtoms.length; i++) {
     const p1 = ribbonAtoms[i];
     for (let j = i + 1; j < ribbonAtoms.length; j++) {
       const p2 = ribbonAtoms[j];
       const dx = p2.x - p1.x;
-      if (Math.abs(dx) > bondMax) continue;
+      if (dx > xBreak) break;
+      if (dx < -bondMax || dx > bondMax) continue;
       const dy = p2.y - p1.y;
       const dz = p2.z - p1.z;
       const d2 = dx * dx + dy * dy + dz * dz;
@@ -890,9 +901,9 @@ export function buildWorldLattice(): WorldInstances {
     [0.75, 0.75, 0.25],
   ];
 
-  const halfX = 2.45;
-  const halfY = 1.40;
-  const halfZ = 1.75;
+  const halfX = WORLD6_HALF_X;
+  const halfY = WORLD6_HALF_Y;
+  const halfZ = WORLD6_HALF_Z;
   const nearestDist = a * 0.4330127;
 
   const atoms: { x: number; y: number; z: number; parity: 1 | -1 }[] = [];
@@ -943,7 +954,7 @@ export function buildWorldLattice(): WorldInstances {
     }
   }
 
-  // Amorphous ~0.5 nm Interfacial SiO2 Layer (y ≈ +1.68..+1.98) + Amorphous High-k HfO2 Layer (y ≈ +2.14..+2.52)
+  // Amorphous ~0.5 nm Interfacial SiO2 Layer (y ≈ +1.72..+1.96) + Amorphous High-k HfO2 Layer (y ≈ +2.16..+2.50)
   // Built as a disordered random-network oxide (NOT an unrealistic crystalline square grid!)
   const oxideNodes: { x: number; y: number; z: number; isHf: boolean; isO: boolean }[] = [];
   for (let i = 0; i < 42; i++) {
