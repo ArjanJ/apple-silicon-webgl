@@ -872,6 +872,47 @@ export class SiliconAudio {
     return osc;
   }
 
+  /** Pure, rounded sine/triangle micro-tone for clean, non-fatiguing UI & optical feedback */
+  private triggerCleanTone(
+    time: number,
+    freqHz: number,
+    durSec: number,
+    gain: number,
+    dest: AudioNode,
+    type: OscillatorType = 'sine',
+    endFreqHz?: number
+  ): OscillatorNode {
+    const ctx = this.ctx!;
+    const osc = ctx.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freqHz, time);
+    if (endFreqHz !== undefined && endFreqHz !== freqHz) {
+      osc.frequency.exponentialRampToValueAtTime(Math.max(24, endFreqHz), time + durSec * 0.85);
+    }
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, time);
+    g.gain.linearRampToValueAtTime(gain, time + Math.min(0.004, durSec * 0.2));
+    g.gain.exponentialRampToValueAtTime(0.0001, time + durSec);
+
+    if (type !== 'sine') {
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.Q.setValueAtTime(0.8, time);
+      lp.frequency.setValueAtTime(Math.min(2600, freqHz * 3.0), time);
+      lp.frequency.exponentialRampToValueAtTime(Math.max(120, freqHz * 1.25), time + durSec);
+      osc.connect(lp);
+      lp.connect(g);
+    } else {
+      osc.connect(g);
+    }
+
+    g.connect(dest);
+    osc.start(time);
+    osc.stop(time + durSec + 0.02);
+    return osc;
+  }
+
   private makeToolkit(trackFn: (node: AudioScheduledSourceNode) => void): SynthToolkit {
     return {
       ctx: this.ctx!,
@@ -1086,15 +1127,15 @@ export class SiliconAudio {
       this.bgmFilter.frequency.setTargetAtTime(targetCutoff, this.ctx.currentTime, 0.25);
     }
 
-    // 1) Precision focus-ring clock detents while zooming
-    if (!introActive && Math.abs(z - this.lastTickZoom) >= 0.088 && nowMs - this.lastTickMs >= 38) {
+    // 1) Precision focus-ring micro-detents while zooming (calm, damped Leica-ring feel)
+    if (!introActive && Math.abs(z - this.lastTickZoom) >= 0.115 && nowMs - this.lastTickMs >= 46) {
       const zoomingIn = dz >= 0;
       this.playFocusDetent(zoomingIn, clamp(motion, 0.15, 1.0), z);
       this.lastTickZoom = z;
       this.lastTickMs = nowMs;
     }
 
-    // 2) Tuned objective lock when crossing one of the 11 named scale stops
+    // 2) Subtle objective stop click when crossing one of the 11 named scale stops
     const stopIdx = clamp(Math.round(z) + 1, 0, vibe.turretScaleHz.length - 1);
     if (!introActive && stopIdx !== this.lastStopIdx) {
       const direction = stopIdx > this.lastStopIdx ? 1 : -1;
@@ -1107,18 +1148,17 @@ export class SiliconAudio {
     if (!this.ctx || !this.isActive()) return;
     const now = this.ctx.currentTime;
     const vibe = getVibeMeta(this.vibeId);
-    const out = this.routeOut(zoomingIn ? 0.08 : -0.08, 0.48, 0.08);
+    const out = this.routeOut(zoomingIn ? 0.06 : -0.06, 0.28, 0.0);
 
-    const jitter = 0.98 + Math.random() * 0.04;
+    const jitter = 0.99 + Math.random() * 0.02;
     const scaleNorm = clamp((z + 1) / 10, 0, 1);
 
-    const strikeHz = ((zoomingIn ? 3400 : 2500) + scaleNorm * 1100) * jitter;
-    this.triggerStrike(now, strikeHz, 4.0, 0.006, 0.13 + vel * 0.11, out);
+    const strikeHz = ((zoomingIn ? 3200 : 2400) + scaleNorm * 850) * jitter;
+    this.triggerStrike(now, strikeHz, 4.6, 0.0045, 0.032 + vel * 0.022, out);
 
-    const baseHz = zoomingIn ? vibe.rootHz : vibe.turretScaleHz[1];
-    const pluckHz = baseHz * (1.0 + scaleNorm * 1.15) * jitter;
-    const wave: OscillatorType = this.vibeId === 'noir' ? 'sawtooth' : 'triangle';
-    this.triggerAnalogPluck(now, pluckHz, 480 + scaleNorm * 920, 3.4, 0.032, 0.068 + vel * 0.055, out, wave);
+    const baseHz = zoomingIn ? vibe.rootHz * 1.5 : vibe.rootHz;
+    const toneHz = baseHz * (1.0 + scaleNorm * 0.75) * jitter;
+    this.triggerCleanTone(now, toneHz, 0.026, 0.022 + vel * 0.014, out, 'sine');
   }
 
   private playTurretLock(stopIdx: number, direction: number): void {
@@ -1127,34 +1167,32 @@ export class SiliconAudio {
     const vibe = getVibeMeta(this.vibeId);
     const scaleHz = vibe.turretScaleHz[stopIdx] ?? vibe.rootHz;
     const isSubatomic = stopIdx >= 9;
-    const out = this.routeOut(0, 0.72, isSubatomic ? 0.45 : 0.22);
-    const wave: OscillatorType = this.vibeId === 'noir' ? 'sawtooth' : 'triangle';
+    const out = this.routeOut(0, 0.42, isSubatomic ? 0.2 : 0.07);
 
-    this.triggerStrike(now, direction > 0 ? 4100 : 3000, 3.2, 0.007, 0.18, out);
+    // Stage 1: delicate optical detent tick
+    this.triggerStrike(now, direction > 0 ? 3600 : 2700, 3.8, 0.005, 0.052, out);
 
-    const seatT = now + (isSubatomic ? 0.02 : 0.015);
-    this.triggerStrike(seatT, isSubatomic ? 1500 : 2400, 2.4, 0.012, isSubatomic ? 0.3 : 0.21, out);
+    // Stage 2: soft rounded settle + pure in-key harmonic ping
+    const seatT = now + (isSubatomic ? 0.018 : 0.014);
     this.triggerThock(
       seatT,
-      isSubatomic ? 140 : 210,
+      isSubatomic ? 115 : 155,
       isSubatomic ? scaleHz : vibe.turretScaleHz[0],
-      isSubatomic ? 0.18 : 0.055,
-      isSubatomic ? 0.42 : 0.24,
+      isSubatomic ? 0.16 : 0.055,
+      isSubatomic ? 0.145 : 0.08,
       out,
       'sine'
     );
-    this.triggerAnalogPluck(
+    this.triggerCleanTone(
       seatT,
-      isSubatomic ? scaleHz * 2 : scaleHz,
-      isSubatomic ? 620 : scaleHz * 5.2,
-      3.4,
-      isSubatomic ? 0.42 : 0.16,
-      isSubatomic ? 0.18 : 0.125,
+      isSubatomic ? scaleHz * 2 : scaleHz * 1.5,
+      isSubatomic ? 0.32 : 0.13,
+      isSubatomic ? 0.068 : 0.044,
       out,
-      wave
+      'sine'
     );
     if (isSubatomic) {
-      this.triggerAnalogPluck(seatT, scaleHz * 3, 740, 2.8, 0.36, 0.085, out, 'triangle');
+      this.triggerCleanTone(seatT, scaleHz * 3, 0.28, 0.032, out, 'sine');
     }
   }
 
@@ -1167,81 +1205,77 @@ export class SiliconAudio {
     this.lastHoverId = hitId;
 
     const nowMs = performance.now();
-    if (nowMs - this.lastHoverMs < 55) return;
+    if (nowMs - this.lastHoverMs < 70) return;
     this.lastHoverMs = nowMs;
 
     if (!this.ctx || !this.isActive()) return;
     const now = this.ctx.currentTime;
     const vibe = getVibeMeta(this.vibeId);
-    const wave: OscillatorType = this.vibeId === 'noir' ? 'sawtooth' : 'triangle';
-    const panVal = clamp((clientX / Math.max(1, window.innerWidth)) * 2 - 1, -0.65, 0.65) * 0.65;
-    const out = this.routeOut(panVal, 0.6, 0.14);
+    const panVal = clamp((clientX / Math.max(1, window.innerWidth)) * 2 - 1, -0.65, 0.65) * 0.52;
+    const out = this.routeOut(panVal, 0.34, 0.04);
 
     if (hitId === 'us-quarter') {
-      this.triggerStrike(now, 5800, 2.6, 0.006, 0.22, out);
-      this.triggerMetalRing(now, 2560, 1.608, 0.12, 0.105, out);
-      this.triggerMetalRing(now, 6180, 1.31, 0.05, 0.04, out);
+      this.triggerStrike(now, 5200, 3.4, 0.0045, 0.045, out);
+      this.triggerMetalRing(now, 2560, 1.608, 0.095, 0.032, out);
       return;
     }
 
     if (hitId === 'slc' || hitId.startsWith('ram-')) {
-      const hz = hitId === 'slc' ? vibe.turretScaleHz[1] : vibe.turretScaleHz[0];
-      this.triggerStrike(now, 1700, 2.2, 0.008, 0.14, out);
-      this.triggerAnalogPluck(now, hz, 540, 3.2, 0.09, 0.14, out, wave);
+      const hz = hitId === 'slc' ? vibe.turretScaleHz[1] * 1.5 : vibe.turretScaleHz[0] * 1.5;
+      this.triggerStrike(now, 1750, 2.8, 0.005, 0.03, out);
+      this.triggerCleanTone(now, hz, 0.075, 0.04, out, 'sine');
       return;
     }
 
     if (hitId === 'gpu' || hitId === 'ane') {
-      this.triggerStrike(now, 3600, 3.6, 0.005, 0.13, out);
-      this.triggerAnalogPluck(now, vibe.fifthHz, 980, 3.6, 0.055, 0.095, out, wave);
-      this.triggerAnalogPluck(now + 0.016, vibe.octaveHz, 1280, 3.4, 0.065, 0.08, out, wave);
+      this.triggerStrike(now, 3400, 4.2, 0.004, 0.028, out);
+      this.triggerCleanTone(now, vibe.fifthHz * 1.5, 0.055, 0.028, out, 'sine');
+      this.triggerCleanTone(now + 0.018, vibe.octaveHz, 0.068, 0.024, out, 'sine');
       return;
     }
 
     if (hitId === 'smd-caps') {
-      this.triggerStrike(now, 4900, 4.8, 0.004, 0.15, out);
-      this.triggerAnalogPluck(now, vibe.fifthHz * 2, 1800, 4.2, 0.028, 0.065, out, 'triangle');
+      this.triggerStrike(now, 4600, 5.2, 0.0035, 0.032, out);
+      this.triggerCleanTone(now, vibe.octaveHz * 1.5, 0.032, 0.02, out, 'sine');
       return;
     }
 
     if (hitId === 'io-phy' || hitId === 'media') {
       const hz = hitId === 'io-phy' ? vibe.pCoreScaleHz[2] : vibe.pCoreScaleHz[5];
-      this.triggerStrike(now, 2900, 3.0, 0.007, 0.15, out);
-      this.triggerAnalogPluck(now, hz, 820, 3.4, 0.075, 0.105, out, wave);
+      this.triggerStrike(now, 2800, 3.6, 0.0045, 0.03, out);
+      this.triggerCleanTone(now, hz * 1.5, 0.062, 0.032, out, 'sine');
       return;
     }
 
     const coreIdx = hitId.startsWith('pcore-') ? Number(hitId.slice(6)) || 0 : 0;
     const hz = vibe.pCoreScaleHz[coreIdx % vibe.pCoreScaleHz.length];
-    this.triggerStrike(now, 3500 + (coreIdx % 8) * 160, 3.8, 0.005, 0.13, out);
-    this.triggerAnalogPluck(now, hz, 740 + (coreIdx % 8) * 110, 3.4, 0.068, 0.105, out, wave);
+    this.triggerStrike(now, 3200 + (coreIdx % 8) * 120, 4.2, 0.004, 0.026, out);
+    this.triggerCleanTone(now, hz * 1.5, 0.058, 0.03, out, 'sine');
   }
 
   public playInspect(open: boolean, hitId?: string): void {
     if (!this.ctx || !this.isActive()) return;
     const now = this.ctx.currentTime;
     const vibe = getVibeMeta(this.vibeId);
-    const wave: OscillatorType = this.vibeId === 'noir' ? 'sawtooth' : 'triangle';
-    const out = this.routeOut(0, 0.68, 0.28);
+    const out = this.routeOut(0, 0.44, 0.1);
     const isCoin = hitId === 'us-quarter';
 
     if (open) {
-      this.triggerStrike(now, 4300, 3.4, 0.007, 0.2, out);
-      this.triggerAnalogPluck(now, vibe.rootHz, 1100, 3.4, 0.12, 0.11, out, wave);
+      this.triggerStrike(now, 3800, 3.8, 0.005, 0.06, out);
+      this.triggerCleanTone(now, vibe.rootHz, 0.14, 0.048, out, 'sine');
 
-      const t2 = now + 0.03;
-      this.triggerStrike(t2, isCoin ? 5200 : 2500, 2.4, 0.011, 0.24, out);
-      this.triggerThock(t2, 165, vibe.turretScaleHz[0], 0.085, 0.26, out, 'sine');
+      const t2 = now + 0.026;
+      this.triggerThock(t2, 138, vibe.turretScaleHz[0], 0.072, 0.085, out, 'sine');
       if (isCoin) {
-        this.triggerMetalRing(t2, 2560, 1.608, 0.14, 0.09, out);
+        this.triggerMetalRing(t2, 2560, 1.608, 0.11, 0.038, out);
       } else {
-        this.triggerAnalogPluck(t2, vibe.turretScaleHz[0], 680, 3.2, 0.26, 0.14, out, wave, -5);
-        this.triggerAnalogPluck(t2, vibe.fifthHz, 1450, 3.4, 0.24, 0.1, out, wave, 5);
+        this.triggerCleanTone(t2, vibe.fifthHz, 0.19, 0.042, out, 'triangle');
+        this.triggerCleanTone(t2 + 0.012, vibe.octaveHz, 0.2, 0.026, out, 'sine');
       }
     } else {
-      this.triggerStrike(now, 2900, 2.8, 0.006, 0.16, out);
-      this.triggerAnalogPluck(now, vibe.fifthHz, 920, 3.2, 0.065, 0.09, out, wave);
-      this.triggerAnalogPluck(now + 0.022, vibe.turretScaleHz[1], 420, 3.0, 0.11, 0.11, out, 'triangle');
+      this.triggerStrike(now, 2500, 3.4, 0.0045, 0.045, out);
+      this.triggerCleanTone(now, vibe.fifthHz, 0.075, 0.036, out, 'sine');
+      this.triggerCleanTone(now + 0.02, vibe.rootHz, 0.1, 0.032, out, 'sine');
     }
   }
 
@@ -1256,63 +1290,36 @@ export class SiliconAudio {
     const ctx = this.ctx;
     const now = ctx.currentTime;
     const vibe = getVibeMeta(this.vibeId);
-    const out = this.routeOut(0, 0.65, 0.34);
+    const out = this.routeOut(0, 0.42, 0.14);
     const divingIn = toZ > fromZ;
-    const dur = clamp(0.22 + dist * 0.058, 0.26, 0.62);
-    const wave: OscillatorType = this.vibeId === 'noir' ? 'sawtooth' : 'triangle';
+    const dur = clamp(0.24 + dist * 0.055, 0.28, 0.58);
 
-    this.triggerStrike(now, divingIn ? 3900 : 2800, 3.0, 0.008, 0.2, out);
-    this.triggerThock(now, divingIn ? 160 : 120, vibe.subHz, 0.11, 0.24, out, 'sine');
+    // Subtle damped launch tap + soft low-end weight
+    this.triggerStrike(now, divingIn ? 3200 : 2400, 3.6, 0.005, 0.048, out);
+    this.triggerThock(now, divingIn ? 128 : 104, vibe.subHz, 0.1, 0.085, out, 'sine');
 
+    // Clean warm harmonic pitch glide (soft triangle + pure sine fifth, zero resonant buzz)
     const loA = vibe.turretScaleHz[0];
     const hiA = vibe.rootHz;
     const loB = vibe.turretScaleHz[1];
     const hiB = vibe.fifthHz;
+    this.triggerCleanTone(now, divingIn ? loA : hiA, dur, 0.048, out, 'triangle', divingIn ? hiA : loA);
+    this.triggerCleanTone(now, divingIn ? loB : hiB, dur, 0.032, out, 'sine', divingIn ? hiB : loB);
 
-    const oscA = ctx.createOscillator();
-    oscA.type = wave;
-    oscA.frequency.setValueAtTime(divingIn ? loA : hiA, now);
-    oscA.frequency.exponentialRampToValueAtTime(divingIn ? hiA : loA, now + dur * 0.9);
-
-    const oscB = ctx.createOscillator();
-    oscB.type = wave;
-    oscB.frequency.setValueAtTime(divingIn ? loB : hiB, now);
-    oscB.frequency.exponentialRampToValueAtTime(divingIn ? hiB : loB, now + dur * 0.9);
-    oscB.detune.setValueAtTime(6, now);
-
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.Q.setValueAtTime(3.2, now);
-    lp.frequency.setValueAtTime(divingIn ? 240 : 1850, now);
-    lp.frequency.exponentialRampToValueAtTime(divingIn ? 2050 : 210, now + dur * 0.85);
-
-    const sg = ctx.createGain();
-    sg.gain.setValueAtTime(0.0001, now);
-    sg.gain.linearRampToValueAtTime(0.115, now + 0.035);
-    sg.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-
-    oscA.connect(lp);
-    oscB.connect(lp);
-    lp.connect(sg);
-    sg.connect(out);
-    oscA.start(now);
-    oscB.start(now);
-    oscA.stop(now + dur + 0.03);
-    oscB.stop(now + dur + 0.03);
-
+    // Whisper-soft optical air-bearing glide
     const src = ctx.createBufferSource();
     src.buffer = this.brushedNoiseBuf;
     src.loop = true;
 
     const bp = ctx.createBiquadFilter();
     bp.type = 'bandpass';
-    bp.Q.setValueAtTime(3.2, now);
-    bp.frequency.setValueAtTime(divingIn ? 360 : 1680, now);
-    bp.frequency.exponentialRampToValueAtTime(divingIn ? 1850 : 320, now + dur);
+    bp.Q.setValueAtTime(1.6, now);
+    bp.frequency.setValueAtTime(divingIn ? 340 : 1280, now);
+    bp.frequency.exponentialRampToValueAtTime(divingIn ? 1320 : 300, now + dur);
 
     const ng = ctx.createGain();
     ng.gain.setValueAtTime(0.0001, now);
-    ng.gain.linearRampToValueAtTime(clamp(0.09 + dist * 0.018, 0.1, 0.2), now + 0.045);
+    ng.gain.linearRampToValueAtTime(clamp(0.036 + dist * 0.008, 0.04, 0.075), now + 0.055);
     ng.gain.exponentialRampToValueAtTime(0.0001, now + dur);
 
     src.connect(bp);
@@ -1326,15 +1333,14 @@ export class SiliconAudio {
     if (!this.ctx || !this.isActive()) return;
     const now = this.ctx.currentTime;
     const vibe = getVibeMeta(this.vibeId);
-    const wave: OscillatorType = this.vibeId === 'noir' ? 'sawtooth' : 'triangle';
-    const out = this.routeOut(0, 0.52, 0.12);
+    const out = this.routeOut(0, 0.3, 0.03);
 
     if (active) {
-      this.triggerStrike(now, 3900, 3.6, 0.006, 0.2, out);
-      this.triggerAnalogPluck(now + 0.006, vibe.rootHz, 1250, 3.4, 0.068, 0.125, out, wave);
+      this.triggerStrike(now, 3600, 4.2, 0.0045, 0.046, out);
+      this.triggerCleanTone(now + 0.004, vibe.rootHz * 1.5, 0.052, 0.04, out, 'sine');
     } else {
-      this.triggerStrike(now, 2400, 3.0, 0.006, 0.16, out);
-      this.triggerAnalogPluck(now + 0.005, vibe.turretScaleHz[1], 680, 3.0, 0.055, 0.105, out, 'triangle');
+      this.triggerStrike(now, 2300, 3.6, 0.0045, 0.036, out);
+      this.triggerCleanTone(now + 0.004, vibe.rootHz, 0.048, 0.032, out, 'sine');
     }
   }
 
@@ -1342,74 +1348,100 @@ export class SiliconAudio {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const vibe = getVibeMeta(this.vibeId);
-    const out = this.routeOut(0, 0.4);
-    this.triggerStrike(now, 2200, 3.0, 0.007, 0.18, out);
-    this.triggerAnalogPluck(now + 0.006, vibe.turretScaleHz[1], 420, 2.8, 0.06, 0.11, out, 'triangle');
+    const out = this.routeOut(0, 0.25);
+    this.triggerStrike(now, 2100, 3.6, 0.005, 0.042, out);
+    this.triggerCleanTone(now + 0.004, vibe.turretScaleHz[1], 0.055, 0.036, out, 'sine');
   }
 
   /**
-   * Multi-Core Overclock Burst — tuned to active vibe's key & ducks the background loop cleanly!
+   * Clean, controlled Multi-Core Burst — warm rising harmonic current + gentle rhythmic pulse,
+   * smoothly ducking the background loop without harsh sawtooth screech.
    */
   public triggerBurst(durationSec = 3.5): void {
     if (!this.ctx || !this.isActive()) return;
-    this.touchAudio(durationSec + 3.4);
+    this.touchAudio(durationSec + 2.8);
     const ctx = this.ctx;
     const now = ctx.currentTime;
     const vibe = getVibeMeta(this.vibeId);
-    const out = this.routeOut(0, 0.55, 0.52);
+    const out = this.routeOut(0, 0.42, 0.26);
 
-    // Smoothly duck background loop underneath the overclock burst
+    // Gently duck background loop underneath the compute burst
     if (this.bgmRunning) {
       this.burstDucking = true;
-      this.syncBgmDuckGain(0.24, 0.08);
+      this.syncBgmDuckGain(0.42, 0.1);
       if (this.burstDuckTimer !== null) {
         window.clearTimeout(this.burstDuckTimer);
       }
       this.burstDuckTimer = window.setTimeout(() => {
         this.burstDuckTimer = null;
         this.burstDucking = false;
-        this.syncBgmDuckGain(1.0, 0.45);
+        this.syncBgmDuckGain(1.0, 0.55);
       }, (durationSec + 0.35) * 1000);
     }
 
-    // 1) Heavy high-voltage contactor slam + sub-drop
-    this.triggerStrike(now, 3800, 2.4, 0.011, 0.28, out);
-    this.triggerThock(now, 155, vibe.subHz, 0.26, 0.4, out, 'sine');
-    this.triggerStrike(now + 0.024, 1900, 2.0, 0.016, 0.3, out);
+    // 1) Clean magnetic engagement thump
+    this.triggerStrike(now, 3200, 3.2, 0.007, 0.075, out);
+    this.triggerThock(now, 132, vibe.subHz, 0.22, 0.16, out, 'sine');
 
-    // 2) Overclocked 16th-note pulse synced to the compute burst & active vibe key
-    const shaper = ctx.createWaveShaper();
-    shaper.curve = this.warmDriveCurve;
-    shaper.connect(out);
+    // 2) Smooth rising harmonic turbine swell (pure detuned triangle/sine fifth)
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.Q.setValueAtTime(1.1, now);
+    lp.frequency.setValueAtTime(180, now);
+    lp.frequency.exponentialRampToValueAtTime(920, now + durationSec * 0.72);
+    lp.frequency.exponentialRampToValueAtTime(220, now + durationSec);
 
-    const step = 0.125;
-    const totalSteps = Math.max(8, Math.floor((durationSec - 0.18) / step));
-    const notes = vibe.burstNotes;
+    const swellG = ctx.createGain();
+    swellG.gain.setValueAtTime(0.0001, now);
+    swellG.gain.linearRampToValueAtTime(0.09, now + 0.35);
+    swellG.gain.setValueAtTime(0.085, now + durationSec * 0.78);
+    swellG.gain.exponentialRampToValueAtTime(0.0001, now + durationSec + 0.15);
 
-    for (let i = 0; i < totalSteps; i++) {
-      const ct = now + 0.04 + i * step;
-      const prog = i / Math.max(1, totalSteps - 1);
-      const heat = Math.min(1.0, prog / 0.18) * (1.0 - Math.max(0, (prog - 0.8) / 0.24));
-      const hz = notes[i % notes.length];
+    lp.connect(swellG);
+    swellG.connect(out);
 
-      if (i % 4 === 0) {
-        this.triggerThock(ct, 130, vibe.subHz, 0.2, 0.26 * (0.55 + 0.45 * heat), out, 'sine');
-      }
-
-      const p = ctx.createStereoPanner();
-      p.pan.setValueAtTime(i % 2 === 0 ? -0.24 : 0.24, ct);
-      p.connect(shaper);
-
-      const cutPeak = 360 + heat * 2250 + (i % 4 === 2 ? 420 : 0);
-      this.triggerAnalogPluck(ct, hz, cutPeak, 4.2, 0.115, 0.135 * (0.45 + 0.55 * heat), p, 'sawtooth', -5);
-      this.triggerAnalogPluck(ct, hz, cutPeak, 4.0, 0.115, 0.125 * (0.45 + 0.55 * heat), p, 'sawtooth', 5);
+    const voices: [number, number, OscillatorType, number][] = [
+      [vibe.turretScaleHz[0], -4, 'triangle', 0.45],
+      [vibe.turretScaleHz[0], 4, 'triangle', 0.45],
+      [vibe.rootHz, 0, 'sine', 0.38],
+      [vibe.fifthHz, 3, 'sine', 0.26],
+    ];
+    for (const [hz, det, type, lvl] of voices) {
+      const o = ctx.createOscillator();
+      o.type = type;
+      o.frequency.setValueAtTime(hz, now);
+      o.frequency.exponentialRampToValueAtTime(hz * 1.06, now + durationSec * 0.78);
+      o.frequency.exponentialRampToValueAtTime(hz, now + durationSec);
+      if (det !== 0) o.detune.setValueAtTime(det, now);
+      const vg = ctx.createGain();
+      vg.gain.setValueAtTime(lvl, now);
+      o.connect(vg);
+      vg.connect(lp);
+      o.start(now);
+      o.stop(now + durationSec + 0.2);
     }
 
-    // 3) Crisp solenoid relay release + settle when Burst completes
+    // 3) Subtle, clean 8th-note compute pulse (soft rounded sine/triangle taps)
+    const step = 0.25;
+    const totalSteps = Math.max(4, Math.floor((durationSec - 0.2) / step));
+    const notes = vibe.burstNotes;
+    for (let i = 0; i < totalSteps; i++) {
+      const ct = now + 0.08 + i * step;
+      const prog = i / Math.max(1, totalSteps - 1);
+      const env = Math.min(1.0, prog / 0.22) * (1.0 - Math.max(0, (prog - 0.78) / 0.24));
+      const hz = notes[i % notes.length];
+
+      if (i % 2 === 0) {
+        this.triggerThock(ct, 105, vibe.subHz, 0.18, 0.085 * (0.5 + 0.5 * env), out, 'sine');
+      }
+      this.triggerCleanTone(ct, hz * 2, 0.14, 0.036 * (0.45 + 0.55 * env), out, 'triangle');
+    }
+
+    // 4) Soft magnetic release settle when Burst completes
     const relT = now + durationSec + 0.02;
-    this.triggerStrike(relT, 3100, 3.0, 0.008, 0.24, out);
-    this.triggerThock(relT + 0.014, 150, vibe.turretScaleHz[9], 0.18, 0.28, out, 'sine');
-    this.triggerAnalogPluck(relT + 0.014, vibe.turretScaleHz[0], 580, 3.0, 0.38, 0.14, out, 'sawtooth');
+    this.triggerStrike(relT, 2600, 3.6, 0.006, 0.055, out);
+    this.triggerThock(relT + 0.012, 118, vibe.turretScaleHz[9], 0.16, 0.105, out, 'sine');
+    this.triggerCleanTone(relT + 0.014, vibe.rootHz, 0.28, 0.04, out, 'sine');
   }
 
   private buildWarmDriveCurve(drive = 2.4): Float32Array<ArrayBuffer> {
@@ -1554,23 +1586,21 @@ export class SiliconAudio {
     const tk = this.makeToolkit((node) => sources.push(node));
     scheduleVibeIntro(vibe.id, tk, t0, now, scoreBus);
 
-    // 2) Crisp optical reticle lock (5.80s) + dual-detent Liquid Glass rail calibration (6.10s)
+    // 2) Subtle optical reticle lock (5.80s) + whisper-clean Liquid Glass rail arrival (6.10s)
     if (t0 + 5.8 >= now - 0.03) {
       const lockT = Math.max(now, t0 + 5.8);
-      const out = this.routeOut(0, 0.85, 0.25);
-      this.triggerStrike(lockT, 4400, 3.0, 0.008, 0.28, out);
-      this.triggerStrike(lockT + 0.024, 2200, 2.2, 0.014, 0.32, out);
-      this.triggerThock(lockT + 0.024, 240, vibe.turretScaleHz[0], 0.062, 0.32, out, 'triangle');
+      const out = this.routeOut(0, 0.45, 0.08);
+      this.triggerStrike(lockT, 4000, 3.8, 0.005, 0.068, out);
+      this.triggerThock(lockT + 0.02, 185, vibe.turretScaleHz[0], 0.055, 0.085, out, 'sine');
     }
 
     if (t0 + 6.1 >= now - 0.03) {
       const hudT = Math.max(now, t0 + 6.1);
-      const out = this.routeOut(0, 0.65, 0.16);
-      const wave: OscillatorType = vibe.id === 'noir' ? 'sawtooth' : 'triangle';
-      this.triggerStrike(hudT, 3500, 3.6, 0.006, 0.18, out);
-      this.triggerAnalogPluck(hudT, vibe.rootHz, 950, 3.4, 0.055, 0.1, out, wave);
-      this.triggerStrike(hudT + 0.068, 4100, 3.6, 0.006, 0.2, out);
-      this.triggerAnalogPluck(hudT + 0.068, vibe.fifthHz, 1350, 3.4, 0.06, 0.11, out, wave);
+      const out = this.routeOut(0, 0.36, 0.06);
+      this.triggerStrike(hudT, 3400, 4.2, 0.0045, 0.045, out);
+      this.triggerCleanTone(hudT, vibe.rootHz * 1.5, 0.08, 0.036, out, 'sine');
+      this.triggerStrike(hudT + 0.068, 3900, 4.2, 0.0045, 0.048, out);
+      this.triggerCleanTone(hudT + 0.068, vibe.octaveHz, 0.1, 0.032, out, 'sine');
     }
 
     // 3) Seamless tempo-locked handoff into the quiet infinite background loop!
