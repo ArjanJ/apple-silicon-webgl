@@ -83,8 +83,10 @@ body,
   width: min(76vh, 76vw);
   height: min(76vh, 76vw);
   opacity: 0.20;
-  transition: opacity 0.65s cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: opacity;
+  transition:
+    opacity 0.72s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.95s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
 }
 
 .reticle-layer.engaged .reticle-svg {
@@ -204,6 +206,10 @@ body,
 .hud-chrome.intro-staging {
   opacity: 0;
   pointer-events: none;
+}
+
+.hud-chrome.intro-staging {
+  transition: none;
 }
 
 .reticle-layer.intro-hidden .reticle-svg {

@@ -952,7 +952,7 @@ function mountApp(): void {
 
   const renderHoverPill = (hit: DieInspectHit | null, cx: number, cy: number) => {
     activeHover = hit;
-    if (!hit || pureView || (activeInspect && activeInspect.id === hit.id)) {
+    if (!hit || pureView || introActive || awaitingPowerOn || (activeInspect && activeInspect.id === hit.id)) {
       hoverPill.classList.remove('visible');
       return;
     }
@@ -977,10 +977,50 @@ function mountApp(): void {
               ? 'PRESSURE'
               : 'WEB LIVE';
 
-  let introActive = false;
+  let introActive = true;
   let awaitingPowerOn = false;
-  let introHudAlpha = 1.0;
-  let introPhase: 'idle' | 'black' | 'title' | 'dissolve' | 'boot' | 'lock' | 'hud' | 'settle' | 'done' = 'idle';
+  let introHudAlpha = 0.0;
+  let hudRevealRaf = 0;
+  let lastIntroElapsed = 0;
+  let introPhase: 'idle' | 'black' | 'title' | 'dissolve' | 'boot' | 'done' = 'idle';
+
+  const cancelHudReveal = () => {
+    if (hudRevealRaf) {
+      cancelAnimationFrame(hudRevealRaf);
+      hudRevealRaf = 0;
+    }
+  };
+
+  const startHudReveal = (durationMs: number) => {
+    cancelHudReveal();
+    if (durationMs <= 0) {
+      introHudAlpha = 1.0;
+      refreshGlassLayout();
+      return;
+    }
+    const startAlpha = introHudAlpha;
+    const startTime = performance.now();
+    refreshGlassLayout();
+    const step = (now: number) => {
+      if (introActive) {
+        hudRevealRaf = 0;
+        return;
+      }
+      const u = Math.min(1.0, (now - startTime) / durationMs);
+      // Cubic ease-out matches CSS `.hud-chrome` transition so Liquid Glass & DOM text emerge as one object!
+      const eased = 1.0 - Math.pow(1.0 - u, 3);
+      introHudAlpha = startAlpha + (1.0 - startAlpha) * eased;
+      pushGlassToEngine();
+      if (u < 1.0) {
+        hudRevealRaf = requestAnimationFrame(step);
+      } else {
+        hudRevealRaf = 0;
+        introHudAlpha = 1.0;
+        pushGlassToEngine();
+      }
+    };
+    hudRevealRaf = requestAnimationFrame(step);
+  };
 
   const setAwaitingPowerOn = (waiting: boolean) => {
     awaitingPowerOn = waiting;
@@ -992,111 +1032,85 @@ function mountApp(): void {
     }
   };
 
+  const hideAllUiForIntro = () => {
+    cancelHudReveal();
+    introHudAlpha = 0.0;
+    reticleLayer.classList.remove('intro-lock', 'engaged');
+    reticleLayer.classList.add('intro-hidden');
+    hudChromeEl.classList.add('intro-staging');
+    hoverPill.classList.remove('visible');
+    nmBracket.style.display = 'none';
+    pushGlassToEngine();
+  };
+
   const syncIntroUi = (active: boolean, elapsed: number) => {
     introActive = active;
     const cues = audio.getVibe().introCues;
     if (awaitingPowerOn && active) {
-      introHudAlpha = 0.0;
-      reticleLayer.classList.remove('intro-lock', 'engaged');
-      reticleLayer.classList.add('intro-hidden');
-      hudChromeEl.classList.add('intro-staging');
-      nmBracket.style.display = 'none';
-      pushGlassToEngine();
+      hideAllUiForIntro();
       return;
     }
     if (!active) {
       setAwaitingPowerOn(false);
-      if (introPhase === 'done' && introHudAlpha >= 0.999) return;
+      if (introPhase === 'done') return;
+      const wasReducedMotion = introPhase === 'idle';
       const wasEarlySkip =
-        introPhase === 'black' ||
-        introPhase === 'title' ||
-        introPhase === 'dissolve' ||
-        introPhase === 'boot';
-      if (wasEarlySkip || elapsed < cues.durationSec - 0.15) {
+        !wasReducedMotion &&
+        (introPhase === 'black' ||
+          introPhase === 'title' ||
+          introPhase === 'dissolve' ||
+          (introPhase === 'boot' && lastIntroElapsed < cues.durationSec - 0.15));
+      if (wasEarlySkip) {
         audio.stopIntroScore(0.32);
       }
       introPhase = 'done';
-      introHudAlpha = 1.0;
+      lastIntroElapsed = cues.durationSec;
       introTitleEl.classList.remove('visible');
       introTitleEl.classList.add('exiting');
       introTitleEl.classList.toggle('skipped', wasEarlySkip);
       reticleLayer.classList.remove('intro-hidden', 'intro-lock');
       hudChromeEl.classList.remove('intro-staging');
-      syncGlassLayout();
+      startHudReveal(wasReducedMotion ? 0 : wasEarlySkip ? 320 : 820);
       return;
     }
+
+    lastIntroElapsed = elapsed;
 
     if (introPhase === 'idle') {
       audio.startIntroScore(elapsed);
     }
 
-    const rawHudU = elapsed < cues.hudSec ? 0.0 : Math.min(1.0, (elapsed - cues.hudSec) / 0.78);
-    // Cubic ease-out matches CSS `.hud-chrome` transition so Liquid Glass & DOM text emerge as one object!
-    const nextHudAlpha = 1.0 - Math.pow(1.0 - rawHudU, 3);
-    const alphaChanged = Math.abs(nextHudAlpha - introHudAlpha) > 0.005;
-    introHudAlpha = nextHudAlpha;
+    if (introHudAlpha > 0.0 || hudRevealRaf !== 0) {
+      hideAllUiForIntro();
+    }
 
     const titleDissolveSec = Math.max(0.85, cues.revealSec - 0.18);
-    const settleSec = Math.min(cues.durationSec - 0.18, cues.hudSec + 0.62);
 
     if (elapsed < 0.06) {
       if (introPhase !== 'black') {
         introPhase = 'black';
         introTitleEl.classList.remove('visible', 'exiting', 'skipped');
-        reticleLayer.classList.remove('intro-lock', 'engaged');
-        reticleLayer.classList.add('intro-hidden');
-        hudChromeEl.classList.add('intro-staging');
-        nmBracket.style.display = 'none';
-        pushGlassToEngine();
+        hideAllUiForIntro();
       }
     } else if (elapsed < titleDissolveSec) {
       if (introPhase !== 'title') {
         introPhase = 'title';
         introTitleEl.classList.remove('exiting', 'skipped');
         introTitleEl.classList.add('visible');
-        reticleLayer.classList.remove('intro-lock', 'engaged');
-        reticleLayer.classList.add('intro-hidden');
-        hudChromeEl.classList.add('intro-staging');
-        nmBracket.style.display = 'none';
-        pushGlassToEngine();
+        hideAllUiForIntro();
       }
     } else if (elapsed < cues.dropSec) {
       if (introPhase !== 'dissolve') {
         introPhase = 'dissolve';
         introTitleEl.classList.remove('visible', 'skipped');
         introTitleEl.classList.add('exiting');
+        hideAllUiForIntro();
       }
-    } else if (elapsed < cues.lockSec) {
-      if (introPhase !== 'boot') {
-        introPhase = 'boot';
-        introTitleEl.classList.remove('visible', 'skipped');
-        introTitleEl.classList.add('exiting');
-      }
-    } else if (elapsed < cues.hudSec) {
-      if (introPhase !== 'lock') {
-        introPhase = 'lock';
-        introTitleEl.classList.remove('visible', 'skipped');
-        introTitleEl.classList.add('exiting');
-        reticleLayer.classList.remove('intro-hidden');
-        reticleLayer.classList.add('intro-lock');
-      }
-    } else if (elapsed < settleSec) {
-      if (introPhase !== 'hud') {
-        introPhase = 'hud';
-        reticleLayer.classList.remove('intro-hidden');
-        reticleLayer.classList.add('intro-lock');
-        hudChromeEl.classList.remove('intro-staging');
-        syncGlassLayout();
-      }
-    } else if (introPhase !== 'settle') {
-      introPhase = 'settle';
-      reticleLayer.classList.remove('intro-hidden', 'intro-lock');
-      hudChromeEl.classList.remove('intro-staging');
-      syncGlassLayout();
-    }
-
-    if (alphaChanged) {
-      pushGlassToEngine();
+    } else if (introPhase !== 'boot') {
+      introPhase = 'boot';
+      introTitleEl.classList.remove('visible', 'skipped');
+      introTitleEl.classList.add('exiting');
+      hideAllUiForIntro();
     }
   };
 
@@ -1200,7 +1214,7 @@ function mountApp(): void {
     },
     onHover: (hit, clientX, clientY) => {
       renderHoverPill(hit, clientX, clientY);
-      const suppressHover = !hit || pureView || (activeInspect && activeInspect.id === hit.id);
+      const suppressHover = !hit || pureView || introActive || awaitingPowerOn || (activeInspect && activeInspect.id === hit.id);
       audio.playHover(suppressHover ? null : hit.id, clientX);
     },
   });
