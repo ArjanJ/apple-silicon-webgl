@@ -3094,7 +3094,7 @@ export class SiliconEngine {
         return rise * Math.exp(-Math.max(0, dtB - attack) / decay);
       };
 
-      // Rhythmic rim-glint & subtle optical breath strictly on bass-thump build beats (damped cleanly during pre-drop inhale!)
+      // Rhythmic rim-glint strictly on bass-thump build beats (damped cleanly during pre-drop inhale!)
       const preDropHush = 1.0 - this.smoothstep(cues.preDropSec, cues.preDropSec + 0.14, t);
       let buildPulse = 0;
       const pulseCount = cues.pulseBeats.length;
@@ -3108,24 +3108,16 @@ export class SiliconEngine {
       const bloomPulse = beatEnv(cues.bloomSec, 0.026, 0.42);
       this.introBeatPulse = clamp(buildPulse + dropPulse * 1.15 + bloomPulse * 0.45, 0, 1.45);
 
-      // C1-smooth musical camera choreography:
-      //   1. revealSec -> riseSec: slow sculptural horizon emergence (unpowered dark silhouette)
-      //   2. riseSec -> preDropSec: deliberate tension crane-up while chip remains DARK & unpowered
-      //   3. preDropSec -> dropSec: poised suspense breath right before the drop
-      //   4. dropSec -> lockSec: authoritative kinetic surge up into hero framing on the MAJOR BEAT!
-      const uEmerge = this.smootherstep(cues.revealSec, cues.riseSec, t);
-      const uBuild = this.smootherstep(cues.riseSec, cues.preDropSec, t);
-      const dropSpan = Math.max(0.45, cues.lockSec + 0.26 - cues.dropSec);
-      const rawDrop = clamp((t - cues.dropSec) / dropSpan, 0, 1);
-      const uDrop = (1.0 - Math.pow(1.0 - rawDrop, 3.1)) * this.smoothstep(0.0, 0.055, rawDrop);
-
-      const midPitch = INTRO_START_PITCH + 0.33;
-      const midZoom = INTRO_START_ZOOM + 0.28;
-      const beatZoomBreath = buildPulse * 0.008 + dropPulse * 0.022;
+      // Single, continuous C2-smooth camera glide from low horizon silhouette up into hero framing
+      // (decoupled from musical beats — no mid-flight pauses, drop surges, or beat zoom pulses)
+      const moveStart = cues.revealSec + 0.25;
+      const moveEnd = cues.durationSec - 0.35;
+      const uPitch = this.smootherstep(moveStart, moveEnd, t);
+      const uZoom = this.smootherstep(moveStart + 0.15, moveEnd + 0.10, t);
 
       this.yaw = HERO_YAW;
-      this.pitch = INTRO_START_PITCH + 0.03 * uEmerge + 0.30 * uBuild + (HERO_PITCH - midPitch) * uDrop;
-      this.zoom = INTRO_START_ZOOM + 0.06 * uEmerge + 0.22 * uBuild + (HERO_ZOOM - midZoom) * uDrop + beatZoomBreath;
+      this.pitch = INTRO_START_PITCH + (HERO_PITCH - INTRO_START_PITCH) * uPitch;
+      this.zoom = INTRO_START_ZOOM + (HERO_ZOOM - INTRO_START_ZOOM) * uZoom;
       this.targetYaw = this.yaw;
       this.targetPitch = this.pitch;
       this.targetZoom = this.zoom;
@@ -3134,6 +3126,11 @@ export class SiliconEngine {
       //   - Pure #000 under the title card -> moody dark obsidian silhouette during build
       //   - Brief suspense hush during preDropSec -> dropSec
       //   - Studio key softbox floods & sweeps dramatically across the bare silicon RIGHT ON dropSec!
+      const uEmerge = this.smootherstep(cues.revealSec, cues.riseSec, t);
+      const uBuild = this.smootherstep(cues.riseSec, cues.preDropSec, t);
+      const dropSweepSpan = Math.max(0.45, cues.lockSec + 0.26 - cues.dropSec);
+      const rawDropSweep = clamp((t - cues.dropSec) / dropSweepSpan, 0, 1);
+      const uDropSweep = (1.0 - Math.pow(1.0 - rawDropSweep, 3.1)) * this.smoothstep(0.0, 0.055, rawDropSweep);
       const fadeInOff = uEmerge * 0.72;
       const buildExpLift = uBuild * 0.07;
       const preDropDip =
@@ -3147,7 +3144,7 @@ export class SiliconEngine {
         0.0,
         1.05
       );
-      this.introLightSweep = 0.18 + 0.12 * uBuild + 0.70 * uDrop;
+      this.introLightSweep = 0.18 + 0.12 * uBuild + 0.70 * uDropSweep;
       this.introKeyIntensity = clamp(0.045 + 0.065 * uBuild - preDropDip * 0.035 + (1.0 - 0.11) * dropLight, 0.02, 1.0);
       this.introRimBoost = 0.48 + 0.24 * uBuild + 0.28 * dropLight;
       this.introFogBoost = 0.032 * (1.0 - dropLight);

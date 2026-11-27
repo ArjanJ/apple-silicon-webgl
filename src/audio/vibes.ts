@@ -22,9 +22,9 @@ export interface IntroCueMap {
   readonly heldStartSec: number;
   /** Title dissolves out and the dark unpowered chip silhouette begins emerging */
   readonly revealSec: number;
-  /** Beat timestamps (sec) during the unpowered build for subtle rhythmic rim-glints & camera breath */
+  /** Beat timestamps (sec) during the unpowered build for subtle rhythmic rim-glints */
   readonly pulseBeats: readonly number[];
-  /** Tension lift beat — camera starts its slow crane-up while chip stays dark & unpowered */
+  /** Tension lift beat — dark silhouette lighting begins its slow build while chip stays unpowered */
   readonly riseSec: number;
   /** Crisp pre-drop suspense breath / inhale right before the major beat */
   readonly preDropSec: number;
