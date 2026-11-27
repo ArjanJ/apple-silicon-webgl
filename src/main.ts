@@ -86,6 +86,8 @@ const DIAL_TICKS = [
   { deg: 144, label: '150T×' },
 ];
 
+const REPO_URL = 'https://github.com/ArjanJ/apple-silicon-webgl';
+
 const ICONS = {
   activity: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
   zap: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
@@ -101,6 +103,8 @@ const ICONS = {
   play: `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 4 20 12 6 20 6 4"/></svg>`,
   stop: `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>`,
   more: `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>`,
+  tilt: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>`,
+  github: `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2Z"/></svg>`,
 };
 
 function buildDepthSheetHtml(): string {
@@ -276,6 +280,9 @@ function mountApp(): void {
             <button id="btn-pure" class="glass-btn icon-only mobile-overflow-item" title="Pure View — Hide UI (H)" aria-label="Pure View">
               ${ICONS.eyeOff}
             </button>
+            <a id="btn-github" class="glass-btn icon-only mobile-overflow-item" href="${REPO_URL}" target="_blank" rel="noopener noreferrer" title="Source on GitHub" aria-label="Source on GitHub">
+              ${ICONS.github}
+            </a>
             <button id="btn-more" class="glass-btn icon-only mobile-only-btn" title="More Controls" aria-label="More Controls" aria-expanded="false" aria-controls="more-sheet">
               ${ICONS.more}
               <span class="more-badge-dot" aria-hidden="true"></span>
@@ -299,12 +306,22 @@ function mountApp(): void {
             <span class="more-row-label">Soundtrack</span>
             <span id="more-vibe-meta" class="more-row-meta">Glass</span>
           </button>
+          <button id="more-tilt-row" class="more-row" type="button" role="menuitem" style="display:none;">
+            <span class="more-row-icon">${ICONS.tilt}</span>
+            <span class="more-row-label">Tilt Parallax</span>
+            <span id="more-tilt-meta" class="more-row-meta">Off</span>
+          </button>
           <div class="more-divider" aria-hidden="true"></div>
           <button id="more-pure-row" class="more-row" type="button" role="menuitem">
             <span class="more-row-icon">${ICONS.eyeOff}</span>
             <span class="more-row-label">Pure View</span>
             <span class="more-row-meta">Hide UI</span>
           </button>
+          <a id="more-github-row" class="more-row" href="${REPO_URL}" target="_blank" rel="noopener noreferrer" role="menuitem">
+            <span class="more-row-icon">${ICONS.github}</span>
+            <span class="more-row-label">Source</span>
+            <span class="more-row-meta">GitHub ↗</span>
+          </a>
         </div>
 
         <div id="sound-sheet" class="sound-sheet liquid-glass liquid-glass-sheet" style="display:none;">
@@ -557,7 +574,47 @@ function mountApp(): void {
   const moreBurstMeta = document.getElementById('more-burst-meta')!;
   const moreVibeRow = document.getElementById('more-vibe-row') as HTMLButtonElement;
   const moreVibeMeta = document.getElementById('more-vibe-meta')!;
+  const moreTiltRow = document.getElementById('more-tilt-row') as HTMLButtonElement;
+  const moreTiltMeta = document.getElementById('more-tilt-meta')!;
   const morePureRow = document.getElementById('more-pure-row') as HTMLButtonElement;
+
+  // Mobile tactile haptics helper (Android vibrate + iOS 17.4+ Safari switch micro-haptic)
+  const isIosTouch = isTouchDevice && /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  let iosHapticLabel: HTMLLabelElement | null = null;
+  if (isIosTouch) {
+    const lbl = document.createElement('label');
+    lbl.setAttribute('aria-hidden', 'true');
+    lbl.style.cssText =
+      'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;overflow:hidden;top:-10px;left:-10px;';
+    const inp = document.createElement('input');
+    inp.type = 'checkbox';
+    inp.setAttribute('switch', '');
+    inp.tabIndex = -1;
+    lbl.appendChild(inp);
+    document.body.appendChild(lbl);
+    iosHapticLabel = lbl;
+  }
+  const triggerHaptic = (kind: 'tick' | 'detent' | 'dive' | 'impact') => {
+    if (!isTouchDevice) return;
+    if (typeof navigator.vibrate === 'function') {
+      try {
+        if (kind === 'tick') navigator.vibrate(2);
+        else if (kind === 'detent') navigator.vibrate(5);
+        else if (kind === 'dive') navigator.vibrate(9);
+        else navigator.vibrate([8, 30, 14]);
+        return;
+      } catch {
+        // ignore
+      }
+    }
+    if (iosHapticLabel) {
+      try {
+        iosHapticLabel.click();
+      } catch {
+        // ignore
+      }
+    }
+  };
 
   const soundSheet = document.getElementById('sound-sheet')!;
   const soundVibeBadge = document.getElementById('sound-vibe-badge')!;
@@ -1306,6 +1363,11 @@ function mountApp(): void {
       }
       syncGlassLayout();
     },
+    onGestureDive: (fromZ, toZ) => {
+      cancelVernierCoast();
+      audio.playDive(fromZ, toZ);
+      triggerHaptic('dive');
+    },
     onZoomFrame: (z, fps, motion, interacting, yawVel, regionKind) => {
       currentFps = fps;
       audio.updateFrame(z, motion, interacting, yawVel, regionKind, introActive);
@@ -1389,6 +1451,7 @@ function mountApp(): void {
           suppressNextInspectCloseAudio = false;
         } else {
           audio.playInspect(Boolean(hit), nextId ?? undefined);
+          if (hit) triggerHaptic('tick');
         }
       }
       renderInspectCard();
@@ -1559,6 +1622,109 @@ function mountApp(): void {
     engine.setGlassPointer(0, 0, false);
   });
 
+  // Mobile Gyroscope Tilt Parallax + Living Liquid Glass Specular Glints
+  type DeviceOrientationWithPerm = typeof DeviceOrientationEvent & {
+    requestPermission?: () => Promise<'granted' | 'denied'>;
+  };
+  const deviceOrientationCtor =
+    typeof window !== 'undefined' ? (window.DeviceOrientationEvent as DeviceOrientationWithPerm | undefined) : undefined;
+  const tiltSupported = isTouchDevice && typeof deviceOrientationCtor !== 'undefined';
+  const prefersReducedMotion =
+    typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let tiltEnabled = false;
+  let tiltListening = false;
+  let tiltBaseX: number | null = null;
+  let tiltBaseY: number | null = null;
+
+  const syncTiltUi = () => {
+    if (!tiltSupported) return;
+    moreTiltRow.style.display = 'flex';
+    moreTiltRow.classList.toggle('active', tiltEnabled);
+    moreTiltMeta.textContent = tiltEnabled ? 'On' : 'Off';
+  };
+
+  const getScreenAngle = (): number => {
+    const a = window.screen?.orientation?.angle;
+    if (typeof a === 'number') return a;
+    const legacy = (window as unknown as { orientation?: number }).orientation;
+    return typeof legacy === 'number' ? legacy : 0;
+  };
+
+  const onDeviceOrientation = (ev: DeviceOrientationEvent) => {
+    if (!tiltEnabled || ev.gamma === null || ev.beta === null) return;
+    const angle = ((getScreenAngle() % 360) + 360) % 360;
+    let rawX = ev.gamma;
+    let rawY = ev.beta;
+    if (angle === 90) {
+      rawX = ev.beta;
+      rawY = -ev.gamma;
+    } else if (angle === 270) {
+      rawX = -ev.beta;
+      rawY = ev.gamma;
+    } else if (angle === 180) {
+      rawX = -ev.gamma;
+      rawY = -ev.beta;
+    }
+    if (tiltBaseX === null || tiltBaseY === null) {
+      tiltBaseX = rawX;
+      tiltBaseY = rawY;
+      return;
+    }
+    // Gentle baseline drift so any comfortable phone holding angle stays centered
+    tiltBaseX += (rawX - tiltBaseX) * 0.008;
+    tiltBaseY += (rawY - tiltBaseY) * 0.008;
+    const nx = Math.max(-1, Math.min(1, (rawX - tiltBaseX) / 22));
+    const ny = Math.max(-1, Math.min(1, (rawY - tiltBaseY) / 22));
+    engine.setDeviceTilt(nx, ny, true);
+  };
+
+  const setTiltActive = (on: boolean) => {
+    tiltEnabled = on;
+    tiltBaseX = null;
+    tiltBaseY = null;
+    if (on && !tiltListening) {
+      window.addEventListener('deviceorientation', onDeviceOrientation, { passive: true });
+      tiltListening = true;
+    } else if (!on && tiltListening) {
+      window.removeEventListener('deviceorientation', onDeviceOrientation);
+      tiltListening = false;
+      engine.setDeviceTilt(0, 0, false);
+    }
+    syncTiltUi();
+  };
+
+  const enableTiltFromGesture = (silent = false) => {
+    if (!tiltSupported || prefersReducedMotion || tiltEnabled) return;
+    if (typeof deviceOrientationCtor?.requestPermission === 'function') {
+      void deviceOrientationCtor
+        .requestPermission()
+        .then((res) => {
+          if (res === 'granted') {
+            setTiltActive(true);
+            if (!silent) audio.playUiTap(true);
+          }
+        })
+        .catch(() => {
+          // Permission denied or unavailable
+        });
+    } else {
+      setTiltActive(true);
+      if (!silent) audio.playUiTap(true);
+    }
+  };
+
+  if (tiltSupported) {
+    syncTiltUi();
+    // On Android / non-permission browsers, enable tilt parallax automatically (unless reduced motion)
+    if (!prefersReducedMotion && typeof deviceOrientationCtor?.requestPermission !== 'function') {
+      setTiltActive(true);
+    }
+    window.addEventListener('orientationchange', () => {
+      tiltBaseX = null;
+      tiltBaseY = null;
+    });
+  }
+
   // Autoplay-adaptive Cold Boot launch:
   //   - If browser allows unmuted autoplay, starts immediately from 0.0s with full audio
   //   - If browser blocks autoplay (e.g. mobile / aside browser), holds on the title card until first tap/click/key
@@ -1572,6 +1738,8 @@ function mountApp(): void {
     const cues = audio.getVibe().introCues;
     engine.setIntroCues(cues);
     audio.unlockFromGesture();
+    triggerHaptic('impact');
+    enableTiltFromGesture(true);
     // Title is already centered & crisp: cue melts away smoothly and Beat 1 hits immediately (~20ms)!
     engine.releaseIntroHold(cues.heldStartSec);
   };
@@ -1760,12 +1928,8 @@ function mountApp(): void {
     const nearestInt = Math.round(scrubCurrentZ);
     if (nearestInt !== scrubLastIntStop && nearestInt >= -1 && nearestInt <= 9) {
       scrubLastIntStop = nearestInt;
-      if (ev.pointerType === 'touch' && typeof navigator.vibrate === 'function') {
-        try {
-          navigator.vibrate(4);
-        } catch {
-          // ignore
-        }
+      if (ev.pointerType === 'touch') {
+        triggerHaptic('detent');
       }
     }
   });
@@ -2069,7 +2233,17 @@ function mountApp(): void {
       audio.playUiTap(false);
       return;
     }
+    triggerHaptic('impact');
     triggerWorkload(selectedWorkload);
+  });
+  moreTiltRow.addEventListener('click', () => {
+    if (tiltEnabled) {
+      setTiltActive(false);
+      audio.playUiTap(false);
+    } else {
+      enableTiltFromGesture(false);
+    }
+    triggerHaptic('tick');
   });
   morePureRow.addEventListener('click', () => {
     setMoreMenuOpen(false, false);

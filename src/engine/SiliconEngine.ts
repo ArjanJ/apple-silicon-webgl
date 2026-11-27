@@ -111,6 +111,7 @@ export interface EngineHooks {
   onInspect: (hit: DieInspectHit | null) => void;
   onHover?: (hit: DieInspectHit | null, clientX: number, clientY: number) => void;
   onTourChange?: (active: boolean) => void;
+  onGestureDive?: (fromZoom: number, toZoom: number) => void;
   onIntroFrame?: (state: IntroFrameState) => void;
   /** Optional Web Audio hardware clock callback so intro visuals stay sample-locked to the score */
   getIntroClockSec?: () => number | null;
@@ -475,14 +476,30 @@ export class SiliconEngine {
   public thermal = false;
   public autoOrbit = false;
 
-  // Interaction, multi-touch pinch/pan, visibility & ProMotion-style adaptive frame pacing
+  // Interaction, multi-touch pinch/pan, one-handed zoom, inertial fling, gyro tilt & adaptive frame pacing
   private dragging = false;
-  private dragMode: 'orbit' | 'pan' | 'pinch' = 'orbit';
+  private dragMode: 'orbit' | 'pan' | 'pinch' | 'oneHandZoom' = 'orbit';
   private activePointers = new Map<number, { x: number; y: number }>();
   private gestureHadMultiTouch = false;
   private prevPinchDist = 0;
   private prevPinchMidX = 0;
   private prevPinchMidY = 0;
+  private pinchStartTime = 0;
+  private pinchStartDist = 0;
+  private pinchStartMidX = 0;
+  private pinchStartMidY = 0;
+  private pinchMoved = false;
+  private lastTapTime = 0;
+  private lastTapX = 0;
+  private lastTapY = 0;
+  private oneHandZoomMoved = false;
+  private orbitVelYaw = 0;
+  private orbitVelPitch = 0;
+  private lastDragMoveMs = 0;
+  private tiltTargetX = 0;
+  private tiltTargetY = 0;
+  private tiltX = 0;
+  private tiltY = 0;
   private lastX = 0;
   private lastY = 0;
   private contextLost = false;
@@ -1945,6 +1962,8 @@ export class SiliconEngine {
     this.markActivity();
     this.skipIntro();
     this.stopTour();
+    this.orbitVelYaw = 0;
+    this.orbitVelPitch = 0;
     const destZoom = clamp(z, MIN_ZOOM, MAX_ZOOM);
     this.targetZoom = destZoom;
 
@@ -2132,6 +2151,30 @@ export class SiliconEngine {
     this.glassPointerActive = active ? 1.0 : 0.0;
   }
 
+  /** Drive subtle holographic camera parallax & Liquid Glass specular rim glints from phone gyroscope tilt (-1..1) */
+  public setDeviceTilt(nx: number, ny: number, active = true): void {
+    if (!active) {
+      if (Math.abs(this.tiltTargetX) > 0.001 || Math.abs(this.tiltTargetY) > 0.001) {
+        this.tiltTargetX = 0;
+        this.tiltTargetY = 0;
+        this.markActivity();
+      }
+      this.setGlassPointer(0, 0, false);
+      return;
+    }
+    const cx = clamp(nx, -1, 1);
+    const cy = clamp(ny, -1, 1);
+    const delta = Math.hypot(cx - this.tiltTargetX, cy - this.tiltTargetY);
+    this.tiltTargetX = cx;
+    this.tiltTargetY = cy;
+    if (delta > 0.012) {
+      this.markActivity();
+    }
+    const gx = this.cssW * (0.5 + cx * 0.44);
+    const gy = this.cssH * (0.5 + cy * 0.44);
+    this.setGlassPointer(gx, gy, true);
+  }
+
   /** Upload Retina 2D canvas containing engraved Vernier ticks + landmark labels (premultiplied RGBA) */
   public uploadVernierTexture(source: HTMLCanvasElement, originCss: number, texWidthCss: number): void {
     if (this.contextLost) return;
@@ -2289,14 +2332,36 @@ export class SiliconEngine {
       this.gestureHadMultiTouch = true;
       this.dragging = true;
       this.dragMode = 'pinch';
+      this.orbitVelYaw = 0;
+      this.orbitVelPitch = 0;
       this.seedPinchState();
+      this.pinchStartTime = performance.now();
+      this.pinchStartDist = this.prevPinchDist;
+      this.pinchStartMidX = this.prevPinchMidX;
+      this.pinchStartMidY = this.prevPinchMidY;
+      this.pinchMoved = false;
       return;
     }
 
+    const now = performance.now();
     this.gestureHadMultiTouch = false;
     this.dragging = true;
-    // Right-drag or Shift+drag pans the microscope stage laterally; normal left-drag / 1-finger drag orbits in 3D!
-    this.dragMode = e.button === 2 || e.shiftKey ? 'pan' : 'orbit';
+    this.orbitVelYaw = 0;
+    this.orbitVelPitch = 0;
+    this.lastDragMoveMs = now;
+
+    // One-handed mobile gesture: double-tap (dive) or double-tap & hold + slide up/down (continuous zoom)
+    const isDoubleTap =
+      e.pointerType === 'touch' &&
+      now - this.lastTapTime < 320 &&
+      Math.hypot(e.clientX - this.lastTapX, e.clientY - this.lastTapY) < 42;
+    if (isDoubleTap) {
+      this.dragMode = 'oneHandZoom';
+      this.oneHandZoomMoved = false;
+    } else {
+      // Right-drag or Shift+drag pans the microscope stage laterally; normal left-drag / 1-finger drag orbits in 3D!
+      this.dragMode = e.button === 2 || e.shiftKey ? 'pan' : 'orbit';
+    }
     this.lastX = e.clientX;
     this.lastY = e.clientY;
     this.downX = e.clientX;
@@ -2342,6 +2407,14 @@ export class SiliconEngine {
         const midX = (p0.x + p1.x) * 0.5;
         const midY = (p0.y + p1.y) * 0.5;
 
+        if (
+          !this.pinchMoved &&
+          (Math.abs(dist - this.pinchStartDist) > 16 ||
+            Math.hypot(midX - this.pinchStartMidX, midY - this.pinchStartMidY) > 18)
+        ) {
+          this.pinchMoved = true;
+        }
+
         if (this.prevPinchDist > 8 && dist > 8) {
           const ratio = clamp(dist / this.prevPinchDist, 0.72, 1.38);
           const zoomDelta = Math.log(ratio) * 2.15;
@@ -2371,14 +2444,35 @@ export class SiliconEngine {
     this.lastX = e.clientX;
     this.lastY = e.clientY;
 
+    if (this.dragMode === 'oneHandZoom') {
+      if (!this.oneHandZoomMoved && Math.abs(e.clientY - this.downY) > 7) {
+        this.oneHandZoomMoved = true;
+        this.lastTapTime = 0;
+      }
+      if (this.oneHandZoomMoved) {
+        const zoomDelta = dy * 0.0155;
+        this.targetZoom = clamp(this.targetZoom + zoomDelta, MIN_ZOOM, MAX_ZOOM);
+        this.zoomRate = 14.0;
+      }
+      return;
+    }
+
     if (this.dragMode === 'pan') {
       this.applyStagePan(dx, dy);
       return;
     }
 
-    this.targetYaw -= dx * 0.0065;
+    const now = performance.now();
+    const dtDrag = clamp((now - this.lastDragMoveMs) / 1000, 0.004, 0.05);
+    this.lastDragMoveMs = now;
+    const dYaw = -dx * 0.0065;
+    const dPitch = dy * 0.0055;
+    this.orbitVelYaw = this.orbitVelYaw * 0.55 + (dYaw / dtDrag) * 0.45;
+    this.orbitVelPitch = this.orbitVelPitch * 0.55 + (dPitch / dtDrag) * 0.45;
+
+    this.targetYaw += dYaw;
     const minPitch = this.zoom > 4.2 ? -0.55 : this.zoom < -0.25 ? 0.16 : 0.28;
-    this.targetPitch = Math.max(minPitch, Math.min(1.52, this.targetPitch + dy * 0.0055));
+    this.targetPitch = Math.max(minPitch, Math.min(1.52, this.targetPitch + dPitch));
   };
 
   private onPointerUp = (e: PointerEvent): void => {
@@ -2403,13 +2497,80 @@ export class SiliconEngine {
       return;
     }
 
+    const now = performance.now();
     const moved = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
     const wasOrbit = this.dragMode === 'orbit' && !this.gestureHadMultiTouch;
+    const wasOneHandZoom = this.dragMode === 'oneHandZoom' && !this.gestureHadMultiTouch;
+    const wasTwoFingerTap =
+      this.gestureHadMultiTouch && !this.pinchMoved && now - this.pinchStartTime < 280;
     const tapThreshold = e.pointerType === 'touch' ? 14 : 5;
     this.dragging = false;
     this.dragMode = 'orbit';
     this.gestureHadMultiTouch = false;
     this.canvas.style.cursor = 'grab';
+
+    // Two-finger quick tap -> smoothly pull back out one scale realm
+    if (wasTwoFingerTap) {
+      this.orbitVelYaw = 0;
+      this.orbitVelPitch = 0;
+      const fromZ = this.zoom;
+      const toZ = fromZ > 0.25 ? Math.max(0.0, Math.ceil(fromZ - 0.35) - 1.0) : -1.0;
+      if (Math.abs(toZ - fromZ) > 0.08) {
+        this.hooks.onGestureDive?.(fromZ, toZ);
+        this.flyToZoom(toZ);
+      }
+      return;
+    }
+
+    // Double-tap (without dragging) -> smoothly dive straight into the tapped die block or next scale!
+    if (wasOneHandZoom) {
+      this.orbitVelYaw = 0;
+      this.orbitVelPitch = 0;
+      if (!this.oneHandZoomMoved) {
+        this.lastTapTime = 0;
+        const fromZ = this.zoom;
+        if (fromZ < 0.85) {
+          const pt = this.unprojectDiePoint(e.clientX, e.clientY);
+          const hit = pt ? pickDieRegion(pt[0], pt[1], this.dieSpec) : null;
+          if (hit) {
+            const toZ = hit.id === 'us-quarter' ? hit.diveZoom : Math.max(1.0, hit.diveZoom);
+            const targetXZ: [number, number] | undefined =
+              hit.id !== 'us-quarter' ? [hit.box[0], hit.box[1]] : undefined;
+            this.clearInspect();
+            this.hooks.onGestureDive?.(fromZ, toZ);
+            this.flyToZoom(toZ, targetXZ);
+          } else {
+            const toZ = Math.min(MAX_ZOOM, Math.max(1.0, Math.round(fromZ) + 1.0));
+            const targetXZ: [number, number] | undefined = pt ? [pt[0], pt[1]] : undefined;
+            this.hooks.onGestureDive?.(fromZ, toZ);
+            this.flyToZoom(toZ, targetXZ);
+          }
+        } else if (fromZ >= MAX_ZOOM - 0.25) {
+          this.hooks.onGestureDive?.(fromZ, 0.0);
+          this.flyToZoom(0.0);
+        } else {
+          const toZ = Math.min(MAX_ZOOM, Math.floor(fromZ + 0.35) + 1.0);
+          this.hooks.onGestureDive?.(fromZ, toZ);
+          this.flyToZoom(toZ);
+        }
+      }
+      return;
+    }
+
+    // Inertial fling-to-orbit on drag release (zeroes cleanly if pointer paused before lifting)
+    if (wasOrbit && moved >= tapThreshold && now - this.lastDragMoveMs < 95) {
+      this.orbitVelYaw = clamp(this.orbitVelYaw, -5.5, 5.5);
+      this.orbitVelPitch = clamp(this.orbitVelPitch, -2.8, 2.8);
+    } else {
+      this.orbitVelYaw = 0;
+      this.orbitVelPitch = 0;
+    }
+
+    if (e.pointerType === 'touch' && wasOrbit && moved < tapThreshold) {
+      this.lastTapTime = now;
+      this.lastTapX = e.clientX;
+      this.lastTapY = e.clientY;
+    }
 
     if (wasOrbit && e.button === 0 && moved < tapThreshold && this.zoom < 0.85) {
       const pt = this.unprojectDiePoint(e.clientX, e.clientY);
@@ -3435,7 +3596,11 @@ export class SiliconEngine {
       (hoverDistinctNow && this.hoverAlpha < 0.996) ||
       (!hoverDistinctNow && this.hoverAlpha > 0.002) ||
       Math.abs(this.glassPointerVelX) > 0.03 ||
-      Math.abs(this.glassPointerVelY) > 0.03;
+      Math.abs(this.glassPointerVelY) > 0.03 ||
+      Math.abs(this.orbitVelYaw) > 0.004 ||
+      Math.abs(this.orbitVelPitch) > 0.004 ||
+      Math.abs(this.tiltTargetX - this.tiltX) > 0.002 ||
+      Math.abs(this.tiltTargetY - this.tiltY) > 0.002;
 
     const needsFullRate = isMoving || idleAgeMs < IDLE_HOLD_MS;
     this.isIdlePaced = !needsFullRate;
@@ -3713,12 +3878,30 @@ export class SiliconEngine {
         if (this.autoOrbit && !this.dragging && !this.tourActive) {
           this.targetYaw += dt * 0.075;
         }
+        // Smooth inertial orbit coasting after touch/pointer fling
+        if (!this.dragging && !this.tourActive && (Math.abs(this.orbitVelYaw) > 0.004 || Math.abs(this.orbitVelPitch) > 0.004)) {
+          this.targetYaw += this.orbitVelYaw * dt;
+          const minPitch = this.zoom > 4.2 ? -0.55 : this.zoom < -0.25 ? 0.16 : 0.28;
+          this.targetPitch = clamp(this.targetPitch + this.orbitVelPitch * dt, minPitch, 1.52);
+          const damp = Math.exp(-4.6 * dt);
+          this.orbitVelYaw *= damp;
+          this.orbitVelPitch *= damp;
+          if (Math.abs(this.orbitVelYaw) < 0.004) this.orbitVelYaw = 0;
+          if (Math.abs(this.orbitVelPitch) < 0.004) this.orbitVelPitch = 0;
+        }
         const rotRate = this.dragging ? 14.0 : this.tourActive ? 3.8 : 6.0;
         const rotFactor = 1 - Math.exp(-rotRate * dt);
         this.yaw += (this.targetYaw - this.yaw) * rotFactor;
         this.pitch += (this.targetPitch - this.pitch) * rotFactor;
       }
     }
+
+    // Smooth gyroscope tilt parallax damping
+    const tiltFactor = 1.0 - Math.exp(-7.5 * dt);
+    this.tiltX += (this.tiltTargetX - this.tiltX) * tiltFactor;
+    this.tiltY += (this.tiltTargetY - this.tiltY) * tiltFactor;
+    if (Math.abs(this.tiltTargetX - this.tiltX) < 0.0004) this.tiltX = this.tiltTargetX;
+    if (Math.abs(this.tiltTargetY - this.tiltY) < 0.0004) this.tiltY = this.tiltTargetY;
 
     const zoomVel = this.introActive ? 0.0 : Math.abs(this.zoom - prevZ) / dt;
     const yawVel = this.introActive ? 0.0 : (this.yaw - prevYaw) / dt;
@@ -3841,10 +4024,14 @@ export class SiliconEngine {
         : (heroDist + (5.4 - heroDist) * zoomBlend + subatomicBackoff * 1.15) *
           portraitZoomFactor *
           (1.0 + (aspectBoost - 1.0) * subatomicBackoff * 0.35);
-    const cp = Math.cos(this.pitch);
-    const camX = lookX + Math.sin(this.yaw) * cp * dist;
-    const camY = lookY + Math.sin(this.pitch) * dist;
-    const camZ = lookZ + Math.cos(this.yaw) * cp * dist;
+    const tiltMask = this.introActive ? 0.0 : this.tourActive ? 0.35 : 1.0;
+    const minTiltPitch = this.zoom > 4.2 ? -0.55 : this.zoom < -0.25 ? 0.16 : 0.28;
+    const effYaw = this.yaw + this.tiltX * 0.115 * tiltMask;
+    const effPitch = clamp(this.pitch + this.tiltY * 0.075 * tiltMask, minTiltPitch, 1.54);
+    const cp = Math.cos(effPitch);
+    const camX = lookX + Math.sin(effYaw) * cp * dist;
+    const camY = lookY + Math.sin(effPitch) * dist;
+    const camZ = lookZ + Math.cos(effYaw) * cp * dist;
 
     const fovY = 2.0 * Math.atan(0.5 / 1.68);
     const nearClip = Math.max(0.10, dist * 0.015);
