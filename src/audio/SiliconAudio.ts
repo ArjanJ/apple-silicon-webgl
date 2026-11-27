@@ -27,20 +27,23 @@ export type AudioIntroPhase =
   | 'settle'
   | 'done';
 
-/** Modal chassis ring frequencies for each of the 11 objective turret stops */
-const TURRET_MODAL_HZ = [
-  520,   // -1 Scale
-  585,   //  0 Die
-  655,   //  1 Power
-  735,   //  2 Routing
-  825,   //  3 Rows
-  925,   //  4 Cell
-  1040,  //  5 Gate
-  1170,  //  6 Lattice
-  1310,  //  7 Atom
-  360,   //  8 Nucleus (heavy tungsten-steel detent after the 35,800x void!)
-  295,   //  9 Quarks (deepest solid vault lock)
+/** Dark C-minor / open-fifth cyber-noir scale frequencies for each of the 11 objective stops */
+const TURRET_SCALE_HZ = [
+  65.41,   // -1 Scale   (C2)
+  98.0,    //  0 Die     (G2)
+  130.81,  //  1 Power   (C3)
+  146.83,  //  2 Routing (D3)
+  155.56,  //  3 Rows    (Eb3)
+  196.0,   //  4 Cell    (G3)
+  207.65,  //  5 Gate    (Ab3)
+  233.08,  //  6 Lattice (Bb3)
+  261.63,  //  7 Atom    (C4)
+  49.0,    //  8 Nucleus (G1 — colossal sub-lock after the 35,800x void!)
+  32.7,    //  9 Quarks  (C1 — deepest subatomic vault lock)
 ] as const;
+
+/** Stepped C-minor hover frequencies for P-cores 0..7 */
+const PCORE_MINOR_HZ = [130.81, 146.83, 155.56, 196.0, 207.65, 233.08, 261.63, 293.66] as const;
 
 export class SiliconAudio {
   private ctx: AudioContext | null = null;
@@ -49,17 +52,28 @@ export class SiliconAudio {
   private tabHidden = false;
   private stateChangeCb?: (active: boolean, muted: boolean) => void;
 
-  // Master graph (close-miked mechanical acoustics: tight studio room + punchy bus limiter)
+  // Master graph (close-miked mechanical acoustics + wide cinematic hall bus for Cold Boot score)
   private masterGain!: GainNode;
   private compressor!: DynamicsCompressorNode;
   private dryBus!: GainNode;
   private roomSend!: GainNode;
   private convolver!: ConvolverNode;
   private roomGain!: GainNode;
+  private cinemaSend!: GainNode;
+  private cinemaConvolver!: ConvolverNode;
+  private cinemaGain!: GainNode;
+
+  // Active cinematic Cold Boot score state (for clean sync, mid-intro unlock, & early skip fadeout)
+  private introRunning = false;
+  private introStartWallMs = 0;
+  private introScoreBus: GainNode | null = null;
+  private introSources: AudioScheduledSourceNode[] = [];
+  private introScheduled = false;
 
   // Pre-generated impulse & mechanical texture buffers (zero runtime allocation!)
   private crispNoiseBuf!: AudioBuffer;
   private brushedNoiseBuf!: AudioBuffer;
+  private warmDriveCurve!: Float32Array<ArrayBuffer>;
 
   // Tracking state for focus-ring detents & objective turret stop crossings
   private lastZoom = 0;
@@ -101,14 +115,16 @@ export class SiliconAudio {
     }
     if (!this.ctx) return;
 
-    if (this.ctx.state === 'suspended') {
-      void this.ctx.resume().then(() => {
-        this.syncMasterGain(0.015);
-        this.emitState();
-      });
-    } else if (this.ctx.state === 'running') {
+    const onRunning = () => {
       this.syncMasterGain(0.015);
       this.emitState();
+      this.maybeLaunchPendingIntro();
+    };
+
+    if (this.ctx.state === 'suspended') {
+      void this.ctx.resume().then(onRunning);
+    } else if (this.ctx.state === 'running') {
+      onRunning();
     }
   }
 
@@ -123,7 +139,11 @@ export class SiliconAudio {
         void this.ctx.resume().then(() => {
           this.syncMasterGain(0.012);
           this.emitState();
-          this.playUiTap(true);
+          if (this.introRunning && !this.introScheduled) {
+            this.maybeLaunchPendingIntro();
+          } else {
+            this.playUiTap(true);
+          }
         });
       }
       this.emitState();
@@ -133,8 +153,13 @@ export class SiliconAudio {
     this.userMuted = !this.userMuted;
     if (!this.userMuted) {
       this.syncMasterGain(0.012);
-      this.playUiTap(true);
+      if (this.introRunning && !this.introScheduled) {
+        this.maybeLaunchPendingIntro();
+      } else {
+        this.playUiTap(true);
+      }
     } else {
+      this.stopIntroScore(0.12);
       this.playMuteSwitch();
       this.syncMasterGain(0.08);
     }
@@ -186,15 +211,29 @@ export class SiliconAudio {
     this.roomGain = ctx.createGain();
     this.roomGain.gain.setValueAtTime(0.45, now);
 
+    // Wide stereo cinematic hall reverb exclusively for the Cold Boot score (fast 2.2s IR — <3ms init!)
+    this.cinemaSend = ctx.createGain();
+    this.cinemaSend.gain.setValueAtTime(0.75, now);
+
+    this.cinemaConvolver = ctx.createConvolver();
+    this.cinemaConvolver.buffer = this.buildCinemaHallIR(ctx, 2.2, 2.75);
+
+    this.cinemaGain = ctx.createGain();
+    this.cinemaGain.gain.setValueAtTime(0.66, now);
+
     this.dryBus.connect(this.compressor);
     this.roomSend.connect(this.convolver);
     this.convolver.connect(this.roomGain);
     this.roomGain.connect(this.compressor);
+    this.cinemaSend.connect(this.cinemaConvolver);
+    this.cinemaConvolver.connect(this.cinemaGain);
+    this.cinemaGain.connect(this.compressor);
     this.compressor.connect(this.masterGain);
     this.masterGain.connect(ctx.destination);
 
     this.crispNoiseBuf = this.buildCrispNoiseBuffer(ctx, 0.35);
     this.brushedNoiseBuf = this.buildBrushedMetalBuffer(ctx, 1.4);
+    this.warmDriveCurve = this.buildWarmDriveCurve(2.0);
 
     this.initialized = true;
     this.emitState();
@@ -214,14 +253,16 @@ export class SiliconAudio {
       [0.032, 0.12, 0.14],
     ];
 
+    const decayMul = Math.exp(-decay / Math.max(1, len));
     for (let ch = 0; ch < 2; ch++) {
       const data = buf.getChannelData(ch);
       let lp = 0;
       let hp = 0;
       let prev = 0;
+      let env = 1.0;
       for (let i = 0; i < len; i++) {
         const t = i / len;
-        const env = Math.pow(1 - t, decay);
+        env *= decayMul;
         const w = Math.random() * 2 - 1;
         lp += (w - lp) * (0.36 * (1 - t * 0.65) + 0.06);
         hp = 0.985 * (hp + lp - prev);
@@ -231,6 +272,56 @@ export class SiliconAudio {
       for (const [sec, lAmp, rAmp] of earlyTaps) {
         const idx = Math.floor(sec * rate);
         if (idx < len) data[idx] += (ch === 0 ? lAmp : rAmp) * 0.5;
+      }
+    }
+    return buf;
+  }
+
+  /** Fast lush stereo concert/keynote hall IR (multiplicative decay — zero Math.pow stall!) */
+  private buildCinemaHallIR(ctx: AudioContext, durationSec: number, decay: number): AudioBuffer {
+    const rate = ctx.sampleRate;
+    const len = Math.floor(rate * durationSec);
+    const buf = ctx.createBuffer(2, len, rate);
+    const preDelaySamples = Math.floor(0.020 * rate);
+    const attackSamples = Math.floor(0.032 * rate);
+    const bodyLen = Math.max(1, len - preDelaySamples);
+    const decayMul = Math.exp(-(decay * 1.45) / bodyLen);
+
+    const earlyTaps: [number, number, number][] = [
+      [0.024, 0.34, 0.16],
+      [0.041, 0.18, 0.32],
+      [0.064, 0.24, 0.19],
+      [0.095, 0.14, 0.22],
+      [0.130, 0.16, 0.11],
+    ];
+
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buf.getChannelData(ch);
+      let lp1 = 0;
+      let lp2 = 0;
+      let hp = 0;
+      let prev = 0;
+      let env = 1.0;
+      for (let i = 0; i < len; i++) {
+        if (i < preDelaySamples) {
+          data[i] = 0;
+          continue;
+        }
+        const idx = i - preDelaySamples;
+        const t = idx / bodyLen;
+        env *= decayMul;
+        const attack = idx < attackSamples ? idx / attackSamples : 1.0;
+        const w = Math.random() * 2 - 1;
+        const cutoff = 0.24 * (1 - t * 0.78) + 0.028;
+        lp1 += (w - lp1) * cutoff;
+        lp2 += (lp1 - lp2) * (cutoff * 0.85);
+        hp = 0.992 * (hp + lp2 - prev);
+        prev = lp2;
+        data[i] = hp * env * attack * 0.44;
+      }
+      for (const [sec, lAmp, rAmp] of earlyTaps) {
+        const idx = Math.floor(sec * rate);
+        if (idx < len) data[idx] += (ch === 0 ? lAmp : rAmp) * 0.38;
       }
     }
     return buf;
@@ -374,7 +465,48 @@ export class SiliconAudio {
     });
   }
 
-  private routeOut(panVal = 0, roomMix = 1.0): AudioNode {
+  /**
+   * Dark Moog-style resonant analog filter pluck (unified cyber-noir voice across intro, stops, hover & UI).
+   */
+  private triggerAnalogPluck(
+    time: number,
+    freqHz: number,
+    cutoffPeakHz: number,
+    q: number,
+    durSec: number,
+    gain: number,
+    dest: AudioNode,
+    type: OscillatorType = 'sawtooth',
+    detuneCents = 0
+  ): OscillatorNode {
+    const ctx = this.ctx!;
+    const osc = ctx.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freqHz, time);
+    if (detuneCents !== 0) {
+      osc.detune.setValueAtTime(detuneCents, time);
+    }
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.Q.setValueAtTime(q, time);
+    lp.frequency.setValueAtTime(Math.max(freqHz * 1.4, cutoffPeakHz), time);
+    lp.frequency.exponentialRampToValueAtTime(Math.max(65, freqHz * 1.15), time + durSec);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, time);
+    g.gain.linearRampToValueAtTime(gain, time + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + durSec);
+
+    osc.connect(lp);
+    lp.connect(g);
+    g.connect(dest);
+    osc.start(time);
+    osc.stop(time + durSec + 0.02);
+    return osc;
+  }
+
+  private routeOut(panVal = 0, roomMix = 1.0, cinemaMix = 0.0): AudioNode {
     const ctx = this.ctx!;
     const pan = ctx.createStereoPanner();
     pan.pan.setValueAtTime(clamp(panVal, -0.8, 0.8), ctx.currentTime);
@@ -388,6 +520,12 @@ export class SiliconAudio {
         pan.connect(rs);
         rs.connect(this.roomSend);
       }
+    }
+    if (cinemaMix > 0 && this.cinemaSend) {
+      const cs = ctx.createGain();
+      cs.gain.setValueAtTime(cinemaMix, ctx.currentTime);
+      pan.connect(cs);
+      cs.connect(this.cinemaSend);
     }
     return pan;
   }
@@ -413,7 +551,7 @@ export class SiliconAudio {
       this.hasInitialZoom = true;
       this.lastZoom = zoom;
       this.lastTickZoom = zoom;
-      this.lastStopIdx = clamp(Math.round(zoom) + 1, 0, TURRET_MODAL_HZ.length - 1);
+      this.lastStopIdx = clamp(Math.round(zoom) + 1, 0, TURRET_SCALE_HZ.length - 1);
     }
 
     const dz = zoom - this.lastZoom;
@@ -421,13 +559,13 @@ export class SiliconAudio {
 
     if (!this.isActive() || !this.ctx) {
       this.lastTickZoom = zoom;
-      this.lastStopIdx = clamp(Math.round(zoom) + 1, 0, TURRET_MODAL_HZ.length - 1);
+      this.lastStopIdx = clamp(Math.round(zoom) + 1, 0, TURRET_SCALE_HZ.length - 1);
       return;
     }
 
     const z = clamp(zoom, -2.4, 9.0);
 
-    // 1) Knurled Leica/Zeiss focus-ring ball-bearing detent ticks while zooming
+    // 1) Precision cyber-noir focus-ring clock detents while zooming
     if (!introActive && Math.abs(z - this.lastTickZoom) >= 0.088 && nowMs - this.lastTickMs >= 38) {
       const zoomingIn = dz >= 0;
       this.playFocusDetent(zoomingIn, clamp(motion, 0.15, 1.0), z);
@@ -435,8 +573,8 @@ export class SiliconAudio {
       this.lastTickMs = nowMs;
     }
 
-    // 2) Heavy objective turret detent lock when crossing one of the 11 named scale stops
-    const stopIdx = clamp(Math.round(z) + 1, 0, TURRET_MODAL_HZ.length - 1);
+    // 2) Bold dark-electro objective lock when crossing one of the 11 named scale stops
+    const stopIdx = clamp(Math.round(z) + 1, 0, TURRET_SCALE_HZ.length - 1);
     if (!introActive && stopIdx !== this.lastStopIdx) {
       const direction = stopIdx > this.lastStopIdx ? 1 : -1;
       this.lastStopIdx = stopIdx;
@@ -445,68 +583,69 @@ export class SiliconAudio {
   }
 
   /**
-   * Knurled-metal aperture/focus-ring ball-bearing detent:
-   * Crisp steel micro-tick + tight machined-aluminum barrel knock.
+   * Cyber-noir focus-ring clock detent:
+   * Razor-tight metallic micro-tick + resonant analog filter blip tracking magnification depth.
    */
   private playFocusDetent(zoomingIn: boolean, vel: number, z: number): void {
     if (!this.ctx || !this.isActive()) return;
     const now = this.ctx.currentTime;
-    const out = this.routeOut(zoomingIn ? 0.05 : -0.05, 0.45);
+    const out = this.routeOut(zoomingIn ? 0.08 : -0.08, 0.48, 0.08);
 
-    // Tiny ±3% organic tolerance so rapid scrolling sounds like real machined teeth
-    const jitter = 0.97 + Math.random() * 0.06;
+    const jitter = 0.98 + Math.random() * 0.04;
     const scaleNorm = clamp((z + 1) / 10, 0, 1);
 
-    // Steel ball-bearing notch strike
-    const strikeHz = ((zoomingIn ? 3550 : 2750) + scaleNorm * 750) * jitter;
-    const strikeGain = (0.14 + vel * 0.12);
-    this.triggerStrike(now, strikeHz, 3.4, 0.007, strikeGain, out);
+    // Crisp dark digital-mechanical notch click
+    const strikeHz = ((zoomingIn ? 3400 : 2500) + scaleNorm * 1100) * jitter;
+    this.triggerStrike(now, strikeHz, 4.0, 0.006, 0.13 + vel * 0.11, out);
 
-    // Solid anodized-aluminum barrel body knock
-    const bodyStart = ((zoomingIn ? 420 : 330) + scaleNorm * 110) * jitter;
-    const bodyEnd = bodyStart * 0.42;
-    this.triggerThock(now, bodyStart, bodyEnd, 0.016, 0.095 + vel * 0.075, out, 'triangle');
+    // Subtle resonant dark Moog filter blip (moves cleanly through C-minor depth range)
+    const pluckHz = (zoomingIn ? 130.81 : 98.0) * (1.0 + scaleNorm * 1.15) * jitter;
+    this.triggerAnalogPluck(now, pluckHz, 480 + scaleNorm * 920, 3.8, 0.032, 0.068 + vel * 0.055, out, 'sawtooth');
   }
 
   /**
-   * Zeiss Objective Lens Turret Stop Lock:
-   * Signature two-part mechanical *snick-CLUNK* when crossing a named magnification stop!
+   * Dark-Electro Scale Stop Lock:
+   * Crisp two-stage mechanical latch fused with a tuned C-minor analog bass/synth lock pulse!
    */
   private playTurretLock(stopIdx: number, direction: number): void {
     if (!this.ctx || !this.isActive()) return;
     const now = this.ctx.currentTime;
-    const out = this.routeOut(0, 0.85);
-    const modalHz = TURRET_MODAL_HZ[stopIdx] ?? 780;
-    const isSubatomic = stopIdx >= 9; // Heavy vault-latch weight past the 35,800x void!
+    const scaleHz = TURRET_SCALE_HZ[stopIdx] ?? 130.81;
+    const isSubatomic = stopIdx >= 9; // Colossal sub-drop vault lock past the 35,800x void!
+    const out = this.routeOut(0, 0.72, isSubatomic ? 0.45 : 0.22);
 
-    // Stage 1 (t = 0ms): spring-loaded latch pin slipping over bevel
-    this.triggerStrike(now, direction > 0 ? 4100 : 3300, 2.8, 0.008, 0.20, out);
+    // Stage 1 (t = 0ms): sharp precision clock latch
+    this.triggerStrike(now, direction > 0 ? 4100 : 3000, 3.2, 0.007, 0.18, out);
 
-    // Stage 2 (t = 18ms): solid mechanical detent drop & chassis seat
-    const seatT = now + (isSubatomic ? 0.022 : 0.017);
-    this.triggerStrike(seatT, isSubatomic ? 1650 : 2450, 2.2, 0.014, isSubatomic ? 0.34 : 0.24, out);
+    // Stage 2 (t = 16ms): dark analog sub-pulse + resonant Moog synth lock in C minor
+    const seatT = now + (isSubatomic ? 0.020 : 0.015);
+    this.triggerStrike(seatT, isSubatomic ? 1500 : 2400, 2.4, 0.012, isSubatomic ? 0.30 : 0.21, out);
     this.triggerThock(
       seatT,
-      isSubatomic ? 195 : 265,
-      isSubatomic ? 58 : 92,
-      isSubatomic ? 0.068 : 0.042,
-      isSubatomic ? 0.36 : 0.24,
+      isSubatomic ? 140 : 210,
+      isSubatomic ? scaleHz : 65.41,
+      isSubatomic ? 0.18 : 0.055,
+      isSubatomic ? 0.42 : 0.24,
       out,
-      'triangle'
+      'sine'
     );
-    // Subtle precision brass/steel housing overtone
-    this.triggerMetalRing(
+    this.triggerAnalogPluck(
       seatT,
-      modalHz,
-      1.585,
-      isSubatomic ? 0.16 : 0.085,
-      isSubatomic ? 0.095 : 0.068,
-      out
+      isSubatomic ? scaleHz * 2 : scaleHz,
+      isSubatomic ? 620 : scaleHz * 5.2,
+      3.6,
+      isSubatomic ? 0.42 : 0.16,
+      isSubatomic ? 0.18 : 0.125,
+      out,
+      'sawtooth'
     );
+    if (isSubatomic) {
+      this.triggerAnalogPluck(seatT, scaleHz * 3, 740, 2.8, 0.36, 0.085, out, 'triangle');
+    }
   }
 
   /**
-   * Material-aware physical probe ticks when hovering blocks on the Apple Silicon die / US Quarter.
+   * Dark cyber-noir material-aware probe ticks when hovering blocks on the die / US Quarter.
    */
   public playHover(hitId: string | null, clientX: number): void {
     if (!hitId) {
@@ -523,82 +662,87 @@ export class SiliconAudio {
     if (!this.ctx || !this.isActive()) return;
     const now = this.ctx.currentTime;
     const panVal = clamp((clientX / Math.max(1, window.innerWidth)) * 2 - 1, -0.65, 0.65) * 0.65;
-    const out = this.routeOut(panVal, 0.75);
+    const out = this.routeOut(panVal, 0.60, 0.14);
 
     if (hitId === 'us-quarter') {
-      // Authentic cupronickel coin strike + 3 inharmonic metallic partials
-      this.triggerStrike(now, 5800, 2.6, 0.006, 0.24, out);
-      this.triggerMetalRing(now, 2560, 1.608, 0.13, 0.115, out);
-      this.triggerMetalRing(now, 6180, 1.31, 0.055, 0.045, out);
+      // Authentic cupronickel coin strike + metallic partials
+      this.triggerStrike(now, 5800, 2.6, 0.006, 0.22, out);
+      this.triggerMetalRing(now, 2560, 1.608, 0.12, 0.105, out);
+      this.triggerMetalRing(now, 6180, 1.31, 0.05, 0.04, out);
       return;
     }
 
     if (hitId === 'slc' || hitId.startsWith('ram-')) {
-      // Dense matte epoxy / ceramic package *thock*
-      this.triggerStrike(now, 1550, 1.8, 0.009, 0.16, out);
-      this.triggerThock(now, 310, 118, 0.032, 0.21, out, 'triangle');
+      // Deep muted cyber-noir sub-pulse for dense matte memory/SLC blocks (C2 / G2)
+      const hz = hitId === 'slc' ? 98.0 : 65.41;
+      this.triggerStrike(now, 1700, 2.2, 0.008, 0.14, out);
+      this.triggerAnalogPluck(now, hz, 540, 3.4, 0.09, 0.14, out, 'sawtooth');
       return;
     }
 
     if (hitId === 'gpu' || hitId === 'ane') {
-      // Crisp twin-pin micro-switch double-tap + machined titanium shimmer
-      this.triggerStrike(now, 3400, 3.0, 0.006, 0.16, out);
-      this.triggerStrike(now + 0.011, 2900, 2.6, 0.007, 0.13, out);
-      this.triggerMetalRing(now + 0.011, 1380, 1.62, 0.05, 0.055, out);
+      // Sleek twin-pulse dark synth micro-tap (G3 -> C4)
+      this.triggerStrike(now, 3600, 3.6, 0.005, 0.13, out);
+      this.triggerAnalogPluck(now, 196.0, 980, 3.8, 0.055, 0.095, out, 'sawtooth');
+      this.triggerAnalogPluck(now + 0.016, 261.63, 1280, 3.6, 0.065, 0.08, out, 'sawtooth');
       return;
     }
 
     if (hitId === 'smd-caps') {
-      // Tiny crisp MLCC ceramic capacitor snap
-      this.triggerStrike(now, 4800, 4.2, 0.005, 0.16, out);
-      this.triggerMetalRing(now, 2920, 1.48, 0.024, 0.05, out);
+      // Tiny crisp electrostatic MLCC snap
+      this.triggerStrike(now, 4900, 4.8, 0.004, 0.15, out);
+      this.triggerAnalogPluck(now, 392.0, 1800, 4.2, 0.028, 0.065, out, 'triangle');
       return;
     }
 
     if (hitId === 'io-phy' || hitId === 'media') {
-      // Spring-loaded precision connector tick
-      this.triggerStrike(now, 2750, 2.5, 0.008, 0.18, out);
-      this.triggerThock(now, 460, 170, 0.022, 0.14, out, 'sine');
+      // Tight dark telemetry connector ping (Eb3 / Bb3)
+      const hz = hitId === 'io-phy' ? 155.56 : 233.08;
+      this.triggerStrike(now, 2900, 3.0, 0.007, 0.15, out);
+      this.triggerAnalogPluck(now, hz, 820, 3.6, 0.075, 0.105, out, 'sawtooth');
       return;
     }
 
-    // Performance & Efficiency Cores: precision silicon-wafer stepped relay tick
+    // Performance & Efficiency Cores: stepped C-minor dark Moog micro-plucks!
     const coreIdx = hitId.startsWith('pcore-') ? Number(hitId.slice(6)) || 0 : 0;
-    const stepHz = 1650 + (coreIdx % 8) * 115;
-    this.triggerStrike(now, 3600 + (coreIdx % 8) * 160, 3.6, 0.006, 0.17, out);
-    this.triggerThock(now, 480 + (coreIdx % 8) * 28, 195, 0.018, 0.12, out, 'triangle');
-    this.triggerMetalRing(now, stepHz, 1.51, 0.036, 0.048, out);
+    const hz = PCORE_MINOR_HZ[coreIdx % PCORE_MINOR_HZ.length];
+    this.triggerStrike(now, 3500 + (coreIdx % 8) * 160, 3.8, 0.005, 0.13, out);
+    this.triggerAnalogPluck(now, hz, 740 + (coreIdx % 8) * 110, 3.8, 0.068, 0.105, out, 'sawtooth');
   }
 
   /**
-   * Mechanical optical reticle clamp lock (open) & spring unlatch (close) for Inspect Card.
+   * Cyber-noir targeting lock (open) & filter-closing unlatch (close) for Inspect Card.
    */
   public playInspect(open: boolean, hitId?: string): void {
     if (!this.ctx || !this.isActive()) return;
     const now = this.ctx.currentTime;
-    const out = this.routeOut(0, 0.9);
+    const out = this.routeOut(0, 0.68, 0.28);
     const isCoin = hitId === 'us-quarter';
 
     if (open) {
-      // Precision SLR / optical clamp lock: crisp *snick* -> solid *THOCK*
-      this.triggerStrike(now, 4400, 3.0, 0.008, 0.24, out);
-      this.triggerThock(now, 520, 210, 0.018, 0.14, out, 'triangle');
+      // Crisp optical latch + bold C-minor fifth analog targeting lock!
+      this.triggerStrike(now, 4300, 3.4, 0.007, 0.20, out);
+      this.triggerAnalogPluck(now, 130.81, 1100, 3.8, 0.12, 0.11, out, 'sawtooth');
 
-      const t2 = now + 0.026;
-      this.triggerStrike(t2, isCoin ? 5200 : 2500, 2.4, 0.012, 0.28, out);
-      this.triggerThock(t2, 290, 96, 0.046, 0.28, out, 'triangle');
-      this.triggerMetalRing(t2, isCoin ? 2560 : 1180, isCoin ? 1.608 : 1.56, isCoin ? 0.15 : 0.095, 0.09, out);
+      const t2 = now + 0.030;
+      this.triggerStrike(t2, isCoin ? 5200 : 2500, 2.4, 0.011, 0.24, out);
+      this.triggerThock(t2, 165, 65.41, 0.085, 0.26, out, 'sine');
+      if (isCoin) {
+        this.triggerMetalRing(t2, 2560, 1.608, 0.14, 0.09, out);
+      } else {
+        this.triggerAnalogPluck(t2, 65.41, 680, 3.4, 0.26, 0.14, out, 'sawtooth', -5);
+        this.triggerAnalogPluck(t2, 196.0, 1450, 3.8, 0.24, 0.10, out, 'sawtooth', 5);
+      }
     } else {
-      // Spring-return mechanical unlatch: *clik-thup*
-      this.triggerStrike(now, 3100, 2.6, 0.007, 0.18, out);
-      const t2 = now + 0.018;
-      this.triggerThock(t2, 240, 105, 0.032, 0.19, out, 'triangle');
-      this.triggerMetalRing(t2, 740, 1.49, 0.055, 0.045, out);
+      // Sleek downward filter-closing release
+      this.triggerStrike(now, 2900, 2.8, 0.006, 0.16, out);
+      this.triggerAnalogPluck(now, 196.0, 920, 3.4, 0.065, 0.09, out, 'sawtooth');
+      this.triggerAnalogPluck(now + 0.022, 98.0, 420, 3.0, 0.11, 0.11, out, 'triangle');
     }
   }
 
   /**
-   * Motorized helical lens barrel & solenoid clutch sweep when diving / clicking zoom rail stops.
+   * Dark sci-fi sub-bass & resonant filter hyper-glide when diving / clicking zoom rail stops.
    */
   public playDive(fromZ: number, toZ: number): void {
     if (!this.ctx || !this.isActive()) return;
@@ -610,28 +754,60 @@ export class SiliconAudio {
 
     const ctx = this.ctx;
     const now = ctx.currentTime;
-    const out = this.routeOut(0, 0.85);
+    const out = this.routeOut(0, 0.65, 0.34);
     const divingIn = toZ > fromZ;
-    const dur = clamp(0.20 + dist * 0.055, 0.24, 0.58);
+    const dur = clamp(0.22 + dist * 0.058, 0.26, 0.62);
 
-    // 1) Crisp solenoid clutch engage click at launch
-    this.triggerStrike(now, divingIn ? 3800 : 3000, 2.8, 0.008, 0.22, out);
-    this.triggerThock(now, divingIn ? 360 : 280, 120, 0.028, 0.18, out, 'triangle');
+    // 1) Punchy sub-kick + crisp clock-latch launch
+    this.triggerStrike(now, divingIn ? 3900 : 2800, 3.0, 0.008, 0.20, out);
+    this.triggerThock(now, divingIn ? 160 : 120, 49.0, 0.11, 0.24, out, 'sine');
 
-    // 2) Brushed helical-thread & precision servo barrel glide
+    // 2) Dark resonant analog sawtooth synth glide (C2 <-> C3)
+    const oscA = ctx.createOscillator();
+    oscA.type = 'sawtooth';
+    oscA.frequency.setValueAtTime(divingIn ? 65.41 : 130.81, now);
+    oscA.frequency.exponentialRampToValueAtTime(divingIn ? 130.81 : 65.41, now + dur * 0.9);
+
+    const oscB = ctx.createOscillator();
+    oscB.type = 'sawtooth';
+    oscB.frequency.setValueAtTime(divingIn ? 98.0 : 196.0, now);
+    oscB.frequency.exponentialRampToValueAtTime(divingIn ? 196.0 : 98.0, now + dur * 0.9);
+    oscB.detune.setValueAtTime(6, now);
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.Q.setValueAtTime(3.6, now);
+    lp.frequency.setValueAtTime(divingIn ? 240 : 1850, now);
+    lp.frequency.exponentialRampToValueAtTime(divingIn ? 2050 : 210, now + dur * 0.85);
+
+    const sg = ctx.createGain();
+    sg.gain.setValueAtTime(0.0001, now);
+    sg.gain.linearRampToValueAtTime(0.115, now + 0.035);
+    sg.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    oscA.connect(lp);
+    oscB.connect(lp);
+    lp.connect(sg);
+    sg.connect(out);
+    oscA.start(now);
+    oscB.start(now);
+    oscA.stop(now + dur + 0.03);
+    oscB.stop(now + dur + 0.03);
+
+    // 3) Tight stereo brushed-air velocity sweep
     const src = ctx.createBufferSource();
     src.buffer = this.brushedNoiseBuf;
     src.loop = true;
 
     const bp = ctx.createBiquadFilter();
     bp.type = 'bandpass';
-    bp.Q.setValueAtTime(2.6, now);
-    bp.frequency.setValueAtTime(divingIn ? 420 : 1480, now);
-    bp.frequency.exponentialRampToValueAtTime(divingIn ? 1620 : 380, now + dur);
+    bp.Q.setValueAtTime(3.2, now);
+    bp.frequency.setValueAtTime(divingIn ? 360 : 1680, now);
+    bp.frequency.exponentialRampToValueAtTime(divingIn ? 1850 : 320, now + dur);
 
     const ng = ctx.createGain();
     ng.gain.setValueAtTime(0.0001, now);
-    ng.gain.linearRampToValueAtTime(clamp(0.11 + dist * 0.02, 0.12, 0.24), now + 0.045);
+    ng.gain.linearRampToValueAtTime(clamp(0.09 + dist * 0.018, 0.10, 0.20), now + 0.045);
     ng.gain.exponentialRampToValueAtTime(0.0001, now + dur);
 
     src.connect(bp);
@@ -639,43 +815,22 @@ export class SiliconAudio {
     ng.connect(out);
     src.start(now);
     src.stop(now + dur + 0.03);
-
-    // Subtle precision micro-motor whirr harmonic
-    const motor = ctx.createOscillator();
-    motor.type = 'triangle';
-    motor.frequency.setValueAtTime(divingIn ? 190 : 360, now);
-    motor.frequency.exponentialRampToValueAtTime(divingIn ? 390 : 175, now + dur * 0.88);
-    const mlp = ctx.createBiquadFilter();
-    mlp.type = 'lowpass';
-    mlp.frequency.setValueAtTime(620, now);
-    const mg = ctx.createGain();
-    mg.gain.setValueAtTime(0.0001, now);
-    mg.gain.linearRampToValueAtTime(0.055, now + 0.04);
-    mg.gain.exponentialRampToValueAtTime(0.0001, now + dur * 0.92);
-    motor.connect(mlp);
-    mlp.connect(mg);
-    mg.connect(out);
-    motor.start(now);
-    motor.stop(now + dur);
   }
 
   /**
-   * Custom machined mechanical switch (click-thock on engage, crisp upstroke on release).
+   * Dark analog console micro-switch (crisp click + resonant C-minor blip).
    */
   public playUiTap(active: boolean): void {
     if (!this.ctx || !this.isActive()) return;
     const now = this.ctx.currentTime;
-    const out = this.routeOut(0, 0.65);
+    const out = this.routeOut(0, 0.52, 0.12);
 
     if (active) {
-      // Tactile leaf-spring snap + solid housing bottom-out thock
-      this.triggerStrike(now, 3700, 3.4, 0.007, 0.24, out);
-      this.triggerThock(now + 0.013, 330, 118, 0.034, 0.24, out, 'triangle');
-      this.triggerMetalRing(now + 0.013, 1480, 1.54, 0.045, 0.055, out);
+      this.triggerStrike(now, 3900, 3.6, 0.006, 0.20, out);
+      this.triggerAnalogPluck(now + 0.006, 130.81, 1250, 3.8, 0.068, 0.125, out, 'sawtooth');
     } else {
-      // Lighter crisp keycap/switch upstroke release
-      this.triggerStrike(now, 2500, 2.8, 0.007, 0.18, out);
-      this.triggerThock(now + 0.006, 240, 108, 0.025, 0.17, out, 'triangle');
+      this.triggerStrike(now, 2400, 3.0, 0.006, 0.16, out);
+      this.triggerAnalogPluck(now + 0.005, 98.0, 680, 3.2, 0.055, 0.105, out, 'triangle');
     }
   }
 
@@ -684,149 +839,391 @@ export class SiliconAudio {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const out = this.routeOut(0, 0.4);
-    this.triggerStrike(now, 2300, 2.8, 0.007, 0.20, out);
-    this.triggerThock(now + 0.008, 220, 95, 0.028, 0.20, out, 'triangle');
+    this.triggerStrike(now, 2200, 3.0, 0.007, 0.18, out);
+    this.triggerAnalogPluck(now + 0.006, 98.0, 420, 2.8, 0.06, 0.11, out, 'triangle');
   }
 
   /**
-   * Heavy electromagnetic contactor throw + precision micro-flywheel spin-up & relay release!
+   * Cyber-Noir Multi-Core Overclock Burst (3.5s):
+   * Heavy contactor sub-drop + driving overclocked 16th-note Moog dark-electro bass pulse + power-down latch!
    */
   public triggerBurst(durationSec = 3.5): void {
     if (!this.ctx || !this.isActive()) return;
     const ctx = this.ctx;
     const now = ctx.currentTime;
-    const out = this.routeOut(0, 0.9);
+    const out = this.routeOut(0, 0.55, 0.52);
 
-    // 1) Heavy two-stage contactor switch clunk (KA-CLACK!)
-    this.triggerStrike(now, 3400, 2.2, 0.011, 0.30, out);
-    this.triggerThock(now, 310, 110, 0.036, 0.26, out, 'triangle');
-    this.triggerStrike(now + 0.026, 1850, 1.9, 0.018, 0.36, out);
-    this.triggerThock(now + 0.026, 210, 56, 0.075, 0.40, out, 'triangle');
-    this.triggerMetalRing(now + 0.026, 620, 1.61, 0.14, 0.095, out);
+    // 1) Heavy high-voltage contactor slam + C1 sub-drop
+    this.triggerStrike(now, 3800, 2.4, 0.011, 0.28, out);
+    this.triggerThock(now, 155, 32.7, 0.26, 0.40, out, 'sine');
+    this.triggerStrike(now + 0.024, 1900, 2.0, 0.016, 0.30, out);
 
-    // 2) Precision lab micro-flywheel / turbine spin-up & spin-down
-    const osc1 = ctx.createOscillator();
-    osc1.type = 'sawtooth';
-    osc1.frequency.setValueAtTime(72, now + 0.03);
-    osc1.frequency.exponentialRampToValueAtTime(220, now + 0.52);
-    osc1.frequency.setValueAtTime(220, now + durationSec - 0.55);
-    osc1.frequency.exponentialRampToValueAtTime(64, now + durationSec + 0.25);
+    // 2) Overclocked dark C-minor Moog 16th-note pulse engine synced to the 3.5s compute burst!
+    const shaper = ctx.createWaveShaper();
+    shaper.curve = this.warmDriveCurve;
+    shaper.connect(out);
 
-    const osc2 = ctx.createOscillator();
-    osc2.type = 'triangle';
-    osc2.frequency.setValueAtTime(108, now + 0.03);
-    osc2.frequency.exponentialRampToValueAtTime(330, now + 0.52);
-    osc2.frequency.setValueAtTime(330, now + durationSec - 0.55);
-    osc2.frequency.exponentialRampToValueAtTime(96, now + durationSec + 0.25);
+    const step = 0.125; // Crisp 120 BPM overclocked 16th-note pulse
+    const totalSteps = Math.max(8, Math.floor((durationSec - 0.18) / step));
+    const notes = [65.41, 65.41, 130.81, 65.41, 98.0, 65.41, 77.78, 98.0];
 
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.Q.setValueAtTime(2.4, now);
-    lp.frequency.setValueAtTime(180, now + 0.03);
-    lp.frequency.exponentialRampToValueAtTime(1180, now + 0.52);
-    lp.frequency.setValueAtTime(1020, now + durationSec - 0.55);
-    lp.frequency.exponentialRampToValueAtTime(140, now + durationSec + 0.28);
+    for (let i = 0; i < totalSteps; i++) {
+      const ct = now + 0.04 + i * step;
+      const prog = i / Math.max(1, totalSteps - 1);
+      // Fast ramp up into full overdrive heat, then smooth wind-down over final 0.55s
+      const heat = Math.min(1.0, prog / 0.18) * (1.0 - Math.max(0, (prog - 0.80) / 0.24));
+      const hz = notes[i % notes.length];
 
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, now + 0.03);
-    g.gain.linearRampToValueAtTime(0.145, now + 0.45);
-    g.gain.setValueAtTime(0.115, now + durationSec - 0.55);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + durationSec + 0.30);
+      if (i % 4 === 0) {
+        this.triggerThock(ct, 130, 32.7, 0.20, 0.26 * (0.55 + 0.45 * heat), out, 'sine');
+      }
 
-    osc1.connect(lp);
-    osc2.connect(lp);
-    lp.connect(g);
-    g.connect(out);
-    osc1.start(now + 0.03);
-    osc2.start(now + 0.03);
-    osc1.stop(now + durationSec + 0.34);
-    osc2.stop(now + durationSec + 0.34);
+      const p = ctx.createStereoPanner();
+      p.pan.setValueAtTime(i % 2 === 0 ? -0.24 : 0.24, ct);
+      p.connect(shaper);
 
-    // 3) Crisp solenoid relay release click when Burst completes
+      const cutPeak = 360 + heat * 2250 + (i % 4 === 2 ? 420 : 0);
+      this.triggerAnalogPluck(ct, hz, cutPeak, 4.2, 0.115, 0.135 * (0.45 + 0.55 * heat), p, 'sawtooth', -5);
+      this.triggerAnalogPluck(ct, hz, cutPeak, 4.0, 0.115, 0.125 * (0.45 + 0.55 * heat), p, 'sawtooth', 5);
+    }
+
+    // 3) Crisp solenoid relay release + dark resonant power-down settle when Burst completes
     const relT = now + durationSec + 0.02;
-    this.triggerStrike(relT, 2900, 2.8, 0.009, 0.26, out);
-    this.triggerThock(relT + 0.015, 220, 74, 0.052, 0.28, out, 'triangle');
-    this.triggerMetalRing(relT + 0.015, 510, 1.56, 0.09, 0.06, out);
+    this.triggerStrike(relT, 3100, 3.0, 0.008, 0.24, out);
+    this.triggerThock(relT + 0.014, 150, 49.0, 0.18, 0.28, out, 'sine');
+    this.triggerAnalogPluck(relT + 0.014, 65.41, 580, 3.0, 0.38, 0.14, out, 'sawtooth');
+  }
+
+  /** Soft analog tape/tube saturation curve for bold sci-fi sub-bass & brass monolith weight */
+  private buildWarmDriveCurve(drive = 2.4): Float32Array<ArrayBuffer> {
+    const samples = 512;
+    const curve = new Float32Array(new ArrayBuffer(samples * 4));
+    const norm = Math.tanh(drive);
+    for (let i = 0; i < samples; i++) {
+      const x = (i * 2) / (samples - 1) - 1;
+      curve[i] = Math.tanh(x * drive) / norm;
+    }
+    return curve;
   }
 
   /**
-   * Synchronized "Cold Boot" power-on acoustics:
-   *   - power:  precision PMIC micro-relay engage + subtle V_DD rail capacitor charge swell
-   *   - fabric: crystal clock-lock double ping + coherent bus sweep
-   *   - cores:  staggered silicon core relay bring-up cascade
-   *   - lock:   iconic Leica/Zeiss optical reticle lock
-   *   - hud:    crisp dual-detent rail calibration ticks
+   * Launch (or queue until browser gesture unlock) the synchronized 5.4s Dark Sci-Fi Cold Boot Score.
+   *
+   * Narrative arc matching the visual power-on choreography:
+   *   0.00-0.90s : Deep C1/G1 blackout sub-void drone (beating low-frequency tension)
+   *   0.90-1.75s : Massive PMIC breaker SLAM + C1 sub-drop + saturated reactor rail charge riser
+   *   1.38-2.25s : Cold FM metallic clock-lock impulse + dark stereo plasma/fabric sweep
+   *   1.85-2.75s : Hard-panned stereo LPDDR5 high-speed digital bus handshake bursts
+   *   2.20-3.85s : Heavy rhythmic electromagnetic cluster ignition thumps (E-cores -> P-cores -> GPU)
+   *   2.25-5.95s : Bold wide-stereo saturated dark sci-fi brass monolith swell (C minor/open 5th + 9th)
+   *   4.22-4.55s : Mechanical Leica optical reticle lock + dual-detent Liquid Glass rail calibration
    */
-  public onIntroPhase(phase: AudioIntroPhase): void {
+  public startIntroScore(offsetSec = 0): void {
+    this.stopIntroScore(0.10);
+    if (this.userMuted) return;
+
+    this.introRunning = true;
+    this.introScheduled = false;
+    this.introStartWallMs = performance.now() - offsetSec * 1000;
+
+    if (!this.initialized) {
+      this.initGraph();
+    }
+    if (!this.ctx) return;
+
+    if (this.ctx.state === 'running') {
+      this.syncMasterGain(0.015);
+      this.emitState();
+      this.scheduleCinematicIntro(offsetSec);
+    } else if (this.ctx.state === 'suspended') {
+      // Attempt autoplay silently (succeeds when browser permits or when called inside a user gesture like `R`!)
+      void this.ctx
+        .resume()
+        .then(() => {
+          this.syncMasterGain(0.015);
+          this.emitState();
+          this.maybeLaunchPendingIntro();
+        })
+        .catch(() => {
+          // Autoplay blocked; will join seamlessly if user unlocks audio during the intro or replays with `R`
+        });
+    }
+  }
+
+  /** Smoothly fade out & cancel the cinematic score if the user skips the intro early or mutes */
+  public stopIntroScore(fadeSec = 0.28): void {
+    this.introRunning = false;
+    this.introScheduled = false;
+
+    const ctx = this.ctx;
+    const bus = this.introScoreBus;
+    const sources = this.introSources;
+    this.introScoreBus = null;
+    this.introSources = [];
+
+    if (!ctx || !bus) return;
+    const now = ctx.currentTime;
+    try {
+      bus.gain.cancelScheduledValues(now);
+      bus.gain.setValueAtTime(Math.max(0.0001, bus.gain.value), now);
+      bus.gain.exponentialRampToValueAtTime(0.0001, now + Math.max(0.02, fadeSec));
+    } catch {
+      // ignore
+    }
+    const stopAt = now + Math.max(0.03, fadeSec) + 0.04;
+    for (const s of sources) {
+      try {
+        s.stop(stopAt);
+      } catch {
+        // already stopped
+      }
+    }
+  }
+
+  private maybeLaunchPendingIntro(): void {
+    if (!this.introRunning || this.introScheduled || !this.isActive()) return;
+    const elapsed = (performance.now() - this.introStartWallMs) / 1000;
+    if (elapsed >= 6.45) {
+      this.introRunning = false;
+      return;
+    }
+    this.scheduleCinematicIntro(Math.max(0, elapsed));
+  }
+
+  private scheduleCinematicIntro(offsetSec: number): void {
     if (!this.ctx || !this.isActive()) return;
+    this.introScheduled = true;
+
     const ctx = this.ctx;
     const now = ctx.currentTime;
-    const out = this.routeOut(0, 0.9);
+    const t0 = now - offsetSec;
 
-    if (phase === 'power') {
-      // Solid PMIC power-rail relay engage (*snick-THOCK*) + subtle capacitive V_DD charge rise
-      this.triggerStrike(now, 3600, 2.6, 0.009, 0.28, out);
-      this.triggerThock(now + 0.016, 250, 74, 0.056, 0.32, out, 'triangle');
-      this.triggerMetalRing(now + 0.016, 540, 1.54, 0.14, 0.08, out);
-
-      const cap = ctx.createOscillator();
-      cap.type = 'sine';
-      cap.frequency.setValueAtTime(118, now + 0.02);
-      cap.frequency.exponentialRampToValueAtTime(248, now + 0.62);
-      const cg = ctx.createGain();
-      cg.gain.setValueAtTime(0.0001, now + 0.02);
-      cg.gain.linearRampToValueAtTime(0.048, now + 0.18);
-      cg.gain.exponentialRampToValueAtTime(0.0001, now + 0.68);
-      cap.connect(cg);
-      cg.connect(out);
-      cap.start(now + 0.02);
-      cap.stop(now + 0.72);
-    } else if (phase === 'fabric') {
-      // Quartz oscillator clock-lock ping + subtle brushed fabric sweep
-      this.triggerStrike(now, 4300, 3.6, 0.007, 0.19, out);
-      this.triggerMetalRing(now, 1320, 1.50, 0.15, 0.068, out);
-      this.triggerMetalRing(now + 0.055, 1980, 1.50, 0.12, 0.052, out);
-
-      const src = ctx.createBufferSource();
-      src.buffer = this.brushedNoiseBuf;
-      src.loop = true;
-      const bp = ctx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.Q.setValueAtTime(2.6, now);
-      bp.frequency.setValueAtTime(340, now);
-      bp.frequency.exponentialRampToValueAtTime(1280, now + 0.55);
-      bp.frequency.exponentialRampToValueAtTime(480, now + 0.92);
-      const ng = ctx.createGain();
-      ng.gain.setValueAtTime(0.0001, now);
-      ng.gain.linearRampToValueAtTime(0.085, now + 0.25);
-      ng.gain.exponentialRampToValueAtTime(0.0001, now + 0.96);
-      src.connect(bp);
-      bp.connect(ng);
-      ng.connect(out);
-      src.start(now);
-      src.stop(now + 1.0);
-    } else if (phase === 'cores') {
-      // Subtle staggered silicon cluster relay ticks (E-cores -> P-cores -> GPU)
-      const offsets = [0.0, 0.24, 0.34, 0.44, 0.54, 0.72];
-      offsets.forEach((dt, idx) => {
-        const t = now + dt;
-        const hz = 2900 + idx * 240;
-        const outPan = this.routeOut(-0.22 + idx * 0.09, 0.65);
-        this.triggerStrike(t, hz, 3.8, 0.005, 0.12 + idx * 0.01, outPan);
-        this.triggerThock(t, 360 + idx * 28, 150, 0.016, 0.085, outPan, 'triangle');
-      });
-    } else if (phase === 'lock') {
-      // Iconic mechanical Leica/Zeiss prism & reticle lock (*snick-CLACK!*)
-      this.triggerStrike(now, 4500, 3.0, 0.008, 0.28, out);
-      this.triggerStrike(now + 0.024, 2400, 2.2, 0.014, 0.34, out);
-      this.triggerThock(now + 0.024, 260, 78, 0.062, 0.34, out, 'triangle');
-      this.triggerMetalRing(now + 0.024, 980, 1.59, 0.18, 0.11, out);
-    } else if (phase === 'hud') {
-      // Crisp dual-detent rail calibration ticks (tk-tk)
-      this.triggerStrike(now, 3600, 3.4, 0.007, 0.20, out);
-      this.triggerThock(now, 380, 155, 0.022, 0.16, out, 'triangle');
-      this.triggerStrike(now + 0.068, 4100, 3.4, 0.007, 0.22, out);
-      this.triggerThock(now + 0.068, 430, 175, 0.024, 0.18, out, 'triangle');
+    const scoreBus = ctx.createGain();
+    scoreBus.gain.setValueAtTime(offsetSec > 0.05 ? 0.0001 : 1.0, now);
+    if (offsetSec > 0.05) {
+      scoreBus.gain.linearRampToValueAtTime(1.0, now + 0.14);
     }
+
+    const drySend = ctx.createGain();
+    drySend.gain.setValueAtTime(0.88, now);
+    const hallSend = ctx.createGain();
+    hallSend.gain.setValueAtTime(0.86, now);
+
+    scoreBus.connect(drySend);
+    drySend.connect(this.dryBus);
+    scoreBus.connect(hallSend);
+    hallSend.connect(this.cinemaSend);
+
+    this.introScoreBus = scoreBus;
+    const sources: AudioScheduledSourceNode[] = [];
+    this.introSources = sources;
+
+    const driveCurve = this.warmDriveCurve;
+
+    const makePan = (panVal: number): StereoPannerNode => {
+      const p = ctx.createStereoPanner();
+      p.pan.setValueAtTime(clamp(panVal, -0.85, 0.85), now);
+      p.connect(scoreBus);
+      return p;
+    };
+
+    // -------------------------------------------------------------------------
+    // ACT 0 (0.00 - 2.45s): Centered Title on Black -> Dormant Chip Fades In + C1 Sub + Clock Ticks
+    // -------------------------------------------------------------------------
+    if (t0 + 2.48 > now) {
+      const sT = Math.max(now, t0 + 0.12);
+      const peakT = Math.max(sT + 0.12, t0 + 2.38);
+      const endT = Math.max(peakT + 0.05, t0 + 2.48);
+
+      const subPre = ctx.createOscillator();
+      subPre.type = 'sine';
+      subPre.frequency.setValueAtTime(32.7, sT);
+      const spg = ctx.createGain();
+      spg.gain.setValueAtTime(0.0001, sT);
+      spg.gain.linearRampToValueAtTime(0.21, peakT);
+      spg.gain.exponentialRampToValueAtTime(0.0001, endT);
+      subPre.connect(spg);
+      spg.connect(scoreBus);
+      subPre.start(sT);
+      subPre.stop(endT + 0.02);
+      sources.push(subPre);
+
+      // Subtle resonant pulse under the title, then accelerating clock ticks as the dormant chip fades in!
+      const preTicks: [number, number, number][] = [
+        [0.65, 1650, 0.11],
+        [1.56, 2100, 0.14],
+        [2.02, 2650, 0.17],
+        [2.28, 3150, 0.21],
+      ];
+      for (const [cue, hz, amp] of preTicks) {
+        if (t0 + cue >= now - 0.02) {
+          const ct = Math.max(now, t0 + cue);
+          this.triggerStrike(ct, hz, 3.8, 0.007, amp, scoreBus);
+          this.triggerThock(ct, 155, 52, 0.06, amp * 0.92, scoreBus, 'triangle');
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // ACT 1-5 (2.45 - 9.42s): Extended Option-A Dark Electro Moog 16th Arp
+    //   - Bars 1-3 (steps 0..23, 2.45-5.66s): Power-on build opening filter to climax
+    //   - Bars 4-6 (steps 24..51, 5.66-9.42s): Hypnotic post-reveal groove slowly closing filter & fading out!
+    // -------------------------------------------------------------------------
+    const basePattern = [
+      65.41, 65.41, 130.81, 65.41, 98.0, 65.41, 77.78, 98.0,
+      65.41, 65.41, 130.81, 65.41, 116.54, 98.0, 77.78, 65.41,
+      51.91, 51.91, 103.83, 51.91, 77.78, 98.0, 130.81, 155.56,
+      // Extended outro groove (C-minor hypnotic pulse gradually drifting into dark stillness)
+      65.41, 65.41, 130.81, 65.41, 98.0, 65.41, 77.78, 98.0,
+      65.41, 65.41, 130.81, 65.41, 98.0, 77.78, 65.41, 98.0,
+      65.41, 65.41, 98.0, 65.41, 77.78, 65.41, 65.41, 65.41,
+      65.41, 65.41, 65.41, 65.41,
+    ];
+    const step = 0.134;
+    const arpDrive = ctx.createWaveShaper();
+    arpDrive.curve = driveCurve;
+    arpDrive.connect(scoreBus);
+
+    // Reusable L/R panners (zero extra panner allocations per step!)
+    const arpPanL = ctx.createStereoPanner();
+    arpPanL.pan.setValueAtTime(-0.22, now);
+    arpPanL.connect(arpDrive);
+    const arpPanR = ctx.createStereoPanner();
+    arpPanR.pan.setValueAtTime(0.22, now);
+    arpPanR.connect(arpDrive);
+
+    for (let i = 0; i < basePattern.length; i++) {
+      const cueSec = 2.45 + i * step;
+      if (t0 + cueSec + 0.14 <= now) continue;
+      const ct = Math.max(now, t0 + cueSec);
+      const hz = basePattern[i];
+
+      const isOutro = i >= 24;
+      const buildProg = isOutro ? 1.0 : i / 23;
+      const outroFade = isOutro ? Math.pow(1.0 - (i - 24) / 28, 1.45) : 1.0;
+
+      if (i % 4 === 0 && t0 + cueSec >= now - 0.02 && outroFade > 0.16) {
+        const kickAmp = 0.35 * (0.72 + buildProg * 0.32) * outroFade;
+        this.triggerThock(ct, 138, 32.7, 0.24, kickAmp, scoreBus, 'sine');
+        this.triggerStrike(ct, 2500 + buildProg * 1100, 2.2, 0.008, (0.14 + buildProg * 0.06) * outroFade, scoreBus);
+      }
+
+      if (i >= 16 && i < 24 && t0 + cueSec >= now - 0.02) {
+        const bp = (i - 16) / 7;
+        const tickOut = makePan(i % 2 === 0 ? -0.34 : 0.34);
+        this.triggerStrike(ct, 3600 + bp * 1800, 4.2, 0.004, 0.10 + bp * 0.09, tickOut);
+      }
+
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.Q.setValueAtTime(isOutro ? 2.4 + outroFade * 1.8 : 4.2, ct);
+      const cutPeak = isOutro
+        ? 160 + outroFade * 2250 + (i % 4 === 2 ? 320 * outroFade : 0)
+        : 320 + buildProg * 2450 + (i % 4 === 2 ? 460 : 0);
+      lp.frequency.setValueAtTime(cutPeak, ct);
+      lp.frequency.exponentialRampToValueAtTime(Math.max(85, 110 * Math.max(0.7, outroFade)), ct + 0.118);
+
+      const g = ctx.createGain();
+      const peak = Math.max(0.004, 0.17 * (0.55 + buildProg * 0.55) * outroFade);
+      g.gain.setValueAtTime(0.0001, ct);
+      g.gain.linearRampToValueAtTime(peak, ct + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, ct + 0.128);
+
+      lp.connect(g);
+      g.connect(i % 2 === 0 ? arpPanL : arpPanR);
+
+      const detunes = outroFade > 0.35 ? [-6, 6] : [0];
+      for (const det of detunes) {
+        const osc = ctx.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(hz, ct);
+        if (det !== 0) osc.detune.setValueAtTime(det, ct);
+        osc.connect(lp);
+        osc.start(ct);
+        osc.stop(ct + 0.14);
+        sources.push(osc);
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // ACT 5-OUTRO (5.66 - 11.60s): Resolving C-Minor Dark Synth Bed Slowly Fading Out!
+    // -------------------------------------------------------------------------
+    if (t0 + 11.6 > now) {
+      const tRes = Math.max(now, t0 + 5.66);
+      const holdT = Math.max(tRes + 0.25, t0 + 7.30);
+      const endT = Math.max(holdT + 0.80, t0 + 11.60);
+
+      if (t0 + 5.66 >= now - 0.03) {
+        this.triggerThock(tRes, 132, 32.7, 0.52, 0.44, scoreBus, 'sine');
+      }
+
+      const rDrive = ctx.createWaveShaper();
+      rDrive.curve = driveCurve;
+      const rLp = ctx.createBiquadFilter();
+      rLp.type = 'lowpass';
+      rLp.Q.setValueAtTime(1.3, tRes);
+      rLp.frequency.setValueAtTime(1650, tRes);
+      rLp.frequency.exponentialRampToValueAtTime(680, holdT);
+      rLp.frequency.exponentialRampToValueAtTime(115, endT);
+
+      const rG = ctx.createGain();
+      rG.gain.setValueAtTime(0.0001, tRes);
+      rG.gain.linearRampToValueAtTime(0.24, tRes + 0.035);
+      rG.gain.linearRampToValueAtTime(0.17, holdT);
+      rG.gain.exponentialRampToValueAtTime(0.0001, endT);
+
+      rDrive.connect(rLp);
+      rLp.connect(rG);
+      rG.connect(scoreBus);
+
+      const resolveVoices: [number, number, number, OscillatorType, number][] = [
+        [32.7, 0, 0.0, 'sine', 0.48],
+        [65.41, -6, -0.35, 'sawtooth', 0.24],
+        [65.41, 6, 0.35, 'sawtooth', 0.24],
+        [98.0, 0, 0.0, 'triangle', 0.22],
+        [130.81, -4, -0.45, 'sawtooth', 0.16],
+        [130.81, 4, 0.45, 'sawtooth', 0.16],
+        [155.56, 5, 0.52, 'triangle', 0.09],
+      ];
+      for (const [hz, det, pv, type, lvl] of resolveVoices) {
+        const o = ctx.createOscillator();
+        o.type = type;
+        o.frequency.setValueAtTime(hz, tRes);
+        o.detune.setValueAtTime(det, tRes);
+        const vg = ctx.createGain();
+        vg.gain.setValueAtTime(lvl, tRes);
+        const p = ctx.createStereoPanner();
+        p.pan.setValueAtTime(pv, tRes);
+        o.connect(vg);
+        vg.connect(p);
+        p.connect(rDrive);
+        o.start(tRes);
+        o.stop(endT + 0.06);
+        sources.push(o);
+      }
+    }
+
+    // Crisp optical reticle lock (5.80s) + dual-detent Liquid Glass rail calibration (6.10s)
+    if (t0 + 5.80 >= now - 0.03) {
+      const lockT = Math.max(now, t0 + 5.80);
+      const out = this.routeOut(0, 0.85, 0.25);
+      this.triggerStrike(lockT, 4400, 3.0, 0.008, 0.28, out);
+      this.triggerStrike(lockT + 0.024, 2200, 2.2, 0.014, 0.32, out);
+      this.triggerThock(lockT + 0.024, 240, 66, 0.062, 0.32, out, 'triangle');
+    }
+
+    if (t0 + 6.10 >= now - 0.03) {
+      const hudT = Math.max(now, t0 + 6.10);
+      const out = this.routeOut(0, 0.65, 0.16);
+      this.triggerStrike(hudT, 3500, 3.6, 0.006, 0.18, out);
+      this.triggerAnalogPluck(hudT, 130.81, 950, 3.6, 0.055, 0.10, out, 'sawtooth');
+      this.triggerStrike(hudT + 0.068, 4100, 3.6, 0.006, 0.20, out);
+      this.triggerAnalogPluck(hudT + 0.068, 196.0, 1350, 3.6, 0.06, 0.11, out, 'sawtooth');
+    }
+  }
+
+  /** Legacy phase hook kept for compatibility (cues are now sample-accurately scored in startIntroScore) */
+  public onIntroPhase(_phase: AudioIntroPhase): void {
+    // Handled with sample-accurate cinematic timing by startIntroScore()
   }
 }

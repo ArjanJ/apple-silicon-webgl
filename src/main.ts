@@ -442,19 +442,20 @@ function mountApp(): void {
 
   let introActive = false;
   let introHudAlpha = 1.0;
-  let introPhase: 'idle' | 'off' | 'power' | 'fabric' | 'cores' | 'dissolve' | 'lock' | 'hud' | 'settle' | 'done' =
-    'idle';
+  let introPhase: 'idle' | 'black' | 'title' | 'dissolve' | 'boot' | 'lock' | 'hud' | 'settle' | 'done' = 'idle';
 
   const syncIntroUi = (active: boolean, elapsed: number) => {
     introActive = active;
     if (!active) {
       if (introPhase === 'done' && introHudAlpha >= 0.999) return;
       const wasEarlySkip =
-        introPhase === 'off' ||
-        introPhase === 'power' ||
-        introPhase === 'fabric' ||
-        introPhase === 'cores' ||
-        introPhase === 'dissolve';
+        introPhase === 'black' ||
+        introPhase === 'title' ||
+        introPhase === 'dissolve' ||
+        introPhase === 'boot';
+      if (wasEarlySkip || elapsed < 6.90) {
+        audio.stopIntroScore(0.32);
+      }
       introPhase = 'done';
       introHudAlpha = 1.0;
       introTitleEl.classList.remove('visible');
@@ -466,13 +467,14 @@ function mountApp(): void {
       return;
     }
 
-    const nextHudAlpha = elapsed < 4.45 ? 0.0 : Math.min(1.0, (elapsed - 4.45) / 0.82);
+    const nextHudAlpha = elapsed < 6.08 ? 0.0 : Math.min(1.0, (elapsed - 6.08) / 0.85);
     const alphaChanged = Math.abs(nextHudAlpha - introHudAlpha) > 0.008;
     introHudAlpha = nextHudAlpha;
 
-    if (elapsed < 0.90) {
-      if (introPhase !== 'off') {
-        introPhase = 'off';
+    if (elapsed < 0.08) {
+      if (introPhase !== 'black') {
+        introPhase = 'black';
+        audio.startIntroScore(elapsed);
         introTitleEl.classList.remove('visible', 'exiting', 'skipped');
         reticleLayer.classList.remove('intro-lock', 'engaged');
         reticleLayer.classList.add('intro-hidden');
@@ -480,50 +482,45 @@ function mountApp(): void {
         nmBracket.style.display = 'none';
         pushGlassToEngine();
       }
-    } else if (elapsed < 1.38) {
-      if (introPhase !== 'power') {
-        introPhase = 'power';
+    } else if (elapsed < 1.35) {
+      if (introPhase !== 'title') {
+        if (introPhase === 'idle') audio.startIntroScore(elapsed);
+        introPhase = 'title';
         introTitleEl.classList.remove('exiting', 'skipped');
         introTitleEl.classList.add('visible');
-        audio.onIntroPhase('power');
+        reticleLayer.classList.remove('intro-lock', 'engaged');
+        reticleLayer.classList.add('intro-hidden');
+        hudChromeEl.classList.add('intro-staging');
+        nmBracket.style.display = 'none';
+        pushGlassToEngine();
       }
     } else if (elapsed < 2.20) {
-      if (introPhase !== 'fabric') {
-        introPhase = 'fabric';
-        introTitleEl.classList.remove('exiting', 'skipped');
-        introTitleEl.classList.add('visible');
-        audio.onIntroPhase('fabric');
-      }
-    } else if (elapsed < 3.55) {
-      if (introPhase !== 'cores') {
-        introPhase = 'cores';
-        introTitleEl.classList.remove('exiting', 'skipped');
-        introTitleEl.classList.add('visible');
-        audio.onIntroPhase('cores');
-      }
-    } else if (elapsed < 4.15) {
       if (introPhase !== 'dissolve') {
         introPhase = 'dissolve';
         introTitleEl.classList.remove('visible', 'skipped');
         introTitleEl.classList.add('exiting');
       }
-    } else if (elapsed < 4.45) {
+    } else if (elapsed < 5.78) {
+      if (introPhase !== 'boot') {
+        introPhase = 'boot';
+        introTitleEl.classList.remove('visible', 'skipped');
+        introTitleEl.classList.add('exiting');
+      }
+    } else if (elapsed < 6.08) {
       if (introPhase !== 'lock') {
         introPhase = 'lock';
         introTitleEl.classList.remove('visible', 'skipped');
         introTitleEl.classList.add('exiting');
         reticleLayer.classList.remove('intro-hidden');
         reticleLayer.classList.add('intro-lock');
-        audio.onIntroPhase('lock');
       }
-    } else if (elapsed < 5.15) {
+    } else if (elapsed < 6.75) {
       if (introPhase !== 'hud') {
         introPhase = 'hud';
         reticleLayer.classList.remove('intro-hidden');
         reticleLayer.classList.add('intro-lock');
         hudChromeEl.classList.remove('intro-staging');
         syncGlassLayout();
-        audio.onIntroPhase('hud');
       }
     } else if (introPhase !== 'settle') {
       introPhase = 'settle';

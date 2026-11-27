@@ -136,8 +136,8 @@ export const MAX_ZOOM = 9.0;
 const STAGE_FLOOR_Y = [-0.598, -0.26, -0.14, -0.075, -0.35, -6.0, -6.0, -6.0, -6.0, -6.0];
 const WORLD0_GRID_STEP = WORLD1_PITCH / STAGE_RATIOS[0]; // 0.095 (exact World 1 grid pitch on World 0!)
 
-/** "Cold Boot" Powered-Off -> Staged Silicon Power-On choreography constants */
-const INTRO_DURATION = 5.4;
+/** "Cold Boot" Centered Title Card -> Chip Fade-In -> Staged Silicon Power-On choreography constants */
+const INTRO_DURATION = 7.05;
 const INTRO_START_ZOOM = -0.27;
 const INTRO_START_PITCH = 0.76;
 const INTRO_START_YAW = -0.05;
@@ -331,6 +331,8 @@ export class SiliconEngine {
   private bootGpuWake = 1.0;
   private bootAuxWake = 1.0;
   private bootActive = 0.0;
+  private deferredTexLoadsStarted = false;
+  private pendingTexUploads: (() => void)[] = [];
 
   // Camera & snappy zoom state
   public zoom = HERO_ZOOM;
@@ -422,17 +424,13 @@ export class SiliconEngine {
     this.bondIbo = this.createIndexBuffer(this.bondMesh.indices);
     this.emptyVao = gl.createVertexArray()!;
 
-    // Upload instant placeholder US Quarter textures, then hot-swap 1024x1024 photographic PBR maps
+    // Upload instant placeholder US Quarter & macro PBR textures now;
+    // heavy high-res JPG decoding + Sobel/mipmap uploads start right after the intro finishes so intro stays locked at 120fps!
     const placeholder = createPlaceholderQuarterTextures();
     this.coinTex = gl.createTexture()!;
     this.coinNormTex = gl.createTexture()!;
     this.uploadQuarterTexture(this.coinTex, placeholder.albedo);
     this.uploadQuarterTexture(this.coinNormTex, placeholder.relief);
-    loadQuarterPbrTextures((pbr) => {
-      if (this.disposed) return;
-      this.uploadQuarterTexture(this.coinTex, pbr.albedo);
-      this.uploadQuarterTexture(this.coinNormTex, pbr.relief);
-    });
 
     // Build & upload Hybrid Chip PBR Texture Pack (4-layer TEXTURE_2D_ARRAY + die atlas + ABF + LPDDR5 decal + HDR studio IBL)
     const chipPack = createChipTexturePack();
@@ -440,11 +438,6 @@ export class SiliconEngine {
     this.matNormTex = gl.createTexture()!;
     this.initMaterialArrayTexture(this.matTex, chipPack.matAlbedoInit);
     this.initMaterialArrayTexture(this.matNormTex, chipPack.matReliefInit);
-    loadMacroMaterialLayers((upd) => {
-      if (this.disposed) return;
-      this.updateMaterialArrayLayer(this.matTex, upd.layer, upd.albedo.data);
-      this.updateMaterialArrayLayer(this.matNormTex, upd.layer, upd.relief.data);
-    });
 
     this.dieLithoTex = gl.createTexture()!;
     this.dieNormTex = gl.createTexture()!;
@@ -520,11 +513,32 @@ export class SiliconEngine {
       window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (prefersReducedMotion) {
       this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
+      this.kickoffDeferredHighResTextures();
     } else {
       this.startIntro();
     }
 
     this.loop();
+  }
+
+  /** Decode & upload heavy photographic macro JPGs + 1024px US Quarter maps after the intro so zero frames drop */
+  private kickoffDeferredHighResTextures(): void {
+    if (this.deferredTexLoadsStarted || this.disposed) return;
+    this.deferredTexLoadsStarted = true;
+    loadMacroMaterialLayers((upd) => {
+      if (this.disposed) return;
+      this.pendingTexUploads.push(() => {
+        this.updateMaterialArrayLayer(this.matTex, upd.layer, upd.albedo.data);
+        this.updateMaterialArrayLayer(this.matNormTex, upd.layer, upd.relief.data);
+      });
+    });
+    loadQuarterPbrTextures((pbr) => {
+      if (this.disposed) return;
+      this.pendingTexUploads.push(() => {
+        this.uploadQuarterTexture(this.coinTex, pbr.albedo);
+        this.uploadQuarterTexture(this.coinNormTex, pbr.relief);
+      });
+    });
   }
 
   private recomputeEffOffsets(): void {
@@ -1363,13 +1377,13 @@ export class SiliconEngine {
     this.yaw = INTRO_START_YAW;
     this.targetYaw = INTRO_START_YAW;
 
-    // Chip rests visibly "off" in deep blackout studio lighting, completely dead electrically
-    this.introLightSweep = 0.32;
-    this.introKeyIntensity = 0.042;
-    this.introRimBoost = 0.42;
-    this.introFogBoost = 0.032;
+    // Chip fades smoothly in from pure black while powered "off" (zero DOF stall during intro!)
+    this.introLightSweep = 0.34;
+    this.introKeyIntensity = 0.085;
+    this.introRimBoost = 0.56;
+    this.introFogBoost = 0.028;
     this.introExposure = 0.0;
-    this.introDofBoost = 0.22;
+    this.introDofBoost = 0.0;
 
     this.bootPwrRails = 0.0;
     this.bootFabricLock = 0.0;
@@ -1389,6 +1403,7 @@ export class SiliconEngine {
     this.targetZoom = this.zoom;
     this.targetYaw = this.yaw;
     this.targetPitch = this.pitch;
+    this.kickoffDeferredHighResTextures();
     this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
   }
 
@@ -2139,7 +2154,7 @@ export class SiliconEngine {
     this.smoothCamShiftY *= shiftDecay;
     this.smoothCamShiftZ *= shiftDecay;
 
-    // "Cold Boot" Powered-Off -> Staged Silicon Power-On choreography (5.4s, instantly interruptible)
+    // "Cold Boot" Title Card (0.0-1.45s) -> Dark Chip Fade-In (1.45-2.45s) -> Staged Power-On (2.45-7.05s)
     const prevZ = this.zoom;
     const prevYaw = this.yaw;
     if (this.introActive) {
@@ -2147,9 +2162,9 @@ export class SiliconEngine {
       const t = this.introElapsed;
       const progress = clamp(t / INTRO_DURATION, 0, 1);
 
-      // Starts slightly pulled back so the ENTIRE chip package + 4x LPDDR5 are visible in the dark,
-      // then slowly pushes forward into the hero framing as the silicon powers up!
-      const uCam = this.smootherstep(1.05, 5.15, t);
+      // Pure black during centered title card (0.0-1.45s), then entire dormant chip fades in wide (-0.27),
+      // then glides smoothly into hero framing (0.0) as the silicon powers up!
+      const uCam = this.smootherstep(2.55, 6.75, t);
       this.yaw = INTRO_START_YAW + (HERO_YAW - INTRO_START_YAW) * uCam;
       this.pitch = INTRO_START_PITCH + (HERO_PITCH - INTRO_START_PITCH) * uCam;
       this.zoom = INTRO_START_ZOOM + (HERO_ZOOM - INTRO_START_ZOOM) * uCam;
@@ -2157,31 +2172,31 @@ export class SiliconEngine {
       this.targetPitch = this.pitch;
       this.targetZoom = this.zoom;
 
-      // Deep blackout start (0.0 -> 0.90s), stays dark while power rails & fabric blaze through shadow,
-      // then sweeps the overhead cleanroom softbox dramatically open as the core arrays wake!
-      const fadeInOff = this.smoothstep(0.0, 0.55, t) * 0.68;
-      const earlyHint = this.smootherstep(0.95, 2.65, t) * 0.11;
-      const studioReveal = this.smootherstep(2.35, 4.65, t);
-      this.introExposure = fadeInOff + 0.32 * this.smootherstep(1.25, 4.45, t);
-      this.introLightSweep = 0.32 + 0.68 * this.smootherstep(1.40, 4.75, t);
-      this.introKeyIntensity = 0.042 + earlyHint + (1.0 - 0.042 - 0.11) * studioReveal;
-      this.introRimBoost = 0.42 + 0.58 * this.smootherstep(1.20, 4.20, t);
-      this.introFogBoost = 0.032 * (1.0 - this.smootherstep(2.15, 4.55, t));
-      this.introDofBoost = 0.22 * (1.0 - this.smootherstep(2.10, 4.60, t));
+      // Stay pure #000 while centered title card holds, then silky fade-in of the entire unpowered chip (1.45 -> 2.38s),
+      // then sweep the overhead cleanroom softbox open as the core arrays wake!
+      const fadeInOff = this.smootherstep(1.45, 2.38, t) * 0.78;
+      const earlyHint = this.smootherstep(2.50, 4.20, t) * 0.10;
+      const studioReveal = this.smootherstep(3.90, 6.25, t);
+      this.introExposure = fadeInOff + 0.22 * this.smootherstep(2.80, 6.05, t);
+      this.introLightSweep = 0.34 + 0.66 * this.smootherstep(2.95, 6.35, t);
+      this.introKeyIntensity = 0.085 + earlyHint + (1.0 - 0.085 - 0.10) * studioReveal;
+      this.introRimBoost = 0.56 + 0.44 * this.smootherstep(2.75, 5.75, t);
+      this.introFogBoost = 0.028 * (1.0 - this.smootherstep(3.70, 6.15, t));
+      this.introDofBoost = 0.0;
 
-      // Staged hardware power-on sequence (completely dark & dead 0.0 -> 0.90s):
-      //   Stage 1 (0.90-1.68s): V_DD perimeter MLCC decoupling caps & ABF power rails blaze amber
-      //   Stage 2 (1.38-2.25s): Coherent fabric spines & 48 MB SLC clock-lock outward from center
-      //   Stage 3 (1.85-2.78s): 45° ABF escape buses train all 4x LPDDR5 Unified Memory packages
-      //   Stage 4 (2.20-4.05s): E-Cores (Boot ROM) -> P-Cores P0..P7 -> GPU Array -> ANE / Media / I/O PHY
-      this.bootPwrRails = clamp((t - 0.90) / 0.78, 0, 1);
-      this.bootFabricLock = clamp((t - 1.38) / 0.87, 0, 1);
-      this.bootMemTrain = clamp((t - 1.85) / 0.93, 0, 1);
-      this.bootEcoreWake = clamp((t - 2.20) / 0.64, 0, 1);
-      this.bootPcoreWake = clamp((t - 2.48) / 0.98, 0, 1);
-      this.bootGpuWake = clamp((t - 2.88) / 0.92, 0, 1);
-      this.bootAuxWake = clamp((t - 3.22) / 0.80, 0, 1);
-      this.bootActive = 1.0 - this.smootherstep(4.25, 5.20, t);
+      // Staged hardware power-on sequence (begins at 2.45s once the entire unpowered chip has faded in!):
+      //   Stage 1 (2.45-3.25s): V_DD perimeter MLCC decoupling caps & ABF power rails blaze amber
+      //   Stage 2 (2.95-3.82s): Coherent fabric spines & 48 MB SLC clock-lock outward from center
+      //   Stage 3 (3.42-4.35s): 45° ABF escape buses train all 4x LPDDR5 Unified Memory packages
+      //   Stage 4 (3.78-5.65s): E-Cores (Boot ROM) -> P-Cores P0..P7 -> GPU Array -> ANE / Media / I/O PHY
+      this.bootPwrRails = clamp((t - 2.45) / 0.80, 0, 1);
+      this.bootFabricLock = clamp((t - 2.95) / 0.87, 0, 1);
+      this.bootMemTrain = clamp((t - 3.42) / 0.93, 0, 1);
+      this.bootEcoreWake = clamp((t - 3.78) / 0.64, 0, 1);
+      this.bootPcoreWake = clamp((t - 4.06) / 0.98, 0, 1);
+      this.bootGpuWake = clamp((t - 4.46) / 0.92, 0, 1);
+      this.bootAuxWake = clamp((t - 4.80) / 0.80, 0, 1);
+      this.bootActive = 1.0 - this.smootherstep(5.85, 6.85, t);
 
       if (t >= INTRO_DURATION) {
         this.introActive = false;
@@ -2202,11 +2217,17 @@ export class SiliconEngine {
         this.bootGpuWake = 1.0;
         this.bootAuxWake = 1.0;
         this.bootActive = 0.0;
+        this.kickoffDeferredHighResTextures();
         this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
       } else {
         this.hooks.onIntroFrame?.({ active: true, progress, elapsed: t });
       }
     } else {
+      // Flush at most 1 deferred high-res photographic texture upload per frame (zero micro-stutter!)
+      if (this.pendingTexUploads.length > 0) {
+        const upload = this.pendingTexUploads.shift();
+        upload?.();
+      }
       // Smoothly settle any interrupted intro lighting/boot rails back to live steady state (zero harsh snap on skip!)
       const settle = 1 - Math.exp(-8.5 * dt);
       this.introLightSweep += (1.0 - this.introLightSweep) * settle;
