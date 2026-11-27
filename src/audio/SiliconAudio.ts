@@ -1187,7 +1187,7 @@ export class SiliconAudio {
     motion: number,
     _interacting: boolean,
     _yawVel = 0,
-    _regionKind = 0,
+    regionKind = 0,
     introActive = false
   ): void {
     const nowMs = performance.now();
@@ -1212,11 +1212,13 @@ export class SiliconAudio {
       return;
     }
 
-    // Gently breathe the background loop filter with magnification depth (warm on die -> luminous at atom/quarks)
-    if (this.bgmFilter && Math.abs(this.depthNorm - this.lastFilterDepth) > 0.015) {
-      this.lastFilterDepth = this.depthNorm;
-      const targetCutoff = vibe.bgmFilterBaseHz + this.depthNorm * vibe.bgmFilterSpanHz;
-      this.bgmFilter.frequency.setTargetAtTime(targetCutoff, this.ctx.currentTime, 0.25);
+    // Gently breathe the background loop filter with magnification depth & architectural domain (Logic/SRAM/GPU/DRAM)
+    const regionOffsetHz = regionKind === 3 ? -95 : regionKind === 2 ? 175 : regionKind === 1 ? 105 : 0;
+    const regionKey = this.depthNorm + regionKind * 0.04;
+    if (this.bgmFilter && Math.abs(regionKey - this.lastFilterDepth) > 0.015) {
+      this.lastFilterDepth = regionKey;
+      const targetCutoff = Math.max(180, vibe.bgmFilterBaseHz + this.depthNorm * vibe.bgmFilterSpanHz + regionOffsetHz);
+      this.bgmFilter.frequency.setTargetAtTime(targetCutoff, this.ctx.currentTime, 0.28);
     }
 
     // 1) Precision focus-ring micro-detents while zooming (calm, damped Leica-ring feel)

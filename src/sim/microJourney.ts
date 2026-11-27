@@ -94,6 +94,92 @@ export interface OpticalScaleInput {
   fovHeightFm: number;
 }
 
+export interface ScaleBadgeContext {
+  domain?: 'logic' | 'sram' | 'gpu' | 'dram';
+  gatePolarity?: 'nmos' | 'pmos';
+  nucleonIsProton?: boolean;
+}
+
+function getDomainBadgeOverride(
+  center: number,
+  ctx?: ScaleBadgeContext
+): { label: string; analogy: string } | null {
+  if (!ctx) return null;
+  const dom = ctx.domain ?? 'logic';
+  if (dom === 'dram') {
+    if (center === 1.0) {
+      return {
+        label: '134 µm FOV · LPDDR5 Bank Groups & RDL DQ Redistribution',
+        analogy: '512-bit on-package memory bus bonded directly beside the logic die',
+      };
+    }
+    if (center === 2.0) {
+      return {
+        label: '8.9 µm FOV · LPDDR5 Subarray Bitlines, Wordlines & Sense Amps',
+        analogy: 'Orthogonal crosspoint matrix detecting millivolt capacitor charges',
+      };
+    }
+    if (center === 3.0) {
+      return {
+        label: '990 nm FOV · 1T1C High-Aspect Cylinder Capacitor Matrix',
+        analogy: 'Billions of microscopic vertical capacitors store every bit as trapped charge',
+      };
+    }
+    if (center === 4.0) {
+      return {
+        label: '124 nm FOV · 1T1C TiN / HfO₂-ZrO₂ Cylinder Capacitor & Access FET',
+        analogy: 'Each high-k cylinder traps ~20,000 electrons to represent a binary 1',
+      };
+    }
+    if (center === 5.0) {
+      return {
+        label: '15.5 nm FOV · Buried-Gate Access Transistor & Storage Node Junction',
+        analogy: 'Switches charge between the silicon channel and high-k storage cylinder',
+      };
+    }
+  } else if (dom === 'sram') {
+    if (center === 3.0) {
+      return {
+        label: '990 nm FOV · 6T SRAM Bitcell Sub-Array · Wordlines & Bitlines',
+        analogy: 'Six transistors per bit hold coherent cache state without refresh',
+      };
+    }
+    if (center === 4.0) {
+      return {
+        label: '124 nm FOV · Symmetric 6T SRAM Bitcell · Cross-Coupled Latch',
+        analogy: 'Paired pull-up PMOS, pull-down NMOS, and pass-gates lock each cache bit',
+      };
+    }
+  } else if (dom === 'gpu') {
+    if (center === 3.0) {
+      return {
+        label: '990 nm FOV · GPU SIMD / TBDR Execution Lanes & Tile Memory',
+        analogy: 'Lockstep vector lanes shade millions of pixels in parallel',
+      };
+    }
+    if (center === 4.0) {
+      return {
+        label: '124 nm FOV · 4-Stack High-Drive GPU GAA Nanosheet Macro',
+        analogy: 'Four stacked silicon ribbons maximize shader switching current',
+      };
+    }
+  }
+
+  if (center === 5.0 && ctx.gatePolarity === 'pmos' && dom !== 'dram') {
+    return {
+      label: '12.7 nm PMOS Gate · Strained-SiGe S/D · 5 nm GAA Ribbon',
+      analogy: 'Compressive SiGe strain boosts hole mobility across the 5 nm channel',
+    };
+  }
+  if (center === 9.0 && ctx.nucleonIsProton === false) {
+    return {
+      label: '0.84 fm · Single Neutron · udd Color-Charge Quarks · Gluon Flux',
+      analogy: 'One up + two down quarks bound by the strong force with zero net charge',
+    };
+  }
+  return null;
+}
+
 function formatPhysicalLength(fm: number): string {
   const fmt = (v: number) => (v >= 10 || Math.abs(v - Math.round(v)) < 1e-4 ? `${Math.round(v)}` : v.toFixed(1));
   if (fm >= 1e14) return `${fmt(fm / 1e13)} cm`;
@@ -161,7 +247,8 @@ function estimateOpticalScale(z: number): OpticalScaleInput {
 
 export function formatMagnification(
   uZoom: number,
-  optical?: OpticalScaleInput
+  optical?: OpticalScaleInput,
+  context?: ScaleBadgeContext
 ): {
   magText: string;
   sizeText: string;
@@ -209,8 +296,9 @@ export function formatMagnification(
       const b = SCALE_BADGES[i];
       const dist = Math.abs(z - b.center);
       if (dist < b.half) {
-        bracketText = b.label;
-        bracketAnalogy = b.analogy;
+        const ov = getDomainBadgeOverride(b.center, context);
+        bracketText = ov ? ov.label : b.label;
+        bracketAnalogy = ov ? ov.analogy : b.analogy;
         bracketOpacity = Math.max(0, Math.min(1, (b.half - dist) / (b.half * 0.55)));
         break;
       }

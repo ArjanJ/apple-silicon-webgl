@@ -1,5 +1,31 @@
 import { LiveMacTelemetry } from '../sim/macTelemetry';
-import { DEFAULT_DIE_SPEC, DieFloorplanSpec, QUARTER_RADIUS, QUARTER_X, QUARTER_Z } from './worlds';
+import {
+  DEFAULT_DIE_SPEC,
+  DieFloorplanSpec,
+  QUARTER_RADIUS,
+  QUARTER_X,
+  QUARTER_Z,
+  WORLD0_DIE_CLAMP_X,
+  WORLD0_DIE_CLAMP_Z,
+  WORLD0_RAM_MAX_X,
+  WORLD0_RAM_MAX_Z,
+  WORLD0_RAM_MIN_X,
+  WORLD0_RAM_MIN_Z,
+  WORLD0_RAM_SURFACE_Y,
+} from './worlds';
+
+export type MicroDomain = 'logic' | 'sram' | 'gpu' | 'dram';
+
+export interface DieLocationInfo {
+  domain: MicroDomain;
+  /** 0 = Logic/CPU, 1 = 6T SRAM/SLC, 2 = GPU, 3 = LPDDR5 DRAM */
+  regionKind: 0 | 1 | 2 | 3;
+  blockId: string;
+  shortLabel: string;
+  telemetryKind: 'pcore' | 'ecore' | 'gpu' | 'mem' | 'net' | 'ane' | 'slc';
+  pCoreIndex: number;
+  surfaceY: number;
+}
 
 export interface DieInspectHit {
   id: string;
@@ -7,20 +33,187 @@ export interface DieInspectHit {
   box: [number, number, number, number];
   /** Target zoom level when user clicks "Dive Inside" */
   diveZoom: number;
-  /** Region architecture kind for micro-scale context (0 = logic, 1 = SRAM/cache, 2 = GPU) */
-  regionKind: 0 | 1 | 2;
+  /** Region architecture kind for micro-scale context (0 = logic, 1 = SRAM/cache, 2 = GPU, 3 = LPDDR5 DRAM) */
+  regionKind: 0 | 1 | 2 | 3;
   title: (t: LiveMacTelemetry) => string;
   subtitle: (t: LiveMacTelemetry) => string;
   metric: (t: LiveMacTelemetry) => string;
   detail: (t: LiveMacTelemetry) => string;
 }
 
-/** Zero-allocation fast regionKind lookup for per-frame engine use (0 = logic, 1 = SRAM/cache, 2 = GPU) */
-export function getDieRegionKind(wx: number, wz: number): 0 | 1 | 2 {
-  if (wx >= 0.50 && wx <= 2.86 && wz >= -1.88 && wz <= 0.32) return 2;
-  if (wx >= -0.36 && wx <= 0.36 && wz >= -2.18 && wz <= 2.18) return 1;
-  if (Math.abs(wx) >= 3.42 && Math.abs(wx) <= 5.02 && Math.abs(wz) <= 2.48) return 1;
+function clampVal(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+/** True when a World-0 XZ point lies over a zoomable silicon die or LPDDR5 memory package */
+export function isWorld0Zoomable(wx: number, wz: number): boolean {
+  if (Math.abs(wx) <= 3.12 && Math.abs(wz) <= 2.52) return true;
+  if (Math.abs(wx) >= 3.30 && Math.abs(wx) <= 5.12 && Math.abs(wz) <= 2.54) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Clamp any World-0 XZ coordinate into the nearest valid zoomable target:
+ * either the monolithic Apple Silicon logic die OR any of the 4 flanking LPDDR5 Unified Memory packages.
+ */
+export function clampWorld0Target(wx: number, wz: number, out?: [number, number]): [number, number] {
+  let tx: number;
+  let tz: number;
+  if (Math.abs(wx) >= 3.24 && Math.abs(wz) <= 2.68) {
+    const side = wx < 0 ? -1 : 1;
+    const row = wz < 0 ? -1 : 1;
+    tx = side * clampVal(Math.abs(wx), WORLD0_RAM_MIN_X, WORLD0_RAM_MAX_X);
+    tz = row * clampVal(Math.abs(wz), WORLD0_RAM_MIN_Z, WORLD0_RAM_MAX_Z);
+  } else {
+    tx = clampVal(wx, -WORLD0_DIE_CLAMP_X, WORLD0_DIE_CLAMP_X);
+    tz = clampVal(wz, -WORLD0_DIE_CLAMP_Z, WORLD0_DIE_CLAMP_Z);
+  }
+  if (out) {
+    out[0] = tx;
+    out[1] = tz;
+    return out;
+  }
+  return [tx, tz];
+}
+
+/** Zero-allocation fast regionKind lookup for per-frame engine use (0 = logic, 1 = SRAM/SLC, 2 = GPU, 3 = LPDDR5 DRAM) */
+export function getDieRegionKind(wx: number, wz: number): 0 | 1 | 2 | 3 {
+  if (Math.abs(wx) >= 3.30 && Math.abs(wx) <= 5.10 && Math.abs(wz) <= 2.56) return 3;
+  if (wx >= 0.50 && wx <= 2.94 && wz >= -1.96 && wz <= 0.34) return 2;
+  if (wx >= -0.38 && wx <= 0.38 && wz >= -2.30 && wz <= 2.30) return 1;
   return 0;
+}
+
+/**
+ * Resolve exact functional block, micro-architecture domain, surface elevation, and telemetry channel
+ * for any World-0 XZ anchor. Reuses `out` for zero GC per frame.
+ */
+export function resolveDieLocation(
+  wx: number,
+  wz: number,
+  spec: DieFloorplanSpec = DEFAULT_DIE_SPEC,
+  out?: DieLocationInfo
+): DieLocationInfo {
+  const res: DieLocationInfo = out ?? {
+    domain: 'logic',
+    regionKind: 0,
+    blockId: 'die',
+    shortLabel: 'Logic Die',
+    telemetryKind: 'pcore',
+    pCoreIndex: -1,
+    surfaceY: 0,
+  };
+
+  // 1) Flanking 4x LPDDR5 Unified Memory Packages
+  if (Math.abs(wx) >= 3.30 && Math.abs(wx) <= 5.10 && Math.abs(wz) <= 2.56) {
+    const side = wx < 0 ? 'L' : 'R';
+    const row = wz < 0 ? '1' : '2';
+    res.domain = 'dram';
+    res.regionKind = 3;
+    res.blockId = `ram-${wx < 0 ? 'l' : 'r'}-${wz < 0 ? 't' : 'b'}`;
+    res.shortLabel = `LPDDR5 ${side}${row}`;
+    res.telemetryKind = 'mem';
+    res.pCoreIndex = -1;
+    res.surfaceY = WORLD0_RAM_SURFACE_Y;
+    return res;
+  }
+
+  res.surfaceY = 0.0;
+
+  // 2) Center Spine: System-Level Cache (6T SRAM)
+  if (wx >= -0.38 && wx <= 0.38 && wz >= -2.30 && wz <= 2.30) {
+    res.domain = 'sram';
+    res.regionKind = 1;
+    res.blockId = 'slc';
+    res.shortLabel = 'SLC 6T SRAM';
+    res.telemetryKind = 'slc';
+    res.pCoreIndex = -1;
+    return res;
+  }
+
+  // 3) Top-Right: GPU Core Array
+  if (wx >= 0.44 && wx <= 2.98 && wz >= -2.10 && wz <= 0.36) {
+    res.domain = 'gpu';
+    res.regionKind = 2;
+    res.blockId = 'gpu';
+    res.shortLabel = 'GPU Array';
+    res.telemetryKind = 'gpu';
+    res.pCoreIndex = -1;
+    return res;
+  }
+
+  // 4) Top-Left: Individual Performance Cores (P0..P11)
+  const pCount = Math.max(2, Math.min(12, spec.pCores || 8));
+  const pRowsN = pCount <= 4 ? 1 : 2;
+  const pColsN = Math.ceil(pCount / pRowsN);
+  const pStepX = 2.48 / pColsN;
+  const pStepZ = 1.68 / pRowsN;
+  if (wx <= -0.38 && wz <= 0.02) {
+    const col = clampVal(Math.floor((wx - (-1.68 - 1.24)) / pStepX), 0, pColsN - 1);
+    const row = clampVal(Math.floor((wz - (-1.04 - 0.84)) / pStepZ), 0, pRowsN - 1);
+    const pIdx = Math.min(pCount - 1, row * pColsN + col);
+    res.domain = 'logic';
+    res.regionKind = 0;
+    res.blockId = `pcore-${pIdx}`;
+    res.shortLabel = `P-Core P${pIdx}`;
+    res.telemetryKind = 'pcore';
+    res.pCoreIndex = pIdx;
+    return res;
+  }
+
+  // 5) Mid-Left: Efficiency Core Cluster
+  if (wx <= -0.38 && wz > 0.02 && wz <= 1.12) {
+    res.domain = 'logic';
+    res.regionKind = 0;
+    res.blockId = 'ecores';
+    res.shortLabel = 'E-Core Cluster';
+    res.telemetryKind = 'ecore';
+    res.pCoreIndex = -1;
+    return res;
+  }
+
+  // 6) Bottom-Left: I/O & Thunderbolt 4 PHY
+  if (wx <= -0.38 && wz > 1.12) {
+    res.domain = 'logic';
+    res.regionKind = 0;
+    res.blockId = 'io-phy';
+    res.shortLabel = 'I/O & TB4 PHY';
+    res.telemetryKind = 'net';
+    res.pCoreIndex = -1;
+    return res;
+  }
+
+  // 7) Mid-Right: 16-Core Neural Engine
+  if (wx >= 0.38 && wz > 0.36 && wz <= 1.48) {
+    res.domain = 'logic';
+    res.regionKind = 0;
+    res.blockId = 'ane';
+    res.shortLabel = 'Neural Engine';
+    res.telemetryKind = 'ane';
+    res.pCoreIndex = -1;
+    return res;
+  }
+
+  // 8) Bottom-Right: Display & ProRes Media Engine
+  if (wx >= 0.38 && wz > 1.48) {
+    res.domain = 'logic';
+    res.regionKind = 0;
+    res.blockId = 'media';
+    res.shortLabel = 'Media Engine';
+    res.telemetryKind = 'gpu';
+    res.pCoreIndex = -1;
+    return res;
+  }
+
+  res.domain = 'logic';
+  res.regionKind = 0;
+  res.blockId = 'die';
+  res.shortLabel = 'Silicon Die';
+  res.telemetryKind = 'pcore';
+  res.pCoreIndex = -1;
+  return res;
 }
 
 /**
@@ -88,7 +281,7 @@ export function pickDieRegion(
     return {
       id: 'gpu',
       box: [1.68, -0.78, 1.18, 1.10],
-      diveZoom: 2.0,
+      diveZoom: 3.0,
       regionKind: 2,
       title: (t) => `${t.gpuCores}-Core Apple GPU`,
       subtitle: () => 'Tile-Based Deferred Rendering (TBDR) Array',
@@ -119,7 +312,7 @@ export function pickDieRegion(
     return {
       id: 'slc',
       box: [0.0, 0.0, 0.35, 2.16],
-      diveZoom: 1.0,
+      diveZoom: 3.0,
       regionKind: 1,
       title: () => 'System-Level Cache (SLC)',
       subtitle: () => '6T SRAM Coherent Interconnect Fabric',
@@ -136,13 +329,13 @@ export function pickDieRegion(
     return {
       id: `ram-${side < 0 ? 'l' : 'r'}-${row < 0 ? 't' : 'b'}`,
       box: [side * 4.22, row * 1.28, 0.79, 1.17],
-      diveZoom: 1.0,
-      regionKind: 1,
+      diveZoom: 3.0,
+      regionKind: 3,
       title: (t) => `${t.memTotalGB} GB Unified Memory`,
       subtitle: () => '512-bit LPDDR5 On-Package DRAM (1T1C)',
       metric: (t) => `${t.memUsedGB.toFixed(1)} / ${t.memTotalGB} GB Used · ${t.memBandwidthGBs ?? 400} GB/s Bus`,
       detail: () =>
-        'Four LPDDR5 DRAM packages bonded directly beside the logic die on the organic interposer for zero-copy CPU/GPU unified address space.',
+        'Four LPDDR5 DRAM packages bonded directly beside the logic die on the organic interposer — dive inside to see 1T1C high-k cylinder capacitors.',
     };
   }
 

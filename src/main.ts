@@ -6,8 +6,8 @@ import {
   MusicVibeId,
   SiliconAudio,
 } from './audio/SiliconAudio';
-import { DieInspectHit } from './engine/inspect';
-import { SiliconEngine } from './engine/SiliconEngine';
+import { DieInspectHit, MicroDomain } from './engine/inspect';
+import { EngineLocationState, SiliconEngine } from './engine/SiliconEngine';
 import { BrowserTelemetrySource } from './sim/browserTelemetry';
 import { BrowserWorkloadRunner, WORKLOAD_OPTIONS, WorkloadKind } from './sim/browserWorkloads';
 import { applyChipPreset, CHIP_PRESETS, ChipPresetId } from './sim/chipPresets';
@@ -106,6 +106,49 @@ const ICONS = {
   tilt: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>`,
   github: `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2Z"/></svg>`,
 };
+
+function stopLabelForContext(
+  stop: ZoomStopMeta,
+  domain: MicroDomain,
+  nucleonIsProton: boolean
+): string {
+  if (stop.z === 9.0 && !nucleonIsProton) return 'Neutron';
+  if (domain === 'dram') {
+    if (stop.z === 1.0) return 'Banks';
+    if (stop.z === 2.0) return 'Subarray';
+    if (stop.z === 3.0) return '1T1C';
+    if (stop.z === 4.0) return 'Capacitor';
+    if (stop.z === 5.0) return 'Junction';
+  } else if (domain === 'sram') {
+    if (stop.z === 3.0) return '6T Array';
+    if (stop.z === 4.0) return '6T Cell';
+  }
+  return stop.label;
+}
+
+function buildMiniMapSvg(): string {
+  return `
+    <svg id="minimap-svg" class="minimap-svg" viewBox="-5.55 -3.55 11.10 7.10" role="img" aria-label="Silicon package position map (click or drag to pan)">
+      <rect class="minimap-pkg" x="-5.42" y="-3.44" width="10.84" height="6.88" rx="0.32" />
+      <rect class="minimap-ram" x="-4.98" y="-2.42" width="1.52" height="2.28" rx="0.14" />
+      <rect class="minimap-ram" x="-4.98" y="0.14" width="1.52" height="2.28" rx="0.14" />
+      <rect class="minimap-ram" x="3.46" y="-2.42" width="1.52" height="2.28" rx="0.14" />
+      <rect class="minimap-ram" x="3.46" y="0.14" width="1.52" height="2.28" rx="0.14" />
+      <rect class="minimap-die" x="-3.06" y="-2.48" width="6.12" height="4.96" rx="0.16" />
+      <rect class="minimap-blk" x="-2.90" y="-1.88" width="2.44" height="1.68" rx="0.08" />
+      <rect class="minimap-blk" x="-2.90" y="0.06" width="2.44" height="0.92" rx="0.08" />
+      <rect class="minimap-blk" x="-2.76" y="1.28" width="2.16" height="0.82" rx="0.08" />
+      <rect class="minimap-blk slc" x="-0.32" y="-2.12" width="0.64" height="4.24" rx="0.08" />
+      <rect class="minimap-blk gpu" x="0.52" y="-1.86" width="2.32" height="2.16" rx="0.08" />
+      <rect class="minimap-blk" x="0.56" y="0.48" width="2.24" height="0.92" rx="0.08" />
+      <rect class="minimap-blk" x="0.56" y="1.58" width="2.24" height="0.56" rx="0.08" />
+      <g id="minimap-reticle" transform="translate(0 0)">
+        <circle class="minimap-dot-ring" r="0.54" />
+        <circle class="minimap-dot" r="0.22" />
+      </g>
+    </svg>
+  `;
+}
 
 function buildDepthSheetHtml(): string {
   return DEPTH_REALMS.map((realm) => {
@@ -475,6 +518,18 @@ function mountApp(): void {
           </div>
         </div>
 
+        <!-- Interactive Package Mini-Map & Location Breadcrumb (Desktop bottom-left) -->
+        <div id="die-minimap" class="die-minimap" data-domain="logic" title="Click or drag anywhere on the die or LPDDR5 RAM to pan">
+          ${buildMiniMapSvg()}
+          <div class="minimap-meta">
+            <div class="minimap-loc">
+              <span class="minimap-domain-dot" aria-hidden="true"></span>
+              <span id="minimap-loc-text">SLC 6T SRAM</span>
+            </div>
+            <div id="minimap-sub-text" class="minimap-sub">Click or Shift-drag to pan</div>
+          </div>
+        </div>
+
         <!-- Calibrated Zeiss/FEI Optical Scale Bar (Desktop bottom-right) -->
         <div id="zeiss-scale" class="zeiss-scale" aria-hidden="true">
           <div id="zeiss-scale-lbl" class="zeiss-scale-lbl">10 mm</div>
@@ -538,6 +593,11 @@ function mountApp(): void {
   const depthTileButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#depth-sheet .depth-tile'));
   const zeissScaleBarEl = document.getElementById('zeiss-scale-bar')!;
   const zeissScaleLblEl = document.getElementById('zeiss-scale-lbl')!;
+  const dieMinimapEl = document.getElementById('die-minimap')!;
+  const minimapSvgEl = document.getElementById('minimap-svg')!;
+  const minimapReticleEl = document.getElementById('minimap-reticle')!;
+  const minimapLocTextEl = document.getElementById('minimap-loc-text')!;
+  const minimapSubTextEl = document.getElementById('minimap-sub-text')!;
 
   const toolCapsuleEl = document.querySelector<HTMLElement>('.tool-capsule')!;
   const toolButtons = Array.from(toolCapsuleEl.querySelectorAll<HTMLButtonElement>('.glass-btn'));
@@ -672,6 +732,13 @@ function mountApp(): void {
   let lastFmPerCssPx = -1;
   let lastActiveStop = 1;
   let lastActiveRealm: RealmId = 'macro';
+  let lastVernierLabelSig = 'logic:1';
+  let activeVernierDomain: MicroDomain = 'logic';
+  let activeVernierProton = true;
+  let lastLocationSig = '';
+  let lastBadgeCtxSig = '';
+  let lastMinimapX = -999;
+  let lastMinimapZ = -999;
   let lastFpsUpdate = 0;
   let currentFps = 120;
 
@@ -1029,15 +1096,36 @@ function mountApp(): void {
     const nextWidths: number[] = [];
     for (let i = 0; i < ZOOM_STOPS.length; i++) {
       const st = ZOOM_STOPS[i];
+      const lbl = stopLabelForContext(st, activeVernierDomain, activeVernierProton);
       const x = originCss + st.z * vernierPitch;
-      const textW = ctx.measureText(st.label).width;
+      const textW = ctx.measureText(lbl).width;
       // Extra margin accounts for 1.15x convex magnification inside the rounded Liquid Glass pill!
       nextWidths.push(Math.max(minPillW, textW * 1.15 + padX));
-      ctx.fillText(st.label, x, wordCenterY);
+      ctx.fillText(lbl, x, wordCenterY);
     }
     vernierStopPillWidths = nextWidths;
 
     uploadVernierStripToEngine(vernierCanvas, originCss, texWidthCss);
+  };
+
+  const syncDomainStopLabels = (domain: MicroDomain, nucleonIsProton: boolean) => {
+    const labelDomain: MicroDomain = domain === 'dram' ? 'dram' : domain === 'sram' ? 'sram' : 'logic';
+    const sig = `${labelDomain}:${nucleonIsProton ? 1 : 0}`;
+    if (sig === lastVernierLabelSig) return;
+    lastVernierLabelSig = sig;
+    activeVernierDomain = labelDomain;
+    activeVernierProton = nucleonIsProton;
+
+    for (let i = 0; i < ZOOM_STOPS.length; i++) {
+      const tile = depthTileButtons[i];
+      const nameEl = tile?.querySelector('.depth-tile-name');
+      if (nameEl) {
+        nameEl.textContent = stopLabelForContext(ZOOM_STOPS[i], labelDomain, nucleonIsProton);
+      }
+    }
+    const baseH = loupeAnchor.baseH || (window.innerHeight <= 500 ? 30 : window.innerWidth <= 720 ? 38 : 34);
+    const stripH = Math.max(36, vernierStripBox.hh * 2 || 54);
+    paintVernierStripTexture(stripH, baseH);
   };
 
   const measureVernier = () => {
@@ -1160,7 +1248,16 @@ function mountApp(): void {
     inspectSub.textContent = activeInspect.subtitle(telemetry);
     inspectMetric.textContent = activeInspect.metric(telemetry);
     inspectDetail.textContent = activeInspect.detail(telemetry);
-    const stopName = ZOOM_STOPS.find((s) => Math.abs(s.z - activeInspect!.diveZoom) < 0.01)?.label ?? 'Die';
+    const stopObj = ZOOM_STOPS.find((s) => Math.abs(s.z - activeInspect!.diveZoom) < 0.01);
+    const inspectDomain: MicroDomain =
+      activeInspect.regionKind === 3
+        ? 'dram'
+        : activeInspect.regionKind === 1
+          ? 'sram'
+          : activeInspect.regionKind === 2
+            ? 'gpu'
+            : 'logic';
+    const stopName = stopObj ? stopLabelForContext(stopObj, inspectDomain, true) : 'Die';
     inspectDive.textContent = `Dive to ${stopName} →`;
 
     const wakeAction = getInspectWakeAction(activeInspect);
@@ -1369,7 +1466,7 @@ function mountApp(): void {
       audio.playDive(fromZ, toZ);
       triggerHaptic('dive');
     },
-    onZoomFrame: (z, fps, motion, interacting, yawVel, regionKind, optical) => {
+    onZoomFrame: (z, fps, motion, interacting, yawVel, regionKind, optical, loc: EngineLocationState) => {
       currentFps = fps;
       audio.updateFrame(z, motion, interacting, yawVel, regionKind, introActive);
 
@@ -1383,10 +1480,56 @@ function mountApp(): void {
         engageReticle(interacting);
       }
 
+      // Dynamically sync domain-aware Vernier & Depth Map labels (DRAM / 6T SRAM / Neutron)
+      syncDomainStopLabels(loc.domain, loc.nucleonIsProton);
+
+      // Update live Package Mini-Map & Location Breadcrumb (visible when zoomed in or panned off-center, hidden if Inspect Card is open)
+      const offCenter = Math.hypot(loc.anchorX, loc.anchorZ) > 0.25;
+      const showMinimap = !introActive && !pureView && !activeInspect && (z > 0.35 || (z > -0.35 && offCenter));
+      dieMinimapEl.classList.toggle('visible', showMinimap);
+      if (showMinimap) {
+        if (Math.abs(loc.anchorX - lastMinimapX) > 0.015 || Math.abs(loc.anchorZ - lastMinimapZ) > 0.015) {
+          lastMinimapX = loc.anchorX;
+          lastMinimapZ = loc.anchorZ;
+          minimapReticleEl.setAttribute('transform', `translate(${loc.anchorX.toFixed(2)} ${loc.anchorZ.toFixed(2)})`);
+        }
+        const pct = Math.round(loc.localLoad * 100);
+        const subText =
+          z >= 8.2
+            ? loc.nucleonIsProton
+              ? 'Proton (uud) · Click nucleon'
+              : 'Neutron (udd) · Click nucleon'
+            : z >= 7.6
+              ? loc.nucleonIsProton
+                ? '²⁸Si Nucleus · Proton locked'
+                : '²⁸Si Nucleus · Neutron locked'
+              : z >= 5.6
+                ? '(100) Si Crystal · Click atom'
+                : z >= 3.6
+                  ? loc.domain === 'dram'
+                    ? '1T1C Cylinder Capacitor'
+                    : loc.domain === 'sram'
+                      ? `6T SRAM · ${loc.gatePolarity.toUpperCase()} Gate`
+                      : `${loc.gatePolarity === 'pmos' ? 'PMOS SiGe' : 'NMOS Si:P'} GAA Gate`
+                  : loc.domain === 'dram'
+                    ? 'LPDDR5 1T1C · Drag map to pan'
+                    : loc.domain === 'sram'
+                      ? '6T SRAM Cache · Drag map to pan'
+                      : 'Click feature or drag map';
+        const locSig = `${loc.domain}|${loc.shortLabel}|${pct}|${subText}`;
+        if (locSig !== lastLocationSig) {
+          lastLocationSig = locSig;
+          dieMinimapEl.dataset.domain = loc.domain;
+          minimapLocTextEl.textContent = `${loc.shortLabel} · ${pct}%`;
+          minimapSubTextEl.textContent = subText;
+        }
+      }
+
+      const badgeCtxSig = `${loc.domain}:${loc.gatePolarity}:${loc.nucleonIsProton ? 1 : 0}`;
       const opticalChanged =
         lastFmPerCssPx <= 0 ||
         Math.abs(optical.fmPerCssPx - lastFmPerCssPx) / Math.max(1e-6, lastFmPerCssPx) > 0.002;
-      if (Math.abs(z - lastZoomRendered) < 0.0005 && !opticalChanged) {
+      if (Math.abs(z - lastZoomRendered) < 0.0005 && !opticalChanged && badgeCtxSig === lastBadgeCtxSig) {
         if (!loupeSpringSettled) {
           stepVernierLoupeSpring(now, false);
         }
@@ -1394,9 +1537,14 @@ function mountApp(): void {
       }
       lastZoomRendered = z;
       lastFmPerCssPx = optical.fmPerCssPx;
+      lastBadgeCtxSig = badgeCtxSig;
 
       const { dialDeg, bracketText, bracketAnalogy, bracketOpacity, magText, sizeText, scaleBarLabel, scaleBarPx } =
-        formatMagnification(z, optical);
+        formatMagnification(z, optical, {
+          domain: loc.domain,
+          gatePolarity: loc.gatePolarity,
+          nucleonIsProton: loc.nucleonIsProton,
+        });
       const frac = Math.max(0.015, Math.min(0.8, ((z + 1) / 10) * 0.8));
       reticleArc.setAttribute('stroke-dasharray', `${(circ * frac).toFixed(1)} ${circ.toFixed(1)}`);
       reticleDial.setAttribute('transform', `rotate(${(-dialDeg * 0.55).toFixed(2)} 270 270)`);
@@ -1799,6 +1947,48 @@ function mountApp(): void {
   window.addEventListener('touchend', unlockAudioOnGesture, { capture: true, passive: true });
   window.addEventListener('click', unlockAudioOnGesture, { capture: true });
   window.addEventListener('keydown', unlockAudioOnGesture, { capture: true });
+
+  // Wire interactive Package Mini-Map: click or drag anywhere on the silicon die or 4x LPDDR5 RAM to pan seamlessly!
+  let minimapDragging = false;
+  const panFromMinimapEvent = (ev: PointerEvent) => {
+    const r = minimapSvgEl.getBoundingClientRect();
+    if (r.width <= 1 || r.height <= 1) return;
+    const u = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+    const v = Math.max(0, Math.min(1, (ev.clientY - r.top) / r.height));
+    const wx = -5.55 + u * 11.10;
+    const wz = -3.55 + v * 7.10;
+    engine.panToWorld0(wx, wz);
+  };
+  minimapSvgEl.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0 && ev.pointerType === 'mouse') return;
+    ev.stopPropagation();
+    minimapDragging = true;
+    try {
+      minimapSvgEl.setPointerCapture(ev.pointerId);
+    } catch {
+      // ignore
+    }
+    panFromMinimapEvent(ev);
+    audio.playUiTap(true);
+  });
+  minimapSvgEl.addEventListener('pointermove', (ev) => {
+    if (!minimapDragging) return;
+    ev.stopPropagation();
+    panFromMinimapEvent(ev);
+  });
+  const endMinimapDrag = (ev: PointerEvent) => {
+    if (!minimapDragging) return;
+    minimapDragging = false;
+    try {
+      if (minimapSvgEl.hasPointerCapture(ev.pointerId)) {
+        minimapSvgEl.releasePointerCapture(ev.pointerId);
+      }
+    } catch {
+      // ignore
+    }
+  };
+  minimapSvgEl.addEventListener('pointerup', endMinimapDrag);
+  minimapSvgEl.addEventListener('pointercancel', endMinimapDrag);
 
   inspectClose.addEventListener('click', () => engine.clearInspect());
   inspectDive.addEventListener('click', () => {

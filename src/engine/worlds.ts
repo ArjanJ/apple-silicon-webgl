@@ -56,6 +56,13 @@ export interface LatticeAtomSite {
   parity: 1 | -1;
 }
 
+export interface NucleonSite {
+  x: number;
+  y: number;
+  z: number;
+  isProton: boolean;
+}
+
 export interface WorldInstances {
   boxes: Float32Array;
   boxCount: number;
@@ -68,6 +75,7 @@ export interface WorldInstances {
   bonds: Float32Array;
   bondCount: number;
   atomSites?: LatticeAtomSite[];
+  nucleonSites?: NucleonSite[];
 }
 
 class InstanceBuilder {
@@ -165,7 +173,7 @@ class InstanceBuilder {
     this.bondData.push(mx, my, mz, radius, dx, dy, dz, matId, chType, chParam, 0, 0);
   }
 
-  public finish(atomSites?: LatticeAtomSite[]): WorldInstances {
+  public finish(atomSites?: LatticeAtomSite[], nucleonSites?: NucleonSite[]): WorldInstances {
     return {
       boxes: new Float32Array(this.boxData),
       boxCount: this.boxData.length / 12,
@@ -178,6 +186,7 @@ class InstanceBuilder {
       bonds: new Float32Array(this.bondData),
       bondCount: this.bondData.length / 12,
       atomSites,
+      nucleonSites,
     };
   }
 }
@@ -208,8 +217,13 @@ export const QUARTER_HY = 0.25;
 export const QUARTER_CENTER_Y = -0.348; // Flush on World 0 ground plane (-0.598 + 0.25)
 
 /** Exact nesting aperture half-sizes & snap pitches used by SiliconEngine */
-export const WORLD0_DIE_CLAMP_X = 2.66;
-export const WORLD0_DIE_CLAMP_Z = 2.04;
+export const WORLD0_DIE_CLAMP_X = 2.88;
+export const WORLD0_DIE_CLAMP_Z = 2.28;
+export const WORLD0_RAM_MIN_X = 3.60;
+export const WORLD0_RAM_MAX_X = 4.84;
+export const WORLD0_RAM_MIN_Z = 0.28;
+export const WORLD0_RAM_MAX_Z = 2.28;
+export const WORLD0_RAM_SURFACE_Y = -0.033; // Exact top face of LPDDR5 epoxy packages (0.03 - 0.228 + 0.165)
 export const WORLD1_PITCH = 1.52;
 export const WORLD1_SPAN = 11.40;
 export const WORLD1_HOLE_HALF = 0.64;
@@ -220,7 +234,8 @@ export const WORLD3_PITCH_Z = 0.64;
 export const WORLD3_HOLE_HALF = 0.96; // 3x3 standard cells = 1.5 * 0.64 = 0.96 => x8 = 7.68!
 export const WORLD4_CELL_PITCH = 5.12; // 0.64 * 8.0 = 5.12 exact match!
 export const WORLD4_GATE_XS = [-1.04, 0.0, 1.04] as const;
-export const WORLD4_GATE_Z = 0.72; // NMOS hero nanosheet row (unobstructed +Z toward VSS rail!)
+export const WORLD4_GATE_Z = 0.72;   // NMOS hero nanosheet row (unobstructed +Z toward VSS rail!)
+export const WORLD4_PMOS_Z = -1.04;  // PMOS strained-SiGe nanosheet row (also selectable!)
 export const WORLD4_HOLE_HX = 0.48;
 export const WORLD4_HOLE_HZ = 0.24;
 export const WORLD6_LATTICE_A = 1.12;
@@ -689,25 +704,39 @@ export function buildWorld4(): WorldInstances {
       // Subtle vertical STI diffusion-break divider between adjacent cells in the row
       b.addBox(cx - 2.52, -0.14, cz, 0.06, 0.08, 2.22, 0.015, 14);
 
-      // === UPPER HALF: PMOS GAA NANOSHEET TRANSISTOR BANK (z = cz - 1.04) ===
-      // Wide flat silicon nanosheets + strained SiGe Source/Drain epi pads + 3 TiN/W GAA gates
+      // === UPPER HALF: SELECTABLE PMOS GAA NANOSHEET TRANSISTOR BANK (z = cz + WORLD4_PMOS_Z = -1.04) ===
+      // Split into 3 selectable gate segments (each ±0.48) so ANY of the 27 PMOS gates swaps cleanly for World 5 (SiGe)!
       // param = 2.0 marks PMOS (conducts holes when shared gate Vg is LOW, complementary to NMOS!)
-      const pmosZ = cz - 1.04;
-      for (const sy of sheetYs) {
-        b.addBox(cx, sy, pmosZ, 1.92, 0.026, 0.115, 0.008, 2, 14, 2.0, 0.55);
+      const pmosZ = cz + WORLD4_PMOS_Z;
+      for (const gx of WORLD4_GATE_XS) {
+        for (const sy of sheetYs) {
+          const isMid = sy === 0.0;
+          b.addBox(
+            cx + gx,
+            sy,
+            pmosZ,
+            WORLD4_HOLE_HX,
+            isMid ? 0.032 : 0.022,
+            isMid ? 0.115 : 0.095,
+            0.008,
+            2,
+            14,
+            2.0,
+            0.55
+          );
+        }
+        // SiN dielectric inner spacers flanking each PMOS gate collar
+        b.addBox(cx + gx - 0.20, 0.0, pmosZ, 0.042, 0.175, 0.145, 0.010, 14);
+        b.addBox(cx + gx + 0.20, 0.0, pmosZ, 0.042, 0.175, 0.145, 0.010, 14);
+        // Gunmetal Tungsten gate fill + bronze-slate TiN work-function cap
+        b.addBox(cx + gx, 0.02, pmosZ, 0.155, 0.20, 0.175, 0.022, 4, 13, 2);
+        b.addBox(cx + gx, 0.195, pmosZ, 0.140, 0.020, 0.145, 0.008, 3);
       }
-      // Faceted SiGe Epitaxial Source/Drain pads between gates (x = ±0.52, ±1.56)
-      for (const sdx of [-1.56, -0.52, 0.52, 1.56]) {
+      // Faceted Strained SiGe Epitaxial Source/Drain pads flanking the 3 PMOS gates (outside ±0.48 hole!)
+      for (const sdx of [-1.66, 1.66]) {
         b.addBox(cx + sdx, 0.0, pmosZ, 0.20, 0.19, 0.16, 0.032, 1, 13, 1);
         // Vertical tungsten M0 source/drain contact via rising to VDD rail
-        if (Math.abs(sdx) > 1.0) {
-          b.addBox(cx + sdx, 0.22, pmosZ - 0.62, 0.075, 0.055, 0.62, 0.016, 4);
-        }
-      }
-      // 3 Vertical TiN/Tungsten GAA Gate Pillars + SiN Inner Spacers across PMOS
-      for (const gx of WORLD4_GATE_XS) {
-        b.addBox(cx + gx, 0.02, pmosZ, 0.155, 0.20, 0.175, 0.022, 4, 13, 2); // Gunmetal Tungsten gate fill
-        b.addBox(cx + gx, 0.02, pmosZ, 0.185, 0.18, 0.155, 0.016, 14);       // Translucent SiN spacer collar
+        b.addBox(cx + sdx, 0.22, pmosZ - 0.72, 0.075, 0.055, 0.72, 0.016, 4);
       }
 
       // === CENTRAL GATE-CONNECT BRIDGE: Shared TiN/W vertical gate straps linking PMOS & NMOS ===
@@ -770,7 +799,7 @@ export function buildWorld4(): WorldInstances {
  *       * Dual-layer gate oxide: ultra-thin interfacial SiO2 (~0.5 nm) + high-k sapphire HfO2 (~1.2 nm)
  *       * Pure UNDOPED diamond-cubic Silicon crystal channel (zero bogus 7% dopants, Bloch waves on bonds!)
  */
-export function buildWorldGate3nm(): WorldInstances {
+export function buildWorldGate3nm(isPmos = false): WorldInstances {
   const b = new InstanceBuilder();
 
   // Flanking stacked wide-flat sibling nanosheets above & below (y = ±1.12, meeting World 4 at x = ±3.84)
@@ -780,9 +809,15 @@ export function buildWorldGate3nm(): WorldInstances {
     b.addBox(0, sibY, 0, 1.26, 0.21, 0.84, 0.034, 4);
   }
 
-  // Left & Right Strained Si:P Source/Drain Epitaxial Shoulders (meeting World 4 flush at x = ±3.84!)
-  b.addBox(-2.82, 0.0, 0.0, 1.02, 0.34, 0.94, 0.060, 2); // [-3.84 .. -1.80]
-  b.addBox( 2.82, 0.0, 0.0, 1.02, 0.34, 0.94, 0.060, 2); // [+1.80 .. +3.84]
+  // Left & Right Epitaxial Source/Drain Shoulders (Strained SiGe for PMOS vs Si:P for NMOS, flush at x = ±3.84!)
+  const sdMat = isPmos ? 1 : 2;
+  b.addBox(-2.82, 0.0, 0.0, 1.02, 0.34, 0.94, 0.060, sdMat); // [-3.84 .. -1.80]
+  b.addBox( 2.82, 0.0, 0.0, 1.02, 0.34, 0.94, 0.060, sdMat); // [+1.80 .. +3.84]
+  if (isPmos) {
+    // Compressive SiGe facet caps highlighting PMOS hole-mobility strain engineering
+    b.addBox(-2.82, 0.36, 0.0, 0.88, 0.055, 0.82, 0.024, 3);
+    b.addBox( 2.82, 0.36, 0.0, 0.88, 0.055, 0.82, 0.024, 3);
+  }
 
   // Silicon Nitride (SiN) Inner Dielectric Spacers insulating the metal gate from Source/Drain epi pads!
   b.addBox(-1.62, 0.0, -0.08, 0.18, 0.88, 0.96, 0.028, 14);
@@ -1185,9 +1220,8 @@ export function buildWorldNucleus(): WorldInstances {
   for (let i = 0; i < nucleons.length; i++) {
     const n = nucleons[i];
     const r = 0.34;
-    // Keep central hero Proton at (0,0,0) steady so World 9 (Quarks) stays welded to its exact center!
-    const chType = i === 0 ? 0 : 21;
-    b.addSphere(n.x, n.y, n.z, r, r, r, 0, n.isProton ? 9 : 3, chType, n.isProton ? 0.95 : 0.35, i * 1.17, n.isProton ? 1 : 0);
+    // Selected nucleon's vibration is damped smoothly in shader near uAtomHole.xyz so World 9 locks onto ANY proton or neutron!
+    b.addSphere(n.x, n.y, n.z, r, r, r, 0, n.isProton ? 9 : 3, 21, n.isProton ? 0.95 : 0.35, i * 1.17, n.isProton ? 1 : 0);
   }
 
   // Translucent Oblate Residual Strong-Force Pion-Exchange Aura enveloping the nucleus (replaces rigid sticks!)
@@ -1215,7 +1249,13 @@ export function buildWorldNucleus(): WorldInstances {
     );
   }
 
-  return b.finish();
+  const nucleonSites: NucleonSite[] = nucleons.map((n) => ({
+    x: n.x,
+    y: n.y,
+    z: n.z,
+    isProton: n.isProton,
+  }));
+  return b.finish(undefined, nucleonSites);
 }
 
 /**
@@ -1270,6 +1310,666 @@ export function buildWorldQuarks(): WorldInstances {
     const mat = k % 5 === 0 ? 11 : k % 5 === 1 ? 12 : k % 5 === 2 ? 13 : 6;
     const r = 0.022 + h4 * 0.024;
     b.addSphere(sx, sy, sz, r, r, r, 0, mat, 22, 1.15, h4, k * 0.29);
+  }
+
+  return b.finish();
+}
+
+/**
+ * WORLD 9B (QCD NEUTRON INTERIOR!): 0.84 fm Single Silicon-28 Neutron — 3 Valence Quarks (udd) + Gluon Flux Tubes (192T×)
+ *   - 1 Up quark (Red, mat 11) + 2 Down quarks (Green/Blue, mat 12 & 13) bound by Y-shaped QCD gluon flux tubes!
+ */
+export function buildWorldQuarksNeutron(): WorldInstances {
+  const b = new InstanceBuilder();
+
+  // Translucent QCD confinement bag enveloping the 0.84 fm Neutron interior (subtle warmer neutral tint)
+  b.addTranslucentSphere(0, 0, 0, 2.85, 2.85, 2.85, 0, 8, 0, 0.34, 1.4, 0);
+
+  // 3 Valence Quarks (udd): 1 Up (Red) + 2 Down (Blue & Green-Blue) in an equilateral color-neutral triangle
+  const qR = 1.18;
+  const quarks: { x: number; y: number; z: number; mat: number }[] = [
+    { x: qR * Math.cos(Math.PI / 6),             y:  0.14, z: qR * Math.sin(Math.PI / 6),             mat: 11 }, // Up (Red)
+    { x: qR * Math.cos(Math.PI / 6 + 2.094395),  y: -0.18, z: qR * Math.sin(Math.PI / 6 + 2.094395),  mat: 13 }, // Down (Blue)
+    { x: qR * Math.cos(Math.PI / 6 + 4.188790),  y:  0.04, z: qR * Math.sin(Math.PI / 6 + 4.188790),  mat: 12 }, // Down (Green)
+  ];
+
+  for (let i = 0; i < 3; i++) {
+    const q = quarks[i];
+    const sz = i === 0 ? 0.21 : 0.24; // Slightly heavier current mass for the two Down quarks
+    b.addSphere(q.x, q.y, q.z, sz, sz, sz, 0, q.mat, 21, 1.32, i * 2.3 + 0.7, 1);
+    b.addTranslucentSphere(q.x, q.y, q.z, 0.52, 0.52, 0.52, 0, 8, 0, 0.70, i * 0.37, 0);
+  }
+
+  for (let i = 0; i < 3; i++) {
+    const q = quarks[i];
+    b.addBond(0, 0, 0, q.x, q.y, q.z, 0.062, 6, 1.18, 23);
+  }
+  b.addSphere(0, 0, 0, 0.13, 0.13, 0.13, 0, 6, 21, 1.30, 1.1, 0);
+  b.addTranslucentSphere(0, 0, 0, 0.34, 0.34, 0.34, 0, 8, 0, 0.62, 0.4, 0);
+
+  for (let k = 0; k < 140; k++) {
+    const h1 = hash12(k * 2.11 + 4.7, 13.1);
+    const h2 = hash12(k * 3.89 + 1.3, 7.3);
+    const h3 = hash12(k * 5.71 + 3.9, 19.7);
+    const h4 = hash12(k * 8.43 + 2.1, 5.3);
+    const rad = Math.cbrt(h1) * 2.25;
+    const th = h2 * Math.PI * 2;
+    const cz = h3 * 2 - 1;
+    const sr = Math.sqrt(Math.max(0, 1 - cz * cz));
+    const mat = k % 5 === 0 ? 11 : k % 5 === 1 ? 12 : k % 5 === 2 ? 13 : 6;
+    const r = 0.022 + h4 * 0.024;
+    b.addSphere(Math.cos(th) * sr * rad, cz * rad, Math.sin(th) * sr * rad, r, r, r, 0, mat, 22, 1.12, h4, k * 0.31);
+  }
+
+  return b.finish();
+}
+
+/**
+ * WORLD 3 — 6T SRAM BITCELL SUB-ARRAY (System-Level Cache · 990 nm):
+ *   - Iconic mirror-symmetric 6T SRAM matrix: horizontal Tungsten Wordlines (WL),
+ *     paired vertical Copper Bitlines (BL / BLB), central VDD spine, and twin cross-coupled storage islands!
+ */
+export function buildWorld3Sram(): WorldInstances {
+  const b = new InstanceBuilder();
+
+  const pitchX = WORLD3_PITCH_X; // 0.64
+  const pitchZ = WORLD3_PITCH_Z; // 0.64
+  const R = 8;
+  const span = 5.76;
+
+  b.addBox(0, -0.11, 0, span, 0.02, span, 0.003, 0);
+  b.addBox(0, -0.075, 0, span, 0.045, span, 0.004, 5);
+
+  // Continuous horizontal Tungsten Wordlines (WL) along every row boundary + center strap
+  for (let rz = -R; rz <= R + 1; rz++) {
+    const railZ = (rz - 0.5) * pitchZ;
+    const isVdd = (rz & 1) === 0;
+    const hRow = hash12(rz * 4.13 + 3.7, 17.3);
+    b.addBox(0, 0.026, railZ, span - 0.04, 0.020, 0.026, 0.005, isVdd ? 2 : 4, 9, 5, hRow, isVdd ? 0.28 : -0.22);
+  }
+
+  // Paired vertical Copper Bitlines (BL / BLB) running down every SRAM column!
+  for (let cxI = -R; cxI <= R; cxI++) {
+    const colX = cxI * pitchX;
+    const hCol = hash12(cxI * 5.71 + 2.3, 9.1);
+    const dir = (cxI & 1) === 0 ? 1 : -1;
+    b.addBox(colX - 0.23, 0.042, 0, 0.020, 0.014, span - 0.04, 0.004, 3, 9, 2, hCol, dir * 0.42);
+    b.addBox(colX + 0.23, 0.042, 0, 0.020, 0.014, span - 0.04, 0.004, 3, 9, 2, (hCol + 0.48) % 1, -dir * 0.42);
+  }
+
+  // 17x17 Symmetric 6T SRAM Bitcells (twin bistable latch islands Q / Q-bar + 2 shared poly gates)
+  for (let iz = -R; iz <= R; iz++) {
+    for (let ix = -R; ix <= R; ix++) {
+      const cx = ix * pitchX;
+      const cz = iz * pitchZ;
+      const dist2 = ix * ix + iz * iz;
+
+      // Twin symmetric 6T active pull-down/pass-gate islands (complementary Q & Q-bar bistable state!)
+      b.addBox(cx - 0.11, 0.003, cz - 0.12, 0.095, 0.018, 0.105, 0.004, 2, 12, 2.0, ix * 2, iz);
+      b.addBox(cx + 0.11, 0.003, cz + 0.10, 0.095, 0.018, 0.105, 0.004, 2, 12, 2.5, ix * 2 + 1, iz);
+
+      // Central cross-coupled storage-node tungsten latch bar (iconic SRAM butterfly bridge)
+      b.addBox(cx, 0.020, cz - 0.01, 0.165, 0.016, 0.022, 0.004, 4);
+
+      if (dist2 <= 54) {
+        // Two symmetric pass-gate / pull-up gate electrodes + wordline tap via
+        b.addBox(cx - 0.13, 0.018, cz + 0.10, 0.020, 0.022, 0.12, 0.004, 4);
+        b.addBox(cx + 0.13, 0.018, cz - 0.12, 0.020, 0.022, 0.12, 0.004, 4);
+        b.addCyl(cx, 0.036, cz - 0.01, 0.024, 0.018, 0.005, 3);
+      }
+    }
+  }
+
+  return b.finish();
+}
+
+/**
+ * WORLD 4 — 6T SRAM BITCELL MACRO (3×3 Symmetric 6-Transistor Cells · 124 nm):
+ *   - Fits 1:8 inside World 3 SRAM (±7.68 / 8 = ±0.96) and opens cleanly into World 5 GAA Gate!
+ *   - Clearly displays paired vertical BL / BLB copper rails, horizontal Wordline (WL),
+ *     cross-coupled Q / Q̄ storage-node latches, 2 Pull-Up PMOS (upper) + 2 Pull-Down & Pass-Gate NMOS (lower)!
+ */
+export function buildWorld4Sram(): WorldInstances {
+  const b = new InstanceBuilder();
+
+  const pitch = WORLD4_CELL_PITCH; // 5.12
+  const span = 7.68;
+
+  b.addBox(0, -0.35, 0, span, 0.11, span, 0.005, 5);
+
+  // Horizontal VDD / Wordline (WL) / VSS rails along cell boundaries (matches World 3 SRAM!)
+  const railZs = [-7.68, -2.56, 2.56, 7.68];
+  for (let i = 0; i < railZs.length; i++) {
+    const isVdd = (i & 1) === 0;
+    b.addBox(0, 0.19, railZs[i], span, 0.16, 0.22, 0.038, isVdd ? 2 : 4);
+  }
+
+  // Paired vertical Copper Bitlines (BL / BLB) flanking every column of 6T cells!
+  for (let ix = -1; ix <= 1; ix++) {
+    const cx = ix * pitch;
+    b.addBox(cx - 2.12, 0.26, 0, 0.14, 0.10, span, 0.026, 3, 9, 2, (ix + 2) * 0.27, 0.42);
+    b.addBox(cx + 2.12, 0.26, 0, 0.14, 0.10, span, 0.026, 3, 9, 2, (ix + 2) * 0.27 + 0.5, -0.42);
+  }
+
+  const sheetYs = [-0.14, 0.0, 0.14];
+
+  for (let iz = -1; iz <= 1; iz++) {
+    for (let ix = -1; ix <= 1; ix++) {
+      const cx = ix * pitch;
+      const cz = iz * pitch;
+
+      // Recessed STI oxide well
+      b.addBox(cx, -0.22, cz, 1.92, 0.022, 2.24, 0.01, 0);
+
+      // === UPPER HALF: 2 PULL-UP PMOS + CENTER STORAGE NODE (z = cz + WORLD4_PMOS_Z = -1.04) ===
+      const pmosZ = cz + WORLD4_PMOS_Z;
+      for (const gx of WORLD4_GATE_XS) {
+        for (const sy of sheetYs) {
+          b.addBox(cx + gx, sy, pmosZ, WORLD4_HOLE_HX, sy === 0 ? 0.030 : 0.020, 0.10, 0.008, 2, 14, 2.0, 0.52);
+        }
+        b.addBox(cx + gx - 0.19, 0.0, pmosZ, 0.040, 0.17, 0.14, 0.010, 14);
+        b.addBox(cx + gx + 0.19, 0.0, pmosZ, 0.040, 0.17, 0.14, 0.010, 14);
+        b.addBox(cx + gx, 0.02, pmosZ, 0.15, 0.195, 0.165, 0.020, 4, 13, 2);
+        b.addBox(cx + gx, 0.19, pmosZ, 0.135, 0.020, 0.14, 0.008, 3);
+      }
+
+      // Iconic Cross-Coupled Storage-Node Tungsten Latch Straps (Q & Q̄) bridging PU ↔ PD!
+      b.addBox(cx - 0.52, 0.14, cz - 0.16, 0.62, 0.055, 0.11, 0.016, 4);
+      b.addBox(cx + 0.52, 0.14, cz - 0.16, 0.62, 0.055, 0.11, 0.016, 4);
+      b.addCyl(cx - 0.52, 0.12, cz - 0.16, 0.11, 0.12, 0.016, 3);
+      b.addCyl(cx + 0.52, 0.12, cz - 0.16, 0.11, 0.12, 0.016, 3);
+
+      // === LOWER HALF: 2 PULL-DOWN NMOS + PASS-GATE ACCESS NMOS (z = cz + WORLD4_GATE_Z = +0.72) ===
+      const nmosZ = cz + WORLD4_GATE_Z;
+      for (const gx of WORLD4_GATE_XS) {
+        for (const sy of sheetYs) {
+          b.addBox(cx + gx, sy, nmosZ, WORLD4_HOLE_HX, sy === 0 ? 0.034 : 0.022, 0.115, 0.008, 2, 14, 1.0, 0.22);
+        }
+        b.addBox(cx + gx - 0.20, 0.0, nmosZ, 0.042, 0.175, 0.145, 0.010, 14);
+        b.addBox(cx + gx + 0.20, 0.0, nmosZ, 0.042, 0.175, 0.145, 0.010, 14);
+        b.addBox(cx + gx, 0.0, nmosZ, 0.165, 0.185, 0.165, 0.022, 4, 13, 2);
+        b.addBox(cx + gx, 0.185, nmosZ, 0.145, 0.022, 0.145, 0.008, 3);
+      }
+
+      // Bitline Contact Landing Bridges connecting left/right pass-gates to BL & BLB copper rails!
+      b.addBox(cx - 1.72, 0.16, nmosZ, 0.34, 0.06, 0.14, 0.014, 3);
+      b.addBox(cx + 1.72, 0.16, nmosZ, 0.34, 0.06, 0.14, 0.014, 3);
+    }
+  }
+
+  return b.finish();
+}
+
+/**
+ * WORLD 3 — GPU SIMD / TBDR DATAPATH ROWS (Apple GPU Core Array · 990 nm):
+ *   - Ultra-regular parallel vector ALU lanes interleaved with vertical Tile-Memory SRAM strips
+ *     and heavy coalesced copper SIMD data buses!
+ */
+export function buildWorld3Gpu(): WorldInstances {
+  const b = new InstanceBuilder();
+
+  const pitchX = WORLD3_PITCH_X; // 0.64
+  const pitchZ = WORLD3_PITCH_Z; // 0.64
+  const R = 8;
+  const span = 5.76;
+
+  b.addBox(0, -0.11, 0, span, 0.02, span, 0.003, 0);
+  b.addBox(0, -0.075, 0, span, 0.045, span, 0.004, 5);
+
+  // Heavy dual-current horizontal VDD / VSS rails for wide GPU SIMD execution rows
+  for (let rz = -R; rz <= R + 1; rz++) {
+    const railZ = (rz - 0.5) * pitchZ;
+    const isVdd = (rz & 1) === 0;
+    const hRow = hash12(rz * 3.31 + 7.1, 11.9);
+    b.addBox(0, 0.026, railZ, span - 0.04, 0.024, 0.036, 0.007, isVdd ? 3 : 2, 9, 5, hRow, isVdd ? 0.38 : -0.22);
+  }
+
+  // Coalesced vertical SIMD vector data buses every 2nd column
+  for (let ix = -R; ix <= R; ix += 2) {
+    const vx = ix * pitchX - 0.29;
+    const hV = hash12(ix * 2.91 + 4.3, 19.7);
+    b.addBox(vx, 0.046, 0, 0.024, 0.016, span - 0.04, 0.004, 2, 9, 2, hV, (ix & 2) === 0 ? 0.55 : -0.55);
+  }
+
+  for (let iz = -R; iz <= R; iz++) {
+    for (let ix = -R; ix <= R; ix++) {
+      const cx = ix * pitchX;
+      const cz = iz * pitchZ;
+      const dist2 = ix * ix + iz * iz;
+      // Synchronized SIMD warp wave: cells in the same row fire in lockstep waves!
+      const warpId = Math.floor((ix + 8) / 4);
+
+      b.addBox(cx, 0.003, cz - 0.14, 0.275, 0.020, 0.068, 0.004, 2, 12, 2.0, warpId, iz);
+      b.addBox(cx, 0.003, cz + 0.10, 0.275, 0.020, 0.068, 0.004, 2, 12, 2.5, warpId, iz);
+
+      // 4 tighter high-drive parallel GPU gate stripes across active nanosheets
+      const gOffsets = dist2 <= 44 ? [-0.18, -0.06, 0.06, 0.18] : [-0.14, 0.14];
+      for (const gx of gOffsets) {
+        b.addBox(cx + gx, 0.019, cz - 0.02, 0.016, 0.024, 0.25, 0.004, 4);
+      }
+      if (dist2 <= 48) {
+        b.addBox(cx, 0.036, cz - 0.02, 0.24, 0.009, 0.030, 0.003, 3);
+      }
+    }
+  }
+
+  return b.finish();
+}
+
+/**
+ * WORLD 4 — HIGH-DRIVE GPU GAA NANOSHEET MACRO (4-Stack Wide Ribbons · 124 nm):
+ *   - 4 vertically stacked high-current silicon nanosheets + heavy twin copper M0 straps
+ *     for GPU shader/ALU peak drive current. Exact 5.12 pitch & WORLD4_GATE_XS match!
+ */
+export function buildWorld4Gpu(): WorldInstances {
+  const b = new InstanceBuilder();
+
+  const pitch = WORLD4_CELL_PITCH; // 5.12
+  const span = 7.68;
+
+  b.addBox(0, -0.35, 0, span, 0.11, span, 0.005, 5);
+
+  const railZs = [-7.68, -2.56, 2.56, 7.68];
+  for (let i = 0; i < railZs.length; i++) {
+    const isVdd = (i & 1) === 0;
+    b.addBox(0, 0.21, railZs[i], span, 0.19, 0.28, 0.044, isVdd ? 3 : 2);
+  }
+
+  // 4-stack high-drive GPU GAA nanosheets (center sheet at y=0 aligns with World 5!)
+  const sheetYs = [-0.16, -0.055, 0.055, 0.16];
+
+  for (let iz = -1; iz <= 1; iz++) {
+    for (let ix = -1; ix <= 1; ix++) {
+      const cx = ix * pitch;
+      const cz = iz * pitch;
+
+      b.addBox(cx, -0.22, cz, 2.48, 0.022, 2.24, 0.01, 0);
+      b.addBox(cx - 2.52, -0.14, cz, 0.06, 0.08, 2.22, 0.015, 14);
+
+      const pmosZ = cz + WORLD4_PMOS_Z;
+      for (const gx of WORLD4_GATE_XS) {
+        for (const sy of sheetYs) {
+          b.addBox(cx + gx, sy, pmosZ, WORLD4_HOLE_HX, 0.020, 0.135, 0.007, 2, 14, 2.0, 0.55);
+        }
+        b.addBox(cx + gx - 0.20, 0.0, pmosZ, 0.042, 0.20, 0.165, 0.010, 14);
+        b.addBox(cx + gx + 0.20, 0.0, pmosZ, 0.042, 0.20, 0.165, 0.010, 14);
+        b.addBox(cx + gx, 0.02, pmosZ, 0.165, 0.22, 0.195, 0.022, 4, 13, 2);
+        b.addBox(cx + gx, 0.225, pmosZ, 0.15, 0.024, 0.165, 0.008, 3);
+      }
+
+      // Twin high-bandwidth SIMD gate interconnect straps
+      for (const gx of WORLD4_GATE_XS) {
+        b.addBox(cx + gx, 0.14, cz - 0.16, 0.11, 0.072, 0.72, 0.018, 4);
+      }
+
+      const nmosZ = cz + WORLD4_GATE_Z;
+      for (const gx of WORLD4_GATE_XS) {
+        for (const sy of sheetYs) {
+          b.addBox(cx + gx, sy, nmosZ, WORLD4_HOLE_HX, 0.022, 0.135, 0.007, 2, 14, 1.0, 0.20);
+        }
+        b.addBox(cx + gx - 0.20, 0.0, nmosZ, 0.042, 0.20, 0.165, 0.010, 14);
+        b.addBox(cx + gx + 0.20, 0.0, nmosZ, 0.042, 0.20, 0.165, 0.010, 14);
+        b.addBox(cx + gx, 0.0, nmosZ, 0.175, 0.215, 0.195, 0.022, 4, 13, 2);
+        b.addBox(cx + gx, 0.215, nmosZ, 0.155, 0.024, 0.165, 0.008, 3);
+      }
+
+      for (const sdx of [-1.66, 1.66]) {
+        b.addBox(cx + sdx, 0.0, pmosZ, 0.22, 0.21, 0.18, 0.032, 1, 13, 1);
+        b.addBox(cx + sdx, 0.24, pmosZ - 0.72, 0.095, 0.065, 0.72, 0.016, 3);
+        b.addBox(cx + sdx, 0.0, nmosZ, 0.22, 0.21, 0.18, 0.032, 2);
+        b.addBox(cx + sdx, 0.24, nmosZ + 0.88, 0.095, 0.065, 0.84, 0.016, 3);
+      }
+    }
+  }
+
+  return b.finish();
+}
+
+/**
+ * WORLD 1 — LPDDR5 DRAM BANK GROUPS & RDL REDISTRIBUTION GRID (134 µm):
+ *   - Off-die Unified Memory top layer: dense regular DRAM subarray mats separated by
+ *     Sense-Amplifier & Row-Decoder spines, crossed by wide aluminum/copper RDL DQ buses & micro-bumps!
+ */
+export function buildWorld1Dram(): WorldInstances {
+  const b = new InstanceBuilder();
+
+  const pitch = WORLD1_PITCH; // 1.52
+  const R = 7;
+  const span = WORLD1_SPAN; // 11.40
+
+  b.addBox(0, -0.24, 0, span, 0.03, span, 0.004, 0);
+  b.addBox(0, -0.12, 0, span, 0.07, span, 0.005, 0);
+
+  for (let tz = -R; tz <= R; tz++) {
+    for (let tx = -R; tx <= R; tx++) {
+      const cx = tx * pitch;
+      const cz = tz * pitch;
+      const h = hash12(tx + 31.7, tz + 13.1);
+      const dist2 = tx * tx + tz * tz;
+
+      // Dark sapphire-tinted DRAM subarray mat tile
+      b.addBox(cx, 0.015, cz, 0.62, 0.032, 0.62, 0.010, 9, 10, h, 0.45);
+
+      // Regular 2x2 DRAM sub-mat blocks + central sense-amplifier stripe inside every bay
+      const subStep = dist2 <= 16 ? 1 : 2;
+      for (let k = -2; k <= 2; k += subStep) {
+        if (k === 0) continue;
+        b.addBox(cx, 0.068, cz + k * 0.22, 0.56, 0.018, 0.072, 0.006, 4, 10, h, 0.55);
+      }
+      // Central vertical row-decoder spine bisecting the DRAM bank bay
+      b.addBox(cx, 0.088, cz, 0.048, 0.022, 0.58, 0.006, 2);
+
+      if (dist2 <= 12) {
+        // Fine TSV / RDL landing micro-pillars at bay corners
+        for (const sx of [-1, 1]) {
+          for (const sz of [-1, 1]) {
+            b.addCyl(cx + sx * 0.54, 0.095, cz + sz * 0.54, 0.040, 0.048, 0.008, 2);
+          }
+        }
+      }
+    }
+  }
+
+  // Wide LPDDR5 RDL DQ Data & VDD2/VSSQ Redistribution Rails along bay borders (±0.76)
+  for (let i = -R; i <= R + 1; i++) {
+    const pos = (i - 0.5) * pitch;
+    const isDqBus = (i & 1) === 0;
+    const hRail = hash12(i * 4.31 + 7.9, 15.1);
+    b.addBox(0, 0.145, pos, span - 0.04, 0.038, 0.070, 0.014, isDqBus ? 2 : 3, 9, isDqBus ? 7 : 5, hRail, isDqBus ? 0.82 : 0.42);
+    b.addBox(pos, 0.130, 0, 0.064, 0.032, span - 0.04, 0.012, isDqBus ? 2 : 4, 9, isDqBus ? 6 : 4, (hRail + 0.41) % 1, isDqBus ? 0.78 : 0.42);
+  }
+
+  // Circular RDL Micro-Bump / TSV Bond Pads at bank intersections
+  for (let iz = -4; iz <= 5; iz++) {
+    for (let ix = -4; ix <= 5; ix++) {
+      const vx = (ix - 0.5) * pitch;
+      const vz = (iz - 0.5) * pitch;
+      b.addCyl(vx, 0.160, vz, 0.105, 0.048, 0.014, 2);
+      b.addCyl(vx, 0.195, vz, 0.052, 0.022, 0.007, 9);
+    }
+  }
+
+  return b.finish();
+}
+
+/**
+ * WORLD 2 — LPDDR5 SUBARRAY BITLINE / WORDLINE CROSSPOINT & SENSE AMPS (8.9 µm):
+ *   - Ultra-regular orthogonal DRAM Bitline (copper) & Master Wordline (silver/tungsten) grid
+ *     with staggered sense-amplifier rails framing 25 windows down to the 1T1C Capacitor Array!
+ */
+export function buildWorld2Dram(): WorldInstances {
+  const b = new InstanceBuilder();
+
+  const span = WORLD1_HOLE_HALF * STAGE_RATIOS[1]; // 9.60
+  const pitch = WORLD2_PITCH; // 1.84
+
+  b.addBox(0, -0.13, 0, span, 0.03, span, 0.004, 0);
+  b.addBox(0, -0.08, 0, span, 0.06, span, 0.005, 0);
+
+  // Fine lower Bitline (BL) & Buried Wordline (WL) crosspoint tracks (skipping courtyard centers)
+  for (let i = -20; i <= 20; i++) {
+    const p = i * 0.46;
+    if (Math.abs(p) > span - 0.15) continue;
+    const mod = Math.abs(((p + 0.92) % 1.84 + 1.84) % 1.84 - 0.92);
+    if (mod < 0.28) continue;
+    const hT = hash12(i * 6.31 + 3.1, 11.7);
+    const dir = (i & 1) === 0 ? 1 : -1;
+    b.addBox(p, 0.12, 0, 0.034, 0.032, span, 0.007, 4, 9, 2, hT, dir * 0.44);
+    b.addBox(0, 0.17, p, span, 0.032, 0.034, 0.007, 3, 9, 3, (hT + 0.37) % 1, -dir * 0.44);
+  }
+
+  // Sense-Amplifier / Column-Select Trunks framing every 1.84 courtyard
+  for (let i = -5; i <= 4; i++) {
+    const g = (i + 0.5) * pitch;
+    const hBus = hash12(i * 5.17 + 1.9, 23.3);
+    const dir = (i & 1) === 0 ? 1 : -1;
+    b.addBox(0, 0.34, g, span, 0.056, 0.115, 0.018, 2, 9, 3, hBus, dir * 0.78);
+    b.addBox(g, 0.34, 0, 0.095, 0.056, span, 0.018, 3, 9, 2, (hBus + 0.29) % 1, -dir * 0.75);
+    // High-k decoupling rails running parallel to sense-amp stripes
+    b.addBox(0, 0.27, g - 0.17, span, 0.038, 0.034, 0.010, 9);
+    b.addBox(0, 0.27, g + 0.17, span, 0.038, 0.034, 0.010, 9);
+  }
+
+  // Vertical Sense-Amp Contact Pillars
+  for (let iz = -5; iz <= 4; iz++) {
+    for (let ix = -5; ix <= 4; ix++) {
+      const cx = (ix + 0.5) * pitch;
+      const cz = (iz + 0.5) * pitch;
+      const isLive = ((ix + iz) & 1) === 0;
+      const hO = hash12(iz * 5.17 + 1.9, 23.3);
+      b.addCyl(cx, 0.35, cz, 0.165, 0.064, 0.016, 2);
+      b.addCyl(cx, 0.16, cz, 0.095, 0.19, 0.012, 9, isLive ? 11 : 0, 0, hO, (iz & 1) === 0 ? 1 : -1);
+    }
+  }
+
+  return b.finish();
+}
+
+/**
+ * WORLD 3 — 1T1C LPDDR5 STORAGE CAPACITOR FOREST (990 nm):
+ *   - Iconic hexagonal/staggered forest of high-aspect MIM (TiN / HfO2-ZrO2 / TiN) Cylindrical
+ *     Storage Capacitors pulsing with stored binary charge over buried wordline trenches!
+ */
+export function buildWorld3Dram(): WorldInstances {
+  const b = new InstanceBuilder();
+
+  const pitchX = WORLD3_PITCH_X; // 0.64
+  const pitchZ = WORLD3_PITCH_Z; // 0.64
+  const R = 8;
+  const span = 5.76;
+
+  b.addBox(0, -0.11, 0, span, 0.02, span, 0.003, 0);
+  b.addBox(0, -0.075, 0, span, 0.045, span, 0.004, 5);
+
+  // Buried Tungsten Wordlines (WL) running horizontally along row boundaries
+  for (let rz = -R; rz <= R + 1; rz++) {
+    const railZ = (rz - 0.5) * pitchZ;
+    const hRow = hash12(rz * 3.71 + 2.9, 14.3);
+    b.addBox(0, 0.008, railZ, span - 0.04, 0.018, 0.028, 0.005, 4, 9, 5, hRow, 0.30);
+  }
+
+  // Overhead Copper Bitlines (BL) running vertically between capacitor rows
+  for (let ix = -R; ix <= R; ix++) {
+    const bx = (ix - 0.5) * pitchX;
+    const hCol = hash12(ix * 4.83 + 6.1, 8.7);
+    b.addBox(bx, 0.028, 0, 0.020, 0.012, span - 0.04, 0.004, 3, 9, 2, hCol, (ix & 1) === 0 ? 0.36 : -0.36);
+  }
+
+  // Dense 17x17 Staggered 1T1C Cylindrical Storage Capacitors (3 capacitors per cell matching World 4!)
+  for (let iz = -R; iz <= R; iz++) {
+    for (let ix = -R; ix <= R; ix++) {
+      const cx = ix * pitchX;
+      const cz = iz * pitchZ;
+      const dist2 = ix * ix + iz * iz;
+
+      if (dist2 <= 54) {
+        // 2 staggered rows x 3 capacitors per 0.64 cell (matches World 4's ±1.04 / 8 = ±0.13!)
+        for (const rowOff of [-0.13, 0.09]) {
+          for (const gx of [-0.13, 0.0, 0.13]) {
+            const hBit = hash12((ix * 7 + gx * 19) * 1.37, (iz * 5 + rowOff * 17) * 2.13);
+            const storedOne = hBit > 0.42;
+            // High-aspect TiN / High-k ZrO2-HfO2 Cylinder Capacitor pillar
+            b.addCyl(cx + gx, 0.048, cz + rowOff, 0.046, 0.072, 0.008, storedOne ? 9 : 3, 12, storedOne ? 2.5 : 2.0, ix * 3 + gx * 10, iz);
+            // Metallic TiN top plate ring
+            b.addCyl(cx + gx, 0.122, cz + rowOff, 0.036, 0.010, 0.004, 2);
+          }
+        }
+      } else {
+        // Outer LOD: paired capacitor pillars
+        b.addCyl(cx - 0.11, 0.048, cz, 0.072, 0.072, 0.010, 9);
+        b.addCyl(cx + 0.11, 0.048, cz, 0.072, 0.072, 0.010, 3);
+      }
+    }
+  }
+
+  return b.finish();
+}
+
+/**
+ * WORLD 4 — 1T1C LPDDR5 CYLINDER CAPACITOR + BURIED ACCESS TRANSISTOR CELL (124 nm):
+ *   - 3×3 DRAM Cell Matrix (exact pitch = 5.12, span = ±7.68 matching World 3 DRAM 1:8!).
+ *   - Tall precision-beveled MIM Storage Capacitors (TiN electrode + Sapphire High-k HfO2/ZrO2 dielectric
+ *     + luminous stored-charge core) perched directly above Buried-Gate Silicon Access Transistors!
+ *   - Any of the 3×3 × 3 access-transistor sites (WORLD4_GATE_XS at WORLD4_GATE_Z / WORLD4_PMOS_Z) opens cleanly into World 5 DRAM!
+ */
+export function buildWorld4Dram(): WorldInstances {
+  const b = new InstanceBuilder();
+
+  const pitch = WORLD4_CELL_PITCH; // 5.12
+  const span = 7.68;
+
+  // Granular crystalline SEM silicon substrate (top at y = -0.24)
+  b.addBox(0, -0.35, 0, span, 0.11, span, 0.005, 5);
+
+  // Buried Tungsten Master Wordlines along cell boundaries (z = ±2.56, ±7.68)
+  const railZs = [-7.68, -2.56, 2.56, 7.68];
+  for (let i = 0; i < railZs.length; i++) {
+    b.addBox(0, 0.08, railZs[i], span, 0.11, 0.22, 0.032, 4);
+  }
+
+  // Copper Bitlines running vertically along cell columns
+  for (let ix = -1; ix <= 1; ix++) {
+    const bx = ix * pitch - 2.30;
+    b.addBox(bx, 0.24, 0, 0.15, 0.095, span, 0.024, 3, 9, 2, (ix + 2) * 0.31, 0.48);
+  }
+
+  for (let iz = -1; iz <= 1; iz++) {
+    for (let ix = -1; ix <= 1; ix++) {
+      const cx = ix * pitch;
+      const cz = iz * pitch;
+
+      // Shallow Trench Isolation oxide bed
+      b.addBox(cx, -0.22, cz, 2.26, 0.022, 2.24, 0.01, 0);
+
+      // Two rows of 3 selectable 1T1C DRAM cells (upper row at WORLD4_PMOS_Z, lower hero row at WORLD4_GATE_Z)
+      const rows = [
+        { zOff: WORLD4_PMOS_Z, isUpper: true },
+        { zOff: WORLD4_GATE_Z, isUpper: false },
+      ];
+      for (const row of rows) {
+        const rz = cz + row.zOff;
+        for (const gx of WORLD4_GATE_XS) {
+          const sx = cx + gx;
+          // 1T: Silicon active access-transistor channel & buried wordline collar (sits at y = 0.0!)
+          b.addBox(sx, 0.0, rz, WORLD4_HOLE_HX, 0.044, 0.135, 0.010, 2, 14, row.isUpper ? 2.0 : 1.0, 0.22);
+          b.addBox(sx, -0.02, rz, 0.16, 0.15, 0.17, 0.020, 4, 13, 2); // Buried tungsten wordline gate
+          b.addBox(sx - 0.21, 0.0, rz, 0.040, 0.145, 0.145, 0.010, 14); // SiN spacer
+          b.addBox(sx + 0.21, 0.0, rz, 0.040, 0.145, 0.145, 0.010, 14); // SiN spacer
+
+          // 1C: High-Aspect MIM Cylindrical Storage Capacitor rising directly above the drain storage node!
+          // Placed right behind/above the channel so it retracts cleanly when the cell opens into World 5!
+          b.addCyl(sx, 0.44, rz - 0.06, 0.28, 0.30, 0.032, 3); // Outer TiN top electrode cylinder
+          b.addCyl(sx, 0.48, rz - 0.06, 0.22, 0.31, 0.026, 9, 13, 2); // High-k HfO2/ZrO2 sapphire dielectric liner!
+          b.addCyl(sx, 0.52, rz - 0.06, 0.13, 0.31, 0.020, 2, 14, row.isUpper ? 2.0 : 1.0, 0.35); // Inner TiN bottom storage electrode
+          // Subtle luminous stored charge disk at the top of the capacitor core
+          b.addCyl(sx, 0.82, rz - 0.06, 0.14, 0.022, 0.008, 6, 14, row.isUpper ? 2.0 : 1.0, 0.45);
+        }
+      }
+
+      // Central shared bitline contact rail between the two 1T1C rows
+      b.addBox(cx, 0.10, cz - 0.16, 1.92, 0.055, 0.12, 0.016, 3);
+      b.addBox(cx - 2.02, 0.17, cz - 0.16, 0.32, 0.055, 0.12, 0.014, 3);
+    }
+  }
+
+  return b.finish();
+}
+
+/**
+ * WORLD 5 — 1T1C DRAM ACCESS TRANSISTOR & HIGH-K CAPACITOR JUNCTION (15.5 nm):
+ *   - Fits 1:8 inside ANY 1T1C DRAM cell of World 4 (±3.84 / 8 = ±0.48)
+ *     and nests 1:10 directly into the existing World 6 (100) Silicon Crystal Lattice!
+ *   - Shows the cutaway High-k HfO2/ZrO2 + TiN storage capacitor landing node above a buried-gate
+ *     diamond-cubic Silicon access transistor channel!
+ */
+export function buildWorld5Dram(): WorldInstances {
+  const b = new InstanceBuilder();
+
+  // Left (Bitline Contact) & Right (Storage Node Drain) Strained Silicon Epitaxial Contacts
+  b.addBox(-2.82, 0.0, 0.0, 1.02, 0.34, 0.94, 0.060, 2);
+  b.addBox( 2.82, 0.0, 0.0, 1.02, 0.34, 0.94, 0.060, 2);
+
+  // Silicon Nitride (SiN) Dielectric Spacers isolating buried wordline gate from contacts
+  b.addBox(-1.62, 0.0, -0.08, 0.18, 0.78, 0.92, 0.028, 14);
+  b.addBox( 1.62, 0.0, -0.08, 0.18, 0.78, 0.92, 0.028, 14);
+
+  // Cutaway Buried Tungsten Wordline Gate Saddle beneath & behind the silicon channel
+  b.addBox(0, -0.58, -0.14, 1.32, 0.16, 0.96, 0.040, 4, 13, 3);
+  b.addBox(0,  0.0,  -1.04, 1.32, 0.62, 0.14, 0.040, 4, 13, 3);
+  // Thin TiN work-function liner
+  b.addBox(0, -0.40, -0.10, 1.30, 0.040, 0.86, 0.014, 3);
+  b.addBox(0,  0.0,  -0.88, 1.30, 0.44,  0.040, 0.014, 3);
+
+  // Gate Dielectric: High-k HfO2 (sapphire) + Interfacial SiO2
+  b.addBox(0, -0.28, -0.08, 1.28, 0.046, 0.78, 0.014, 9, 0, 0.35);
+  b.addBox(0,  0.28, -0.08, 1.28, 0.046, 0.78, 0.014, 9, 0, 0.35);
+  b.addBox(0, -0.20, -0.06, 1.26, 0.020, 0.74, 0.008, 14);
+  b.addBox(0,  0.20, -0.06, 1.26, 0.020, 0.74, 0.008, 14);
+
+  // Overhead Cutaway 1T1C High-k Cylindrical Storage Capacitor Base seated on the right storage node (+1.95) & spanning above!
+  b.addCyl(0, 1.18, -0.28, 1.38, 0.68, 0.070, 3); // Outer TiN cylinder electrode
+  b.addCyl(0, 1.22, -0.28, 1.08, 0.70, 0.055, 9, 13, 3); // High-k HfO2/ZrO2 sapphire dielectric cylinder
+  b.addCyl(0, 1.26, -0.28, 0.64, 0.72, 0.042, 2); // Inner TiN storage electrode pillar
+  // Luminous trapped charge ring pulsing at the capacitor dielectric boundary
+  b.addTranslucentSphere(0, 1.24, -0.28, 0.92, 0.66, 0.92, 0, 8, 0, 0.55, 0.9, 0);
+
+  // Exact Diamond-Cubic (100) Silicon Access-Transistor Channel (1:10 scaled match to World 6 Lattice!)
+  const R5 = STAGE_RATIOS[5];
+  const a5 = WORLD5_LATTICE_A;
+  const basis: [number, number, number][] = [
+    [0, 0, 0],
+    [0, 0.5, 0.5],
+    [0.5, 0, 0.5],
+    [0.5, 0.5, 0],
+    [0.25, 0.25, 0.25],
+    [0.25, 0.75, 0.75],
+    [0.75, 0.25, 0.75],
+    [0.75, 0.75, 0.25],
+  ];
+
+  const ribbonAtoms: { x: number; y: number; z: number }[] = [];
+  const ribbonMaxX = 1.44;
+  const ribbonMaxY = WORLD6_HALF_Y / R5;
+  const ribbonMaxZ = WORLD6_HALF_Z / R5;
+  const maxIx = Math.ceil(ribbonMaxX / a5);
+
+  for (let ix = -maxIx; ix <= maxIx; ix++) {
+    for (let iy = -2; iy <= 1; iy++) {
+      for (let iz = -2; iz <= 2; iz++) {
+        for (let bi = 0; bi < basis.length; bi++) {
+          const [bx, by, bz] = basis[bi];
+          const ax = (ix + bx) * a5;
+          const ay = (iy + by) * a5;
+          const az = (iz + bz) * a5;
+          if (Math.abs(ax) > ribbonMaxX || Math.abs(ay) > ribbonMaxY + 0.002 || Math.abs(az) > ribbonMaxZ + 0.002) {
+            continue;
+          }
+          ribbonAtoms.push({ x: ax, y: ay, z: az });
+          const r = 0.125 / R5;
+          b.addSphere(ax, ay, az, r, r, r, 0, 2, 15, 0.0, (ax * 7.3 + ay * 13.1 + az * 17.9) * 1.1, 0);
+        }
+      }
+    }
+  }
+
+  const bondMax = a5 * 0.4330127 * 1.12;
+  const bondMax2 = bondMax * bondMax;
+  const xBreak = bondMax + a5;
+  const bondRad = 0.026 / R5;
+  for (let i = 0; i < ribbonAtoms.length; i++) {
+    const p1 = ribbonAtoms[i];
+    for (let j = i + 1; j < ribbonAtoms.length; j++) {
+      const p2 = ribbonAtoms[j];
+      const dx = p2.x - p1.x;
+      if (dx > xBreak) break;
+      if (dx < -bondMax || dx > bondMax) continue;
+      const dy = p2.y - p1.y;
+      const dz = p2.z - p1.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > 0.001 && d2 <= bondMax2) {
+        b.addBond(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z, bondRad, 4, 1.0);
+      }
+    }
   }
 
   return b.finish();

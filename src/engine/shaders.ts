@@ -67,18 +67,17 @@ void evalInstance(
     liveEnergy = 0.45 + 0.55 * max(uMacLoads.x, max(uMacLoads.z, uNetLoad));
   } else if (ch == 10) {
     float h = param;
-    liveEnergy = (h < uMacLoads.x * 0.85 + 0.12) ? (uMacLoads.x * 0.65 * instC.z) : 0.0;
+    liveEnergy = (h < uLocalLoad * 0.85 + 0.12) ? (uLocalLoad * 0.65 * instC.z) : 0.0;
   } else if (ch == 11) {
-    liveEnergy = 0.45 + 0.55 * max(uMacLoads.x, max(uMacLoads.z, uNetLoad));
+    liveEnergy = 0.45 + 0.55 * max(uLocalLoad, max(uMacLoads.z, uNetLoad));
   } else if (ch == 12) {
-    // Authentic complementary CMOS dynamic switching current (P = alpha * C * V^2 * f):
-    // PMOS (param < 2.25) conducts a brief capacitive pull-up transient on 0->1;
-    // NMOS (param >= 2.25) conducts a brief capacitive pull-down transient on 1->0!
-    float rate = 1.8 + uMacLoads.x * 4.2;
+    // Authentic complementary CMOS / SRAM / DRAM dynamic switching current (P = alpha * C * V^2 * f):
+    // Driven by the exact local block's live telemetry (uLocalLoad)!
+    float rate = 1.8 + uLocalLoad * 4.2;
     float tCell = uTime * rate + hash12(instC.zw * 1.73) * 10.0;
     float tick0 = floor(tCell);
     float f = fract(tCell);
-    float thresh = 0.22 + uMacLoads.x * 0.42 + uNetLoad * 0.14;
+    float thresh = 0.22 + uLocalLoad * 0.42 + uNetLoad * 0.14;
     float a0 = step(hash12(instC.zw + tick0 * 0.17), thresh);
     float a1 = step(hash12(instC.zw + (tick0 + 1.0) * 0.17), thresh);
     bool isNmos = param >= 2.25;
@@ -87,20 +86,20 @@ void evalInstance(
     float switched = isNmos ? falling : rising;
     // Crisp RC charging/discharging current spike at the clock edge + tiny sub-threshold bias
     float spike = switched * smoothstep(0.0, 0.06, f) * exp(-max(f - 0.06, 0.0) * 4.6);
-    float hold = (isNmos ? (1.0 - a1) : a1) * 0.06 * uMacLoads.x;
-    matId = 2.0;
-    liveEnergy = (spike * 0.95 + hold) * (0.55 + 0.45 * uMacLoads.x);
+    float hold = (isNmos ? (1.0 - a1) : a1) * 0.06 * uLocalLoad;
+    if (matId < 2.5) matId = 2.0;
+    liveEnergy = (spike * 0.95 + hold) * (0.55 + 0.45 * uLocalLoad);
   } else if (ch == 13) {
-    float gateActive = clamp(0.22 + uMacLoads.x * 0.95, 0.0, 1.0);
+    float gateActive = clamp(0.22 + uLocalLoad * 0.95, 0.0, 1.0);
     liveEnergy = (param > 1.5) ? gateActive : (param > 0.5 ? gateActive * 0.22 : 0.0);
   } else if (ch == 14) {
-    float gateActive = clamp(0.25 + uMacLoads.x * 1.15, 0.0, 1.0);
+    float gateActive = clamp(0.25 + uLocalLoad * 1.15, 0.0, 1.0);
     liveEnergy = (param > 0.5) ? gateActive : 0.0;
   } else if (ch == 15) {
     // Silicon Lattice / HfO2 atom: Correlated 3D acoustic phonon plane waves + local zero-point jitter driven by live Mac die temp!
     float lockDamp = (uAtomHole.w > 0.01 && length(center - uAtomHole.xyz) < 0.60) ? 0.0 : 1.0;
     float ph = instC.z;
-    float amp = (0.008 + uSocTemp * 0.025 + uMacLoads.x * 0.013) * min(1.0, length(halfSize) * 4.6188) * lockDamp;
+    float amp = (0.008 + uSocTemp * 0.025 + uLocalLoad * 0.013) * min(1.0, length(halfSize) * 4.6188) * lockDamp;
     float freq = 5.2 + uSocTemp * 6.4;
     // 3 traveling 3D acoustic phonon modes propagating coherently across the (100) silicon crystal
     float w1 = sin(dot(center, vec3(2.15, 0.72, -0.58)) - uTime * freq);
@@ -118,17 +117,17 @@ void evalInstance(
   } else if (ch == 16 || ch == 17) {
     liveEnergy = param;
   } else if (ch == 18) {
-    float speed = 0.35 + uMacLoads.x * 1.15;
+    float speed = 0.35 + uLocalLoad * 1.15;
     float prog = fract(uTime * speed + instC.z);
     center.x = mix(-2.25, 2.25, prog);
     center.y += sin(prog * 18.84 + instC.w * 6.28) * 0.11;
     center.z += cos(prog * 12.56 + instC.z * 6.28) * 0.10;
-    liveEnergy = 0.75 + uMacLoads.x * 0.5;
+    liveEnergy = 0.75 + uLocalLoad * 0.5;
   } else if (ch == 19) {
     float rad = instA.x;
     float inc = instA.y;
     float theta0 = instA.z;
-    float speed = param * (0.75 + uMacLoads.x * 0.85);
+    float speed = param * (0.75 + uLocalLoad * 0.85);
     float ang = theta0 + uTime * speed;
     float precess = instC.z + uTime * 0.28;
     vec3 pOrb = vec3(cos(ang) * rad, sin(ang) * sin(inc) * rad, sin(ang) * cos(inc) * rad);
@@ -136,8 +135,9 @@ void evalInstance(
     center = vec3(pOrb.x * cp - pOrb.z * sp, pOrb.y, pOrb.x * sp + pOrb.z * cp);
     liveEnergy = 0.72 + 0.28 * sin(uTime * 5.0 + instC.z * 9.0);
   } else if (ch == 21) {
+    float lockDamp = (uAtomHole.w > 0.01 && length(center - uAtomHole.xyz) < 0.48) ? 0.0 : 1.0;
     float ph = instC.z;
-    float amp = 0.022 + uMacLoads.x * 0.015;
+    float amp = (0.022 + uLocalLoad * 0.015) * lockDamp;
     center.x += sin(uTime * 11.5 + ph * 3.7) * amp;
     center.y += cos(uTime * 13.1 + ph * 5.1) * amp;
     center.z += sin(uTime * 9.7 + ph * 2.9) * amp;
@@ -250,6 +250,7 @@ uniform vec4 uMacLoads;
 uniform vec4 uCoreA;
 uniform vec4 uCoreB;
 uniform float uNetLoad;
+uniform float uLocalLoad;
 uniform float uPulsePhase;
 uniform float uSocTemp;
 
@@ -359,6 +360,7 @@ uniform vec4 uMacLoads;
 uniform vec4 uCoreA;
 uniform vec4 uCoreB;
 uniform float uNetLoad;
+uniform float uLocalLoad;
 uniform float uPulsePhase;
 uniform float uSocTemp;
 
@@ -496,8 +498,9 @@ uniform float uSemFactor;
 uniform float uFloorY;
 uniform float uThermal;
 uniform float uTranslucent;
-uniform float uRegionKind; // 0 = Logic/CPU, 1 = SRAM/SLC, 2 = GPU
+uniform float uRegionKind; // 0 = Logic/CPU, 1 = SRAM/SLC, 2 = GPU, 3 = LPDDR5 DRAM
 uniform vec4 uMacLoads;
+uniform float uLocalLoad;
 uniform float uPulsePhase;
 uniform vec4 uInspectBox;    // (cx, cz, hx, hz); hx <= 0 means inactive (hz < 0 = circle)
 uniform vec4 uHoverBox;      // (cx, cz, hx, hz); smooth studio-light hover focus on World 0
@@ -936,7 +939,7 @@ ${holeDiscardBlock}
       float coord = isX ? p.x : p.z;
       float cCross = isX ? locUV.y : locUV.x;
       float swell = 0.68 + 0.32 * sin(coord * 0.52 - uTime * 0.85 + vExtraA * 6.283);
-      float dcLevel = (0.14 + 0.28 * max(uMacLoads.x, uMacLoads.z)) * swell;
+      float dcLevel = (0.14 + 0.28 * max(uLocalLoad, uMacLoads.z)) * swell;
       float crossFocus = 0.65 + 0.35 * smoothstep(1.0, 0.0, abs(cCross));
       vec3 dcCol = (vExtraB >= 0.0) ? vec3(0.86, 0.44, 0.14) : vec3(0.14, 0.42, 0.78);
       railEmissive = dcCol * dcLevel * crossFocus * amp;
@@ -965,7 +968,7 @@ ${holeDiscardBlock}
   float gaaIsPmos = 0.0;
   float gaaGateField = 0.0;
   if (ch == 14 && liveEnergy > 0.01) {
-    float vGate = evalGaaGateVoltage(p, uMacLoads.x);
+    float vGate = evalGaaGateVoltage(p, uLocalLoad);
     float localX = mod(p.x + 2.56, 5.12) - 2.56;
     float gCenter = clamp(floor((localX + 1.56) / 1.04), 0.0, 2.0) * 1.04 - 1.04;
     // Inversion layer is strongest right under the gate stack and tapers gently toward S/D spacers
@@ -975,22 +978,22 @@ ${holeDiscardBlock}
     float cond = isPmos ? smoothstep(0.54, 0.22, vGate) : smoothstep(0.46, 0.78, vGate);
     // Continuous Source->Drain electron drift (NMOS) or Drain->Source hole drift (PMOS) while inverted!
     float driftDir = isPmos ? -1.0 : 1.0;
-    float drift = 0.62 + 0.38 * sin(localX * 15.0 * driftDir - uTime * (6.0 + uMacLoads.x * 7.5));
+    float drift = 0.62 + 0.38 * sin(localX * 15.0 * driftDir - uTime * (6.0 + uLocalLoad * 7.5));
     gaaWave = cond * underGate * drift * liveEnergy;
   } else if (ch == 13 && vParam > 1.5) {
-    float vGateSingle = 0.5 + 0.5 * sin(uTime * (1.25 + uMacLoads.x * 2.0));
-    float vG = (vParam > 2.5) ? vGateSingle : evalGaaGateVoltage(p, uMacLoads.x);
+    float vGateSingle = 0.5 + 0.5 * sin(uTime * (1.25 + uLocalLoad * 2.0));
+    float vG = (vParam > 2.5) ? vGateSingle : evalGaaGateVoltage(p, uLocalLoad);
     gaaGateField = vG * liveEnergy;
   }
 
   // Delocalized Bloch Electron Wavepacket Interference propagating through Silicon covalent bonds
   float blochGlow = 0.0;
   if (ch == 16 && vLiveEnergy > 0.85) {
-    float kSpeed = 4.2 + uMacLoads.x * 6.5;
+    float kSpeed = 4.2 + uLocalLoad * 6.5;
     float wave1 = sin(p.x * 2.6 - uTime * kSpeed + p.z * 0.9);
     float wave2 = cos(p.x * 5.2 - uTime * kSpeed * 1.35 - p.y * 1.6);
     float env = pow(max(0.0, 0.5 + 0.5 * wave1) * (0.55 + 0.45 * wave2), 2.4);
-    blochGlow = env * (0.28 + uMacLoads.x * 0.95);
+    blochGlow = env * (0.28 + uLocalLoad * 0.95);
   }
 
   // Vector-baked 2048x1024 Architectural Die Lithography Atlas sampling (World 0 top faces)
@@ -1305,7 +1308,7 @@ ${holeDiscardBlock}
       rough = 0.14;
       metal = 0.76;
       clearcoat = 0.58;
-      emissive = vec3(0.06, 0.24, 0.48) * atomRim * (0.28 + uMacLoads.x * 0.24);
+      emissive = vec3(0.06, 0.24, 0.48) * atomRim * (0.28 + uLocalLoad * 0.24);
     } else {
       vec4 tAlb;
       vec3 tBump;
@@ -1416,9 +1419,11 @@ ${holeDiscardBlock}
     }
   } else if (matId < 4.5) {
     // Mat 4: Sputtered Gunmetal Tungsten (W) / SLC SRAM Spine / Neural Engine / Covalent Bonds
-    vec3 regionTint = uRegionKind > 1.5
-      ? vec3(0.012, 0.018, 0.032)
-      : (uRegionKind > 0.5 ? vec3(0.008, 0.022, 0.024) : vec3(0.0));
+    vec3 regionTint = uRegionKind > 2.5
+      ? vec3(0.014, 0.022, 0.044)
+      : (uRegionKind > 1.5
+        ? vec3(0.012, 0.018, 0.032)
+        : (uRegionKind > 0.5 ? vec3(0.008, 0.022, 0.024) : vec3(0.0)));
 
     if (hasDieAtlas > 0.01) {
       // World 0 SLC 6T SRAM & Neural Engine systolic arrays with crisp Sobel relief & dark Bragg tint
@@ -1828,6 +1833,63 @@ ${holeDiscardBlock}
       vec3 clkSheen = keynoteSignalColor(clkWave) * clkWave * 0.42 * clamp(isClockRail, 0.0, 1.0);
       emissive += (dcSheen + clkSheen) * railGlowMix * railMask;
     }
+  } else if (
+    matId > 6.5 &&
+    matId < 7.5 &&
+    n.y > 0.82 &&
+    uRegionKind > 2.5 &&
+    uZoom > 0.28 &&
+    uZoom < 1.08 &&
+    uClipPlane.y < 0.5
+  ) {
+    // Optical LPDDR5 Decapsulation: RDL DQ Redistribution Grid & Sapphire DRAM Bank Mats emerge seamlessly through epoxy!
+    float gridResolve = smoothstep(0.28, 0.76, uZoom);
+    float bayResolve = smoothstep(0.42, 0.78, uZoom);
+    vec2 gPos = (p.xz - uDieGridOrigin) * uStage0Ratio;
+    const float gPitch = 1.52;
+    vec2 fw = max(fwidth(gPos), vec2(0.004));
+
+    vec2 railI = floor(gPos / gPitch + 1.0);
+    vec2 railCenter = (railI - 0.5) * gPitch;
+    vec2 dRailSigned = gPos - railCenter;
+    vec2 dRail = abs(dRailSigned);
+
+    float maskRailX = 1.0 - smoothstep(0.070 - fw.y * 0.65, 0.070 + fw.y * 0.90, dRail.y);
+    float maskRailZ = 1.0 - smoothstep(0.064 - fw.x * 0.65, 0.064 + fw.x * 0.90, dRail.x);
+    float dVia = length(dRail);
+    float viaFw = max(fw.x, fw.y);
+    float maskVia = 1.0 - smoothstep(0.105 - viaFw * 0.65, 0.105 + viaFw * 0.95, dVia);
+    float maskViaCap = 1.0 - smoothstep(0.052 - viaFw * 0.65, 0.052 + viaFw * 0.95, dVia);
+
+    float evenX = 1.0 - mod(abs(railI.y), 2.0);
+    vec3 agCol = vec3(0.32, 0.36, 0.44);
+    vec3 cuCol = vec3(0.58, 0.34, 0.20);
+    vec3 sapphMat = vec3(0.05, 0.16, 0.34);
+
+    vec2 cellId = floor(gPos / gPitch + 0.5);
+    vec2 cellLoc = gPos - cellId * gPitch;
+    float inMat = (1.0 - smoothstep(0.58, 0.62, abs(cellLoc.x))) * (1.0 - smoothstep(0.58, 0.62, abs(cellLoc.y)));
+    float spineMask = (1.0 - smoothstep(0.048 - fw.x, 0.048 + fw.x, abs(cellLoc.x))) * inMat;
+    vec3 bayCol = mix(vec3(0.018, 0.026, 0.042), sapphMat, inMat * 0.90);
+    bayCol = mix(bayCol, agCol * 0.85, spineMask * 0.85);
+
+    float railMask = max(max(maskRailX, maskRailZ), maskVia);
+    vec3 railCol = mix(cuCol, agCol, evenX);
+    railCol = mix(railCol, agCol * 1.12, maskVia * 0.85);
+    railCol = mix(railCol, vec3(0.10, 0.38, 0.82), maskViaCap * 0.90);
+
+    baseCol = mix(baseCol, bayCol, bayResolve * (1.0 - railMask) * 0.94);
+    baseCol = mix(baseCol, railCol, railMask * gridResolve * 0.96);
+    rough = mix(rough, mix(0.24, 0.16, railMask), gridResolve * 0.88);
+    metal = mix(metal, mix(0.62, 0.95, railMask), gridResolve * 0.92);
+
+    float slopeX = clamp(dRailSigned.x / 0.064, -1.0, 1.0) * maskRailZ * (1.0 - maskRailX * 0.7);
+    float slopeZ = clamp(dRailSigned.y / 0.070, -1.0, 1.0) * maskRailX;
+    n = normalize(n + vec3(slopeX, 0.0, slopeZ) * (0.28 * gridResolve));
+    ndotv = max(dot(n, v), 0.0);
+
+    float dqWave = exp(-pow(fract((uPulsePhase * 2.25 - abs(gPos.x)) / 9.6) * 9.6 / 0.55, 2.0));
+    emissive += keynoteSignalColor(dqWave) * dqWave * railMask * gridResolve * (0.25 + uLocalLoad * 0.45);
   }
 
   if (uThermal > 0.5) {

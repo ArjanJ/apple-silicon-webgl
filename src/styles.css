@@ -1672,6 +1672,149 @@ body,
   color: rgba(248, 252, 255, 0.88);
 }
 
+/* Interactive Silicon Package Mini-Map & Location Breadcrumb (Desktop Bottom-Left) */
+.die-minimap {
+  position: absolute;
+  left: max(26px, calc(env(safe-area-inset-left) + 16px));
+  bottom: max(22px, calc(env(safe-area-inset-bottom) + 14px));
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 7px 12px 7px 8px;
+  border-radius: 16px;
+  background: rgba(8, 11, 16, 0.54);
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  z-index: 19;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate3d(0, 6px, 0);
+  transition:
+    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.2s ease;
+}
+
+.die-minimap.visible {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.die-minimap:hover {
+  border-color: rgba(140, 228, 255, 0.32);
+}
+
+.minimap-svg {
+  width: 78px;
+  height: 50px;
+  flex-shrink: 0;
+  cursor: crosshair;
+  display: block;
+  touch-action: none;
+}
+
+.minimap-pkg {
+  fill: rgba(255, 255, 255, 0.04);
+  stroke: rgba(255, 255, 255, 0.16);
+  stroke-width: 0.12;
+}
+
+.minimap-ram {
+  fill: rgba(84, 152, 255, 0.14);
+  stroke: rgba(140, 200, 255, 0.30);
+  stroke-width: 0.10;
+}
+
+.minimap-die {
+  fill: rgba(255, 255, 255, 0.08);
+  stroke: rgba(255, 255, 255, 0.30);
+  stroke-width: 0.12;
+}
+
+.minimap-blk {
+  fill: rgba(255, 255, 255, 0.09);
+  stroke: rgba(255, 255, 255, 0.16);
+  stroke-width: 0.07;
+}
+
+.minimap-blk.slc {
+  fill: rgba(120, 232, 214, 0.18);
+}
+
+.minimap-blk.gpu {
+  fill: rgba(130, 180, 255, 0.18);
+}
+
+.minimap-dot-ring {
+  fill: none;
+  stroke: var(--cyan);
+  stroke-width: 0.16;
+  opacity: 0.72;
+}
+
+.minimap-dot {
+  fill: #ffffff;
+  filter: drop-shadow(0 0 2px rgba(140, 228, 255, 0.95));
+}
+
+.minimap-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 118px;
+  max-width: 174px;
+}
+
+.minimap-loc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: rgba(255, 255, 255, 0.94);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.minimap-domain-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 7px rgba(140, 228, 255, 0.78);
+  flex-shrink: 0;
+}
+
+.die-minimap[data-domain='sram'] .minimap-domain-dot {
+  background: #6ee7d2;
+  box-shadow: 0 0 7px rgba(110, 231, 210, 0.8);
+}
+
+.die-minimap[data-domain='gpu'] .minimap-domain-dot {
+  background: #9bbcff;
+  box-shadow: 0 0 7px rgba(155, 188, 255, 0.82);
+}
+
+.die-minimap[data-domain='dram'] .minimap-domain-dot {
+  background: #6aa8ff;
+  box-shadow: 0 0 8px rgba(106, 168, 255, 0.88);
+}
+
+.minimap-sub {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 9.5px;
+  font-weight: 500;
+  color: rgba(235, 244, 255, 0.64);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Calibrated Zeiss/FEI Optical Scale Bar (Desktop Bottom-Right) */
 .zeiss-scale {
   position: absolute;
@@ -1766,7 +1909,8 @@ body,
     width: 268px;
   }
 
-  .zeiss-scale {
+  .zeiss-scale,
+  .die-minimap {
     display: none;
   }
 }
