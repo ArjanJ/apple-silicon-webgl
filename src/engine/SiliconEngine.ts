@@ -18,7 +18,7 @@ import {
   createUnitSphere,
   MeshBuffers,
 } from './geometry';
-import { DieInspectHit, pickDieRegion } from './inspect';
+import { DieInspectHit, getDieRegionKind, pickDieRegion } from './inspect';
 import { mat4Invert, mat4LookAt, mat4Multiply, mat4Ortho, mat4Perspective } from './math';
 import {
   BLOOM_DOWN_FS,
@@ -27,8 +27,11 @@ import {
   COMPOSITE_FS,
   FULLSCREEN_VS,
   LIQUID_GL_FS,
+  LIQUID_GL_VS,
+  SCENE_CUTOUT_FS,
   SCENE_FS,
   SCENE_VS,
+  SHADOW_CUTOUT_FS,
   SHADOW_FS,
   SHADOW_VS,
 } from './shaders';
@@ -88,6 +91,8 @@ export interface EngineHooks {
   onHover?: (hit: DieInspectHit | null, clientX: number, clientY: number) => void;
   onTourChange?: (active: boolean) => void;
   onIntroFrame?: (state: IntroFrameState) => void;
+  /** When true, holds the Cold Boot intro paused on black until startIntro() / releaseIntroHold() is called */
+  deferIntroStart?: boolean;
 }
 
 interface StageDraw {
@@ -124,23 +129,30 @@ interface HoleConfig {
   hz: number;
   minY: number;
   mode: number; // 0=off, 1=VS+FS tiled, 2=FS-only beams/floor, 3=FS-only die+bezel, 4=VS-only ribbon patch
+  open: number; // 0..1 smooth cutout retraction / iris opening
   atomX: number;
   atomY: number;
   atomZ: number;
   atomR: number;
 }
 
-const SHADOW_SIZE = 2048;
+const SHADOW_SIZE = 1536;
+const MAX_RENDER_PIXELS = 3_900_000; // Retina-sharp ~1.5x–2.0x DPR without 8M–15M px 5K fillrate overload
+const IDLE_HOLD_MS = 1600;
+const COOLDOWN_END_MS = 2800;
+const COOLDOWN_FRAME_MS = 16.5; // Smooth 60 Hz bridge before stepping to calm 30 Hz idle
+const IDLE_FRAME_MS = 33.3;     // Smooth 30 Hz ambient signal pulses when calm & focused
+const BLURRED_FRAME_MS = 66.7;  // Low-power 15 Hz when window is unfocused
 export const MIN_ZOOM = -2.4;
 export const MAX_ZOOM = 9.0;
 const STAGE_FLOOR_Y = [-0.598, -0.26, -0.14, -0.075, -0.35, -6.0, -6.0, -6.0, -6.0, -6.0];
 const WORLD0_GRID_STEP = WORLD1_PITCH / STAGE_RATIOS[0]; // 0.095 (exact World 1 grid pitch on World 0!)
 
-/** "Cold Boot" Centered Title Card -> Chip Fade-In -> Staged Silicon Power-On choreography constants */
+/** "Cold Boot" Centered Title Card -> Wide Flat Horizon Silhouette -> Slow Crane-Up Power-On choreography */
 const INTRO_DURATION = 7.05;
-const INTRO_START_ZOOM = -0.27;
-const INTRO_START_PITCH = 0.76;
-const INTRO_START_YAW = -0.05;
+const INTRO_START_ZOOM = -0.44;
+const INTRO_START_PITCH = 0.22; // ~12.6° sleek low horizontal angle -> cranes slowly up to HERO_PITCH (49°)
+const INTRO_START_YAW = 0.0;    // Dead-straight architectural symmetry (zero crookedness!)
 const HERO_ZOOM = 0.0;
 const HERO_PITCH = 0.86;
 const HERO_YAW = 0.0;
@@ -192,7 +204,9 @@ export class SiliconEngine {
   private msaaSamples = 0;
 
   private shadowProg: WebGLProgram;
+  private shadowCutoutProg: WebGLProgram;
   private sceneProg: WebGLProgram;
+  private sceneCutoutProg: WebGLProgram;
   private prefilterProg: WebGLProgram;
   private bloomDownProg: WebGLProgram;
   private bloomUpProg: WebGLProgram;
@@ -203,6 +217,7 @@ export class SiliconEngine {
   private cylMesh: MeshBuffers;
   private coinCylMesh: MeshBuffers;
   private sphereMesh: MeshBuffers;
+  private orbitalSphereMesh: MeshBuffers;
   private bondMesh: MeshBuffers;
   private boxVbo: WebGLBuffer;
   private boxIbo: WebGLBuffer;
@@ -212,6 +227,8 @@ export class SiliconEngine {
   private coinCylIbo: WebGLBuffer;
   private sphereVbo: WebGLBuffer;
   private sphereIbo: WebGLBuffer;
+  private orbitalSphereVbo: WebGLBuffer;
+  private orbitalSphereIbo: WebGLBuffer;
   private bondVbo: WebGLBuffer;
   private bondIbo: WebGLBuffer;
   private stages: StageDraw[] = [];
@@ -248,6 +265,16 @@ export class SiliconEngine {
   private canvasH = 1;
   private cssW = 1;
   private cssH = 1;
+  private canvasRect = { left: 0, top: 0, width: 1, height: 1 };
+
+  // Shadow map dirty tracking & zero-allocation stage buffers
+  private shadowDirty = true;
+  private lastShadowMs = 0;
+  private lastShadowSmoothP = -1;
+  private lastShadowStageSig = '';
+  private world0Version = 0;
+  private activeStagesBuf: { idx: number; scale: number }[] = Array.from({ length: 10 }, () => ({ idx: 0, scale: 1 }));
+  private tmpHole: HoleConfig = { cx: 0, cz: 0, hx: 0, hz: 0, minY: -10, mode: 0, open: 0, atomX: 0, atomY: 0, atomZ: 0, atomR: 0 };
 
   // GPU liquidGL HUD regions (sRGB two-stage stacked refraction, zero CSS readback tax!)
   private glassCount = 0;
@@ -262,7 +289,9 @@ export class SiliconEngine {
 
   // Cached uniform locations
   private uShadow: Record<string, WebGLUniformLocation | null> = {};
+  private uShadowCutout: Record<string, WebGLUniformLocation | null> = {};
   private uScene: Record<string, WebGLUniformLocation | null> = {};
+  private uSceneCutout: Record<string, WebGLUniformLocation | null> = {};
   private uPrefilter: Record<string, WebGLUniformLocation | null> = {};
   private uDown: Record<string, WebGLUniformLocation | null> = {};
   private uUp: Record<string, WebGLUniformLocation | null> = {};
@@ -316,6 +345,8 @@ export class SiliconEngine {
 
   // "Cold Boot" Powered-Off -> Staged Silicon Power-On state
   private introActive = false;
+  private introAwaitingBoot = false;
+  private introHoldRendered = false;
   private introElapsed = 0;
   private introLightSweep = 1.0;
   private introKeyIntensity = 1.0;
@@ -334,11 +365,26 @@ export class SiliconEngine {
   private deferredTexLoadsStarted = false;
   private pendingTexUploads: (() => void)[] = [];
 
-  // Camera & snappy zoom state
+  // Camera, motorized optical flight & snappy zoom state
   public zoom = HERO_ZOOM;
   private targetZoom = HERO_ZOOM;
   private zoomRate = 15.0;
   private smoothMotion = 0.0;
+
+  private flightActive = false;
+  private flightElapsed = 0;
+  private flightDuration = 1.0;
+  private flightStartZoom = HERO_ZOOM;
+  private flightEndZoom = HERO_ZOOM;
+  private flightStartPitch = HERO_PITCH;
+  private flightEndPitch = HERO_PITCH;
+  private flightStartYaw = HERO_YAW;
+  private flightEndYaw = HERO_YAW;
+  private flightStartAnchorX = 0;
+  private flightStartAnchorZ = 0;
+  private flightEndAnchorX = 0;
+  private flightEndAnchorZ = 0;
+  private flightHasAnchor = false;
 
   private yaw = HERO_YAW;
   private pitch = HERO_PITCH;
@@ -359,7 +405,7 @@ export class SiliconEngine {
   public thermal = false;
   public autoOrbit = false;
 
-  // Interaction & timing
+  // Interaction, visibility & ProMotion-style adaptive frame pacing
   private dragging = false;
   private dragMode: 'orbit' | 'pan' = 'orbit';
   private lastX = 0;
@@ -367,6 +413,12 @@ export class SiliconEngine {
   private rafId = 0;
   private startTime = performance.now();
   private lastFrame = performance.now();
+  private lastRenderMs = 0;
+  private lastActivityMs = performance.now();
+  private pageHidden = typeof document !== 'undefined' ? document.hidden : false;
+  private windowFocused = typeof document !== 'undefined' ? document.hasFocus() : true;
+  private burstActive = false;
+  private isIdlePaced = false;
   private emaFrameMs = 16.0;
   private disposed = false;
 
@@ -391,25 +443,28 @@ export class SiliconEngine {
     this.gl = gl;
 
     this.useFloatHdr = gl.getExtension('EXT_color_buffer_float') !== null;
-    const maxSamples = gl.getParameter(gl.MAX_SAMPLES) as number;
-    this.msaaSamples = Math.min(4, maxSamples || 0);
+    const maxSamples = (gl.getParameter(gl.MAX_SAMPLES) as number) || 0;
+    this.msaaSamples = this.pickMsaaSamples(maxSamples);
 
-    // Compile shader programs
+    // Compile shader programs (separate discard-free fast paths to keep Apple Silicon TBDR HSR active!)
     this.shadowProg = this.createProgram(SHADOW_VS, SHADOW_FS);
+    this.shadowCutoutProg = this.createProgram(SHADOW_VS, SHADOW_CUTOUT_FS);
     this.sceneProg = this.createProgram(SCENE_VS, SCENE_FS);
+    this.sceneCutoutProg = this.createProgram(SCENE_VS, SCENE_CUTOUT_FS);
     this.prefilterProg = this.createProgram(FULLSCREEN_VS, BLOOM_PREFILTER_FS);
     this.bloomDownProg = this.createProgram(FULLSCREEN_VS, BLOOM_DOWN_FS);
     this.bloomUpProg = this.createProgram(FULLSCREEN_VS, BLOOM_UP_FS);
     this.compositeProg = this.createProgram(FULLSCREEN_VS, COMPOSITE_FS);
-    this.liquidGlProg = this.createProgram(FULLSCREEN_VS, LIQUID_GL_FS);
+    this.liquidGlProg = this.createProgram(LIQUID_GL_VS, LIQUID_GL_FS);
 
     this.cacheUniforms();
 
-    // Shared procedural meshes
+    // Shared procedural meshes (14x20 for 1000+ small atoms/sparkles = 3.3x fewer tris; 22x30 for large orbital clouds)
     this.boxMesh = createParametricBeveledBox();
     this.cylMesh = createParametricBeveledCylinder(20);
     this.coinCylMesh = createParametricBeveledCylinder(96);
-    this.sphereMesh = createUnitSphere(26, 36);
+    this.sphereMesh = createUnitSphere(14, 20);
+    this.orbitalSphereMesh = createUnitSphere(22, 30);
     this.bondMesh = createUnitBondCylinder(12);
 
     this.boxVbo = this.createArrayBuffer(this.boxMesh.vertices);
@@ -420,6 +475,8 @@ export class SiliconEngine {
     this.coinCylIbo = this.createIndexBuffer(this.coinCylMesh.indices);
     this.sphereVbo = this.createArrayBuffer(this.sphereMesh.vertices);
     this.sphereIbo = this.createIndexBuffer(this.sphereMesh.indices);
+    this.orbitalSphereVbo = this.createArrayBuffer(this.orbitalSphereMesh.vertices);
+    this.orbitalSphereIbo = this.createIndexBuffer(this.orbitalSphereMesh.indices);
     this.bondVbo = this.createArrayBuffer(this.bondMesh.vertices);
     this.bondIbo = this.createIndexBuffer(this.bondMesh.indices);
     this.emptyVao = gl.createVertexArray()!;
@@ -514,11 +571,50 @@ export class SiliconEngine {
     if (prefersReducedMotion) {
       this.hooks.onIntroFrame?.({ active: false, progress: 1, elapsed: INTRO_DURATION });
       this.kickoffDeferredHighResTextures();
+    } else if (this.hooks.deferIntroStart) {
+      this.holdIntro();
     } else {
       this.startIntro();
     }
 
-    this.loop();
+    if (!this.pageHidden) {
+      this.loop();
+    }
+  }
+
+  /** Choose crisp 2x MSAA when supported (halves RGBA16F + Depth24 MSAA tile/resolve traffic on Retina!) */
+  private pickMsaaSamples(maxSamples: number): number {
+    if (maxSamples < 2) return 0;
+    const gl = this.gl;
+    const internalFmt = this.useFloatHdr ? gl.RGBA16F : gl.RGBA8;
+    try {
+      const supported = gl.getInternalformatParameter(gl.RENDERBUFFER, internalFmt, gl.SAMPLES) as Int32Array | null;
+      if (supported && supported.length > 0) {
+        let best = 0;
+        for (let i = 0; i < supported.length; i++) {
+          const s = supported[i];
+          if (s === 2) return 2;
+          if (s >= 2 && s <= 4 && (best === 0 || s < best)) best = s;
+        }
+        if (best > 0) return best;
+      }
+    } catch {
+      // Fallback to conservative default
+    }
+    return Math.min(2, maxSamples);
+  }
+
+  private markActivity(): void {
+    this.lastActivityMs = performance.now();
+  }
+
+  public notifyActivity(): void {
+    this.markActivity();
+  }
+
+  public setBurstActive(active: boolean): void {
+    this.burstActive = active;
+    if (active) this.markActivity();
   }
 
   /** Decode & upload heavy photographic macro JPGs + 1024px US Quarter maps after the intro so zero frames drop */
@@ -557,153 +653,129 @@ export class SiliconEngine {
   private getHoleConfig(stageIdx: number): HoleConfig {
     const a = this.anchors[stageIdx];
     const z = this.zoom;
-    const none: HoleConfig = { cx: 0, cz: 0, hx: 0, hz: 0, minY: -10, mode: 0.0, atomX: 0, atomY: 0, atomZ: 0, atomR: 0 };
+    const h = this.tmpHole;
+    h.cx = 0;
+    h.cz = 0;
+    h.hx = 0;
+    h.hz = 0;
+    h.minY = -10;
+    h.mode = 0.0;
+    h.open = 0.0;
+    h.atomX = 0;
+    h.atomY = 0;
+    h.atomZ = 0;
+    h.atomR = 0;
 
     switch (stageIdx) {
       case 0:
-        // World 0 stays 100% solid & unbroken (ZERO moving trapdoor!); only opens far off-screen
-        // once World 1's 13x13 grid already covers >2x the entire viewport (z >= 0.78)!
-        if (z < 0.78) return none;
-        return {
-          cx: a[0],
-          cz: a[2],
-          hx: 0.62,
-          hz: 0.62,
-          minY: -0.35,
-          mode: 2.0,
-          atomX: 0,
-          atomY: 0,
-          atomZ: 0,
-          atomR: 0,
-        };
+        if (z < 0.74) return h;
+        h.cx = a[0];
+        h.cz = a[2];
+        h.hx = 0.62;
+        h.hz = 0.62;
+        h.minY = -0.35;
+        h.mode = 2.0;
+        h.open = this.smootherstep(0.74, 1.05, z);
+        return h;
       case 1:
-        // All 169 SRAM tiles stay uniform while browsing World 1; opens ONLY once diving into the target tile!
-        if (z < 1.32) return none;
-        return {
-          cx: a[0],
-          cz: a[2],
-          hx: WORLD1_HOLE_HALF,
-          hz: WORLD1_HOLE_HALF,
-          minY: -0.18,
-          mode: 1.0,
-          atomX: 0,
-          atomY: 0,
-          atomZ: 0,
-          atomR: 0,
-        };
+        if (z < 1.22) return h;
+        h.cx = a[0];
+        h.cz = a[2];
+        h.hx = WORLD1_HOLE_HALF;
+        h.hz = WORLD1_HOLE_HALF;
+        h.minY = -0.18;
+        h.mode = 1.0;
+        h.open = this.smootherstep(1.22, 1.54, z);
+        return h;
       case 2:
-        // All 25 canyon courtyards stay uniform while browsing World 2; opens once diving between the 4 corner vias!
-        if (z < 2.24) return none;
-        return {
-          cx: a[0],
-          cz: a[2],
-          hx: WORLD2_HOLE_HALF,
-          hz: WORLD2_HOLE_HALF,
-          minY: -0.10,
-          mode: 2.0,
-          atomX: 0,
-          atomY: 0,
-          atomZ: 0,
-          atomR: 0,
-        };
+        if (z < 2.12) return h;
+        h.cx = a[0];
+        h.cz = a[2];
+        h.hx = WORLD2_HOLE_HALF;
+        h.hz = WORLD2_HOLE_HALF;
+        h.minY = -0.10;
+        h.mode = 2.0;
+        h.open = this.smootherstep(2.12, 2.48, z);
+        return h;
       case 3:
-        if (z < 3.05) return none;
-        return {
-          cx: a[0],
-          cz: a[2],
-          hx: WORLD3_HOLE_HALF,
-          hz: WORLD3_HOLE_HALF,
-          minY: -0.09,
-          mode: 1.0,
-          atomX: 0,
-          atomY: 0,
-          atomZ: 0,
-          atomR: 0,
-        };
+        if (z < 2.94) return h;
+        h.cx = a[0];
+        h.cz = a[2];
+        h.hx = WORLD3_HOLE_HALF;
+        h.hz = WORLD3_HOLE_HALF;
+        h.minY = -0.09;
+        h.mode = 1.0;
+        h.open = this.smootherstep(2.94, 3.30, z);
+        return h;
       case 4:
-        // All 27 gold GAA gates stay uniform at z = 4.0; front cutaway opens once diving into your chosen gate!
-        if (z < 4.22) return none;
-        return {
-          cx: a[0],
-          cz: a[2],
-          hx: WORLD4_HOLE_HX,
-          hz: WORLD4_HOLE_HZ,
-          minY: -0.185,
-          mode: 1.0,
-          atomX: 0,
-          atomY: 0,
-          atomZ: 0,
-          atomR: 0,
-        };
+        if (z < 4.10) return h;
+        h.cx = a[0];
+        h.cz = a[2];
+        h.hx = WORLD4_HOLE_HX;
+        h.hz = WORLD4_HOLE_HZ;
+        h.minY = -0.185;
+        h.mode = 1.0;
+        h.open = this.smootherstep(4.10, 4.44, z);
+        return h;
       case 5:
-        if (z < 5.05) return none;
-        return {
-          cx: a[0],
-          cz: 0,
-          hx: 2.45 / STAGE_RATIOS[5],
-          hz: 1.75 / STAGE_RATIOS[5],
-          minY: -0.25,
-          mode: 4.0,
-          atomX: 0,
-          atomY: 0,
-          atomZ: 0,
-          atomR: 0,
-        };
+        if (z < 4.96) return h;
+        h.cx = a[0];
+        h.cz = 0;
+        h.hx = 2.45 / STAGE_RATIOS[5];
+        h.hz = 1.75 / STAGE_RATIOS[5];
+        h.minY = -0.25;
+        h.mode = 4.0;
+        h.open = this.smootherstep(4.96, 5.28, z);
+        return h;
       case 6:
-        // All Silicon crystal atoms stay uniform metallic at z = 6.0; opens into sp3 orbitals once diving into your chosen atom!
-        if (z < 6.22) return none;
-        return {
-          cx: 0,
-          cz: 0,
-          hx: 0,
-          hz: 0,
-          minY: -10,
-          mode: 0.0,
-          atomX: a[0],
-          atomY: a[1],
-          atomZ: a[2],
-          atomR: 0.30,
-        };
+        if (z < 6.12) return h;
+        h.atomX = a[0];
+        h.atomY = a[1];
+        h.atomZ = a[2];
+        h.atomR = 0.30;
+        h.open = this.smootherstep(6.12, 6.46, z);
+        return h;
       case 8:
-        // Central sapphire Proton at (0,0,0) opens cleanly once diving into World 9 (Single Proton & uud Quarks!)
-        if (z < 8.22) return none;
-        return {
-          cx: 0,
-          cz: 0,
-          hx: 0,
-          hz: 0,
-          minY: -10,
-          mode: 0.0,
-          atomX: 0,
-          atomY: 0,
-          atomZ: 0,
-          atomR: 0.25,
-        };
+        if (z < 8.12) return h;
+        h.atomR = 0.25;
+        h.open = this.smootherstep(8.12, 8.46, z);
+        return h;
       default:
-        return none;
+        return h;
     }
   }
 
-  /** Minimum zoom before child stage `k` activates (zero premature cutouts or jumping holes!) */
+  /** Minimum zoom before child stage `k` activates (aligned with parent smooth cutout ramp!) */
   private isStageRevealed(k: number, z: number): boolean {
     if (k === 0) return true;
-    if (k === 1) return z >= 0.58;
-    if (k === 2) return z >= 1.32;
-    if (k === 3) return z >= 2.24;
-    if (k === 4) return z >= 3.05;
-    if (k === 5) return z >= 4.22;
-    if (k === 6) return z >= 5.05;
-    if (k === 7) return z >= 6.22;
-    if (k === 8) return z >= 7.05;
-    if (k === 9) return z >= 8.22;
+    if (k === 1) return z >= 0.44;
+    if (k === 2) return z >= 1.22;
+    if (k === 3) return z >= 2.12;
+    if (k === 4) return z >= 2.94;
+    if (k === 5) return z >= 4.10;
+    if (k === 6) return z >= 4.96;
+    if (k === 7) return z >= 6.12;
+    if (k === 8) return z >= 7.02;
+    if (k === 9) return z >= 8.12;
     return true;
   }
 
-  /** Smooth physical 3D relief extrusion factor (0 -> 1) so newly revealed micro-layers rise cleanly out of the surface */
+  /** Smooth physical 3D relief extrusion factor (0 -> 1) so planar micro-layers rise seamlessly out of their parent */
   private getStageExtrude(k: number, z: number): number {
-    if (k === 1) return this.smoothstep(0.58, 0.86, z);
-    if (k === 2) return this.smoothstep(1.32, 1.62, z);
-    if (k === 3) return this.smoothstep(2.24, 2.60, z);
+    if (k === 1) return this.smootherstep(0.44, 0.90, z);
+    if (k === 2) return this.smootherstep(1.22, 1.66, z);
+    if (k === 3) return this.smootherstep(2.12, 2.58, z);
+    if (k === 4) return this.smootherstep(2.94, 3.38, z);
+    return 1.0;
+  }
+
+  /** Smooth 3D/quantum materialization factor (0 -> 1) so gates, crystals, orbitals, nuclei, and quarks never pop */
+  private getStageReveal(k: number, z: number): number {
+    if (k === 5) return this.smootherstep(4.10, 4.48, z);
+    if (k === 6) return this.smootherstep(4.96, 5.34, z);
+    if (k === 7) return this.smootherstep(6.12, 6.52, z);
+    if (k === 8) return this.smootherstep(7.02, 7.36, z);
+    if (k === 9) return this.smootherstep(8.12, 8.52, z);
     return 1.0;
   }
 
@@ -902,6 +974,7 @@ export class SiliconEngine {
     mat4LookAt(this.lightViewMat, lx, ly, lz, lookX, 0, lookZ, 0, 1, 0);
     mat4Ortho(this.lightProjMat, -halfExtent, halfExtent, -halfExtent, halfExtent, 2.0, 44.0);
     mat4Multiply(this.lightVPMat, this.lightProjMat, this.lightViewMat);
+    this.shadowDirty = true;
   }
 
   private compileShader(type: number, src: string): WebGLShader {
@@ -942,15 +1015,17 @@ export class SiliconEngine {
       return out;
     };
 
-    this.uShadow = grab(this.shadowProg, [
+    const shadowNames = [
       'uLightVP',
       'uWorldScale',
       'uYExtrude',
+      'uStageReveal',
       'uStageOffset',
       'uAtomRotY',
       'uHoleBox',
       'uHoleMinY',
       'uHoleMode',
+      'uHoleOpen',
       'uAtomHole',
       'uCamPos',
       'uLensClearance',
@@ -961,18 +1036,22 @@ export class SiliconEngine {
       'uNetLoad',
       'uPulsePhase',
       'uSocTemp',
-    ]);
+    ];
+    this.uShadow = grab(this.shadowProg, shadowNames);
+    this.uShadowCutout = grab(this.shadowCutoutProg, shadowNames);
 
-    this.uScene = grab(this.sceneProg, [
+    const sceneNames = [
       'uViewProj',
       'uLightVP',
       'uWorldScale',
       'uYExtrude',
+      'uStageReveal',
       'uStageOffset',
       'uAtomRotY',
       'uHoleBox',
       'uHoleMinY',
       'uHoleMode',
+      'uHoleOpen',
       'uAtomHole',
       'uCamPos',
       'uLensClearance',
@@ -984,6 +1063,7 @@ export class SiliconEngine {
       'uPulsePhase',
       'uSocTemp',
       'uShadowMap',
+      'uShadowTexel',
       'uCoinTex',
       'uCoinNormTex',
       'uMatTex',
@@ -1011,7 +1091,9 @@ export class SiliconEngine {
       'uIntroLight',
       'uBootA',
       'uBootB',
-    ]);
+    ];
+    this.uScene = grab(this.sceneProg, sceneNames);
+    this.uSceneCutout = grab(this.sceneCutoutProg, sceneNames);
 
     this.uPrefilter = grab(this.prefilterProg, ['uTex', 'uTexelSize']);
     this.uDown = grab(this.bloomDownProg, ['uTex', 'uHalfPixel']);
@@ -1030,10 +1112,9 @@ export class SiliconEngine {
       'uResolution',
       'uCssSize',
       'uTime',
-      'uPassStage',
-      'uGlassCount',
       'uGlassRect',
       'uGlassParams',
+      'uQuadPad',
       'uPointerFluid',
     ]);
   }
@@ -1125,7 +1206,7 @@ export class SiliconEngine {
     let transSphereVao: WebGLVertexArrayObject | null = null;
     let transSphereBuf: WebGLBuffer | null = null;
     if (w.translucentSphereCount > 0) {
-      const built = this.buildInstancedVao(this.sphereVbo, this.sphereIbo, w.translucentSpheres);
+      const built = this.buildInstancedVao(this.orbitalSphereVbo, this.orbitalSphereIbo, w.translucentSpheres);
       transSphereVao = built.vao;
       transSphereBuf = built.instBuf;
     }
@@ -1258,12 +1339,12 @@ export class SiliconEngine {
     this.srgbA = this.createColorFbo(w, h, null, true);
     this.srgbB = this.createColorFbo(w, h, null, true);
 
-    const w1 = Math.max(2, Math.floor(w / 2));
-    const h1 = Math.max(2, Math.floor(h / 2));
-    const w2 = Math.max(2, Math.floor(w / 4));
-    const h2 = Math.max(2, Math.floor(h / 4));
-    const w3 = Math.max(2, Math.floor(w / 8));
-    const h3 = Math.max(2, Math.floor(h / 8));
+    const w1 = Math.max(2, Math.floor(w / 4));
+    const h1 = Math.max(2, Math.floor(h / 4));
+    const w2 = Math.max(2, Math.floor(w / 8));
+    const h2 = Math.max(2, Math.floor(h / 8));
+    const w3 = Math.max(2, Math.floor(w / 16));
+    const h3 = Math.max(2, Math.floor(h / 16));
 
     this.bloomDown = [
       this.createColorFbo(w1, h1),
@@ -1304,6 +1385,9 @@ export class SiliconEngine {
       if (old.bondBuf) gl.deleteBuffer(old.bondBuf);
     }
     this.stages[0] = this.uploadStage(buildWorld0(this.dieSpec), STAGE_FLOOR_Y[0], true);
+    this.world0Version++;
+    this.shadowDirty = true;
+    this.markActivity();
   }
 
   public getGpuRenderer(): string | null {
@@ -1316,11 +1400,12 @@ export class SiliconEngine {
     return typeof fallback === 'string' && fallback.trim() ? fallback.trim() : null;
   }
 
-  public getFrameActivity(): { frameMs: number; motion: number; zoom: number } {
+  public getFrameActivity(): { frameMs: number; motion: number; zoom: number; idlePaced: boolean } {
     return {
       frameMs: this.emaFrameMs,
       motion: this.smoothMotion,
       zoom: this.zoom,
+      idlePaced: this.isIdlePaced,
     };
   }
 
@@ -1329,6 +1414,7 @@ export class SiliconEngine {
     this.hasInspect = false;
     this.inspectId = null;
     this.inspectBox = [0, 0, 0, 0];
+    this.markActivity();
     this.hooks.onInspect(null);
   }
 
@@ -1337,6 +1423,7 @@ export class SiliconEngine {
     this.hasHover = false;
     this.hoverId = null;
     this.hoverBox = [0, 0, 0, 0];
+    this.markActivity();
     this.hooks.onHover?.(null, 0, 0);
   }
 
@@ -1348,8 +1435,36 @@ export class SiliconEngine {
     return this.introActive;
   }
 
-  /** Play (or replay) the "Cold Boot" powered-off -> staged silicon power-on entrance */
-  public startIntro(): void {
+  public get isIntroHeld(): boolean {
+    return this.introAwaitingBoot;
+  }
+
+  /** Hold Cold Boot paused at black while checking autoplay or waiting for user power-on gesture */
+  public holdIntro(): void {
+    this.initIntroState();
+    this.introAwaitingBoot = true;
+    this.introHoldRendered = false;
+  }
+
+  /** Release the Cold Boot hold and launch seamlessly from `startElapsedSec` (0.0 for autoplay, ~0.50s from held title) */
+  public releaseIntroHold(startElapsedSec = 0): void {
+    if (!this.introAwaitingBoot) return;
+    this.introAwaitingBoot = false;
+    this.introElapsed = clamp(startElapsedSec, 0, INTRO_DURATION - 0.1);
+    this.lastFrame = performance.now();
+    this.lastRenderMs = 0;
+    this.markActivity();
+    this.hooks.onIntroFrame?.({
+      active: true,
+      progress: clamp(this.introElapsed / INTRO_DURATION, 0, 1),
+      elapsed: this.introElapsed,
+    });
+  }
+
+  private initIntroState(): void {
+    this.flightActive = false;
+    this.markActivity();
+    this.shadowDirty = true;
     this.stopTour();
     this.clearInspect();
     this.clearHover();
@@ -1393,12 +1508,19 @@ export class SiliconEngine {
     this.bootGpuWake = 0.0;
     this.bootAuxWake = 0.0;
     this.bootActive = 1.0;
+  }
+
+  /** Play (or replay) the "Cold Boot" powered-off -> staged silicon power-on entrance */
+  public startIntro(): void {
+    this.introAwaitingBoot = false;
+    this.initIntroState();
     this.hooks.onIntroFrame?.({ active: true, progress: 0, elapsed: 0 });
   }
 
   /** Seamlessly yield control to the user if they scroll, drag, or click during the intro */
   public skipIntro(): void {
     if (!this.introActive) return;
+    this.introAwaitingBoot = false;
     this.introActive = false;
     this.targetZoom = this.zoom;
     this.targetYaw = this.yaw;
@@ -1436,6 +1558,9 @@ export class SiliconEngine {
 
   public startTour(): void {
     if (this.tourActive) return;
+    this.flightActive = false;
+    this.markActivity();
+    this.shadowDirty = true;
     this.skipIntro();
     this.clearInspect();
     this.clearHover();
@@ -1479,7 +1604,7 @@ export class SiliconEngine {
 
   /** Compute camera-space ray (origin + unit direction) for a client pixel */
   private getPointerRay(clientX: number, clientY: number): { ox: number; oy: number; oz: number; dx: number; dy: number; dz: number } | null {
-    const rect = this.canvas.getBoundingClientRect();
+    const rect = this.canvasRect;
     if (rect.width <= 0 || rect.height <= 0) return null;
     if (!mat4Invert(this.invViewProjMat, this.viewProjMat)) return null;
 
@@ -1524,19 +1649,59 @@ export class SiliconEngine {
     ];
   }
 
+  private getCameraPoseForZoom(z: number): [number, number] {
+    // Continuous piecewise-linear camera pitch & yaw curve across all 11 stops (zero jarring pitch jumps!)
+    const stops: readonly [number, number, number][] = [
+      [-1.0, 0.96, 0.0],
+      [0.0, HERO_PITCH, HERO_YAW],
+      [1.0, 0.76, 0.08],
+      [2.0, 0.66, 0.20],
+      [3.0, 0.58, 0.24],
+      [4.0, 0.48, 0.28],
+      [5.0, 0.32, 0.32],
+      [6.0, 0.28, 0.38],
+      [7.0, 0.26, 0.44],
+      [8.0, 0.30, 0.46],
+      [9.0, 0.32, 0.50],
+    ];
+    if (z <= stops[0][0]) return [stops[0][1], stops[0][2]];
+    const last = stops[stops.length - 1];
+    if (z >= last[0]) return [last[1], last[2]];
+    for (let i = 0; i < stops.length - 1; i++) {
+      const a = stops[i];
+      const b = stops[i + 1];
+      if (z >= a[0] && z <= b[0]) {
+        const t = (z - a[0]) / Math.max(0.001, b[0] - a[0]);
+        return [a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+      }
+    }
+    return [HERO_PITCH, HERO_YAW];
+  }
+
   public flyToZoom(z: number, dieTargetXZ?: [number, number]): void {
+    this.markActivity();
     this.skipIntro();
     this.stopTour();
-    this.targetZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
-    this.zoomRate = 6.8;
+    const destZoom = clamp(z, MIN_ZOOM, MAX_ZOOM);
+    this.targetZoom = destZoom;
+
+    let endAnchorX = this.targetAnchor0[0];
+    let endAnchorZ = this.targetAnchor0[1];
+    let hasAnchor = false;
     if (dieTargetXZ) {
       const gx = Math.round(dieTargetXZ[0] / WORLD0_GRID_STEP) * WORLD0_GRID_STEP;
       const gz = Math.round(dieTargetXZ[1] / WORLD0_GRID_STEP) * WORLD0_GRID_STEP;
-      this.targetAnchor0[0] = clamp(gx, -WORLD0_DIE_CLAMP_X, WORLD0_DIE_CLAMP_X);
-      this.targetAnchor0[1] = clamp(gz, -WORLD0_DIE_CLAMP_Z, WORLD0_DIE_CLAMP_Z);
-    } else if (z <= 0.05) {
+      endAnchorX = clamp(gx, -WORLD0_DIE_CLAMP_X, WORLD0_DIE_CLAMP_X);
+      endAnchorZ = clamp(gz, -WORLD0_DIE_CLAMP_Z, WORLD0_DIE_CLAMP_Z);
+      this.targetAnchor0[0] = endAnchorX;
+      this.targetAnchor0[1] = endAnchorZ;
+      hasAnchor = true;
+    } else if (destZoom <= 0.05) {
+      endAnchorX = 0;
+      endAnchorZ = 0;
       this.targetAnchor0[0] = 0;
       this.targetAnchor0[1] = 0;
+      hasAnchor = true;
       if (this.zoom <= 0.55) {
         for (let k = 1; k < this.anchors.length; k++) {
           this.anchors[k][0] = 0;
@@ -1547,53 +1712,58 @@ export class SiliconEngine {
         this.recomputeEffOffsets();
       }
     }
-    if (z < -0.5) {
-      this.targetPitch = 0.96;
-      this.targetYaw = 0.0;
-    } else if (z < 0.5) {
-      this.targetPitch = HERO_PITCH;
-      this.targetYaw = HERO_YAW;
-    } else if (z < 1.5) {
-      this.targetPitch = 0.76;
-      this.targetYaw = 0.08;
-    } else if (z < 2.5) {
-      this.targetPitch = 0.66;
-      this.targetYaw = 0.20;
-    } else if (z < 3.5) {
-      this.targetPitch = 0.58;
-      this.targetYaw = 0.24;
-    } else if (z < 4.5) {
-      this.targetPitch = 0.48;
-      this.targetYaw = 0.28;
-    } else if (z < 5.5) {
-      this.targetPitch = 0.32;
-      this.targetYaw = 0.32;
-    } else if (z < 6.5) {
-      this.targetPitch = 0.28;
-      this.targetYaw = 0.38;
-    } else if (z < 7.5) {
-      this.targetPitch = 0.26;
-      this.targetYaw = 0.44;
-    } else if (z < 8.5) {
-      this.targetPitch = 0.30;
-      this.targetYaw = 0.46;
-    } else {
-      this.targetPitch = 0.32;
-      this.targetYaw = 0.50;
-    }
+
+    const [destPitch, rawDestYaw] = this.getCameraPoseForZoom(destZoom);
+    // Pick shortest angular path in yaw so the camera never spins the long way around!
+    const twoPi = Math.PI * 2;
+    let deltaYaw = ((rawDestYaw - this.yaw) % twoPi + Math.PI * 3) % twoPi - Math.PI;
+    const destYaw = this.yaw + deltaYaw;
+
+    this.targetPitch = destPitch;
+    this.targetYaw = destYaw;
+
+    // Launch velvety quintic-eased optical objective flight (zero initial velocity kick, whisper-soft arrival!)
+    const dz = Math.abs(destZoom - this.zoom);
+    const dAng = Math.hypot(destPitch - this.pitch, deltaYaw);
+    this.flightStartZoom = this.zoom;
+    this.flightEndZoom = destZoom;
+    this.flightStartPitch = this.pitch;
+    this.flightEndPitch = destPitch;
+    this.flightStartYaw = this.yaw;
+    this.flightEndYaw = destYaw;
+    this.flightStartAnchorX = this.anchors[0][0];
+    this.flightStartAnchorZ = this.anchors[0][2];
+    this.flightEndAnchorX = endAnchorX;
+    this.flightEndAnchorZ = endAnchorZ;
+    this.flightHasAnchor = hasAnchor;
+    this.flightElapsed = 0;
+    this.flightDuration = clamp(0.68 + dz * 0.24 + dAng * 0.14, 0.72, 2.40);
+    this.flightActive = true;
   }
 
   private resize = (): void => {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.0);
+    const nativeDpr = Math.min(window.devicePixelRatio || 1, 2.0);
+    // Cap total pixel count so 16" MBP & 5K displays stay Retina-crisp (~1.45x–2.0x DPR) without 8M–15M px GPU saturation
+    const maxDprForBudget = Math.sqrt(MAX_RENDER_PIXELS / Math.max(1, w * h));
+    const dpr = Math.max(1.0, Math.min(nativeDpr, maxDprForBudget));
     this.cssW = w;
     this.cssH = h;
     this.canvasW = Math.max(1, Math.floor(w * dpr));
     this.canvasH = Math.max(1, Math.floor(h * dpr));
     this.canvas.width = this.canvasW;
     this.canvas.height = this.canvasH;
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvasRect = {
+      left: rect.left,
+      top: rect.top,
+      width: rect.width || w,
+      height: rect.height || h,
+    };
     this.allocRenderTargets(this.canvasW, this.canvasH);
+    this.shadowDirty = true;
+    this.markActivity();
   };
 
   public setLiquidGlassRegions(
@@ -1610,12 +1780,24 @@ export class SiliconEngine {
     }[]
   ): void {
     const count = Math.min(16, regions.length);
+    let changed = count !== this.glassCount;
     this.glassCount = count;
     let hasElev = false;
     for (let i = 0; i < count; i++) {
       const r = regions[i];
       if (r.style === 2 && r.alpha > 0.005) hasElev = true;
       const o = i * 4;
+      const p3 = r.style * 4.0 + clamp(r.alpha, 0.0, 1.0);
+      if (
+        !changed &&
+        (Math.abs(this.glassRects[o] - r.cx) > 0.1 ||
+          Math.abs(this.glassRects[o + 1] - r.cy) > 0.1 ||
+          Math.abs(this.glassRects[o + 2] - r.hw) > 0.1 ||
+          Math.abs(this.glassRects[o + 3] - r.hh) > 0.1 ||
+          Math.abs(this.glassParams[o + 3] - p3) > 0.002)
+      ) {
+        changed = true;
+      }
       this.glassRects[o] = r.cx;
       this.glassRects[o + 1] = r.cy;
       this.glassRects[o + 2] = r.hw;
@@ -1623,9 +1805,10 @@ export class SiliconEngine {
       this.glassParams[o] = r.radius;
       this.glassParams[o + 1] = r.bevel;
       this.glassParams[o + 2] = r.frost;
-      this.glassParams[o + 3] = r.style * 4.0 + clamp(r.alpha, 0.0, 1.0);
+      this.glassParams[o + 3] = p3;
     }
     this.glassHasElevated = hasElev;
+    if (changed) this.markActivity();
   }
 
   public setGlassPointer(xCss: number, yCss: number, active: boolean): void {
@@ -1634,6 +1817,11 @@ export class SiliconEngine {
       const dy = clamp(yCss - this.glassPointerY, -32, 32);
       this.glassPointerVelX = this.glassPointerVelX * 0.65 + dx * 0.35;
       this.glassPointerVelY = this.glassPointerVelY * 0.65 + dy * 0.35;
+      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+        this.markActivity();
+      }
+    } else if (active !== (this.glassPointerActive > 0.5)) {
+      this.markActivity();
     }
     this.glassPointerX = xCss;
     this.glassPointerY = yCss;
@@ -1646,11 +1834,19 @@ export class SiliconEngine {
    */
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
+    if (this.introAwaitingBoot) return;
+    if (this.flightActive) {
+      this.flightActive = false;
+      this.targetZoom = this.zoom;
+      this.targetYaw = this.yaw;
+      this.targetPitch = this.pitch;
+    }
+    this.markActivity();
     this.skipIntro();
     this.stopTour();
     const delta = -e.deltaY * (e.ctrlKey ? 0.010 : 0.0028);
     this.targetZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this.targetZoom + delta));
-    this.zoomRate = 10.5;
+    this.zoomRate = 9.5;
   };
 
   private onContextMenu = (e: MouseEvent): void => {
@@ -1658,9 +1854,24 @@ export class SiliconEngine {
   };
 
   private onPointerDown = (e: PointerEvent): void => {
+    if (this.introAwaitingBoot) return;
+    if (this.flightActive) {
+      this.flightActive = false;
+      this.targetZoom = this.zoom;
+      this.targetYaw = this.yaw;
+      this.targetPitch = this.pitch;
+    }
+    this.markActivity();
     this.skipIntro();
     this.stopTour();
     this.clearHover();
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvasRect = {
+      left: rect.left,
+      top: rect.top,
+      width: rect.width || this.cssW,
+      height: rect.height || this.cssH,
+    };
     this.dragging = true;
     // Right-drag or Shift+drag pans the microscope stage laterally; normal left-drag orbits in 3D!
     this.dragMode = e.button === 2 || e.shiftKey ? 'pan' : 'orbit';
@@ -1682,6 +1893,7 @@ export class SiliconEngine {
           this.hasHover = true;
           this.hoverId = hit.id;
           this.hoverBox = hit.box;
+          this.markActivity();
           this.hooks.onHover?.(hit, e.clientX, e.clientY);
         } else {
           this.clearHover();
@@ -1692,6 +1904,7 @@ export class SiliconEngine {
       }
       return;
     }
+    this.markActivity();
     const dx = e.clientX - this.lastX;
     const dy = e.clientY - this.lastY;
     this.lastX = e.clientX;
@@ -1745,6 +1958,7 @@ export class SiliconEngine {
         this.hasInspect = true;
         this.inspectId = hit.id;
         this.inspectBox = hit.box;
+        this.markActivity();
         this.hooks.onInspect(hit);
       } else {
         this.clearInspect();
@@ -1770,8 +1984,37 @@ export class SiliconEngine {
     }
   };
 
+  private onVisibilityChange = (): void => {
+    this.pageHidden = typeof document !== 'undefined' ? document.hidden : false;
+    if (this.pageHidden) {
+      if (this.rafId) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = 0;
+      }
+    } else if (!this.disposed) {
+      this.lastFrame = performance.now();
+      this.lastRenderMs = 0;
+      this.markActivity();
+      if (!this.rafId) {
+        this.rafId = requestAnimationFrame(this.loop);
+      }
+    }
+  };
+
+  private onWindowFocus = (): void => {
+    this.windowFocused = true;
+    this.markActivity();
+  };
+
+  private onWindowBlur = (): void => {
+    this.windowFocused = false;
+  };
+
   private bindEvents(): void {
     window.addEventListener('resize', this.resize);
+    window.addEventListener('focus', this.onWindowFocus);
+    window.addEventListener('blur', this.onWindowBlur);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
     this.canvas.addEventListener('contextmenu', this.onContextMenu);
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
@@ -1807,7 +2050,7 @@ export class SiliconEngine {
       gl.bindVertexArray(stage.transSphereVao);
       gl.drawElementsInstanced(
         gl.TRIANGLES,
-        this.sphereMesh.indexCount,
+        this.orbitalSphereMesh.indexCount,
         gl.UNSIGNED_SHORT,
         0,
         stage.transSphereCount
@@ -1835,16 +2078,98 @@ export class SiliconEngine {
     const hole = this.getHoleConfig(idx);
     gl.uniform1f(locs.uWorldScale, scale);
     gl.uniform1f(locs.uYExtrude, this.getStageExtrude(idx, this.zoom));
+    gl.uniform1f(locs.uStageReveal, this.getStageReveal(idx, this.zoom));
     gl.uniform3f(locs.uStageOffset, off[0], off[1], off[2]);
     gl.uniform1f(locs.uAtomRotY, idx === 7 && this.atomParity < 0 ? 1.0 : 0.0);
     gl.uniform4f(locs.uHoleBox, hole.cx, hole.cz, hole.hx, hole.hz);
     gl.uniform1f(locs.uHoleMinY, hole.minY);
     gl.uniform1f(locs.uHoleMode, hole.mode);
+    gl.uniform1f(locs.uHoleOpen, hole.open);
     gl.uniform4f(locs.uAtomHole, hole.atomX, hole.atomY, hole.atomZ, hole.atomR);
+  }
+
+  private stageNeedsDiscard(hole: HoleConfig): boolean {
+    return hole.hx > 0.001 && hole.open > 0.01 && hole.mode > 0.5 && hole.mode < 3.5;
+  }
+
+  private bindShadowProgramUniforms(
+    prog: WebGLProgram,
+    locs: Record<string, WebGLUniformLocation | null>,
+    elapsedSec: number,
+    camX: number,
+    camY: number,
+    camZ: number
+  ): void {
+    const gl = this.gl;
+    gl.useProgram(prog);
+    gl.uniformMatrix4fv(locs.uLightVP, false, this.lightVPMat);
+    gl.uniform1f(locs.uTime, elapsedSec);
+    gl.uniform4f(locs.uMacLoads, this.smoothP, this.smoothE, this.smoothGpu, this.smoothMem);
+    gl.uniform4f(locs.uCoreA, this.smoothCores[0], this.smoothCores[1], this.smoothCores[2], this.smoothCores[3]);
+    gl.uniform4f(locs.uCoreB, this.smoothCores[4], this.smoothCores[5], this.smoothCores[6], this.smoothCores[7]);
+    gl.uniform1f(locs.uNetLoad, this.smoothNet);
+    gl.uniform1f(locs.uPulsePhase, this.pulsePhase);
+    gl.uniform1f(locs.uSocTemp, this.smoothTemp);
+    gl.uniform3f(locs.uCamPos, camX, camY, camZ);
+  }
+
+  private bindSceneSharedUniforms(
+    prog: WebGLProgram,
+    locs: Record<string, WebGLUniformLocation | null>,
+    elapsedSec: number,
+    camX: number,
+    camY: number,
+    camZ: number,
+    semFactor: number,
+    focusX: number,
+    focusZ: number,
+    focusDist: number,
+    dofStrength: number,
+    fogDensity: number
+  ): void {
+    const gl = this.gl;
+    gl.useProgram(prog);
+    gl.uniformMatrix4fv(locs.uViewProj, false, this.viewProjMat);
+    gl.uniformMatrix4fv(locs.uLightVP, false, this.lightVPMat);
+    gl.uniform1f(locs.uTime, elapsedSec);
+    gl.uniform4f(locs.uMacLoads, this.smoothP, this.smoothE, this.smoothGpu, this.smoothMem);
+    gl.uniform4f(locs.uCoreA, this.smoothCores[0], this.smoothCores[1], this.smoothCores[2], this.smoothCores[3]);
+    gl.uniform4f(locs.uCoreB, this.smoothCores[4], this.smoothCores[5], this.smoothCores[6], this.smoothCores[7]);
+    gl.uniform1f(locs.uNetLoad, this.smoothNet);
+    gl.uniform1f(locs.uPulsePhase, this.pulsePhase);
+    gl.uniform1f(locs.uSocTemp, this.smoothTemp);
+    gl.uniform1i(locs.uShadowMap, 0);
+    gl.uniform1f(locs.uShadowTexel, 1.0 / SHADOW_SIZE);
+    gl.uniform1i(locs.uCoinTex, 1);
+    gl.uniform1i(locs.uCoinNormTex, 2);
+    gl.uniform1i(locs.uMatTex, 3);
+    gl.uniform1i(locs.uMatNormTex, 4);
+    gl.uniform1i(locs.uDieLithoTex, 5);
+    gl.uniform1i(locs.uDieNormTex, 6);
+    gl.uniform1i(locs.uAbfTex, 7);
+    gl.uniform1i(locs.uAbfNormTex, 8);
+    gl.uniform1i(locs.uRamDecalTex, 9);
+    gl.uniform1i(locs.uEnvTex, 10);
+    gl.uniform4f(locs.uCoinSpec, QUARTER_X, QUARTER_Z, QUARTER_RADIUS, QUARTER_HY);
+    gl.uniform2f(locs.uFocusXZ, focusX, focusZ);
+    gl.uniform1f(locs.uFocusDist, focusDist);
+    gl.uniform1f(locs.uDofStrength, dofStrength);
+    gl.uniform1f(locs.uFogDensity, fogDensity);
+    gl.uniform3f(locs.uCamPos, camX, camY, camZ);
+    gl.uniform1f(locs.uZoom, this.zoom);
+    gl.uniform1f(locs.uSemFactor, semFactor);
+    gl.uniform1f(locs.uThermal, this.thermal ? 1.0 : 0.0);
+    gl.uniform1f(locs.uTranslucent, 0.0);
+    gl.uniform1f(locs.uRegionKind, this.activeRegionKind);
+    gl.uniform4f(locs.uIntroLight, this.introLightSweep, this.introKeyIntensity, this.introRimBoost, 0.0);
+    gl.uniform4f(locs.uBootA, this.bootPwrRails, this.bootFabricLock, this.bootMemTrain, this.bootEcoreWake);
+    gl.uniform4f(locs.uBootB, this.bootPcoreWake, this.bootGpuWake, this.bootAuxWake, this.bootActive);
   }
 
   private renderUnifiedScene(
     activeStages: { idx: number; scale: number }[],
+    activeStageCount: number,
+    nowMs: number,
     elapsedSec: number,
     camX: number,
     camY: number,
@@ -1858,161 +2183,154 @@ export class SiliconEngine {
   ): void {
     const gl = this.gl;
 
-    // 1) Unified 2048px Directional Shadow Pass across ALL active nested scales
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo);
-    gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
-    gl.clear(gl.DEPTH_BUFFER_BIT);
-    gl.enable(gl.DEPTH_TEST);
-    gl.depthMask(true);
-    gl.depthFunc(gl.LESS);
-    gl.enable(gl.CULL_FACE);
-    gl.cullFace(gl.BACK);
-    gl.disable(gl.BLEND);
-    gl.enable(gl.POLYGON_OFFSET_FILL);
-    gl.polygonOffset(1.8, 2.5);
-    gl.colorMask(false, false, false, false);
-
-    gl.useProgram(this.shadowProg);
-    gl.uniformMatrix4fv(this.uShadow.uLightVP, false, this.lightVPMat);
-    gl.uniform1f(this.uShadow.uTime, elapsedSec);
-    gl.uniform4f(this.uShadow.uMacLoads, this.smoothP, this.smoothE, this.smoothGpu, this.smoothMem);
-    gl.uniform4f(
-      this.uShadow.uCoreA,
-      this.smoothCores[0],
-      this.smoothCores[1],
-      this.smoothCores[2],
-      this.smoothCores[3]
-    );
-    gl.uniform4f(
-      this.uShadow.uCoreB,
-      this.smoothCores[4],
-      this.smoothCores[5],
-      this.smoothCores[6],
-      this.smoothCores[7]
-    );
-    gl.uniform1f(this.uShadow.uNetLoad, this.smoothNet);
-    gl.uniform1f(this.uShadow.uPulsePhase, this.pulsePhase);
-    gl.uniform1f(this.uShadow.uSocTemp, this.smoothTemp);
-    gl.uniform3f(this.uShadow.uCamPos, camX, camY, camZ);
-
-    for (let i = 0; i < activeStages.length; i++) {
+    // Smart Shadow Map Caching: skip re-rendering static shadow maps at rest (0 Hz on Worlds 0-4, 15 Hz on vibrating atoms!)
+    let hasAnimatedStage = false;
+    let hasWorld0 = false;
+    let sig = `${this.world0Version}|${Math.round(this.zoom * 200)}|${Math.round(this.anchors[0][0] * 100)},${Math.round(this.anchors[0][2] * 100)}`;
+    for (let i = 0; i < activeStageCount; i++) {
       const { idx, scale } = activeStages[i];
-      if (scale < 0.015 || scale > 40.0) continue;
-      this.bindStageHoleUniforms(this.uShadow, idx, scale);
-      const lensClearance =
-        idx === 6
-          ? this.smoothstep(1.6, 3.6, scale) * 2.45
-          : idx === 8
-            ? this.smoothstep(1.8, 4.5, scale) * 5.2
-            : 0.0;
-      gl.uniform1f(this.uShadow.uLensClearance, lensClearance);
-      this.drawOpaqueStage(this.stages[idx]);
+      if (idx === 0) hasWorld0 = true;
+      if (idx >= 5) hasAnimatedStage = true;
+      if (scale >= 0.015 && scale <= 40.0) {
+        const off = this.effOffsets[idx];
+        sig += `|${idx}:${Math.round(scale * 100)}:${Math.round(off[0] * 50)},${Math.round(off[1] * 50)},${Math.round(off[2] * 50)}`;
+      }
+    }
+    const stageChanged = sig !== this.lastShadowStageSig;
+    const animTick = hasAnimatedStage && nowMs - this.lastShadowMs >= 66;
+    const pCoreTick = hasWorld0 && Math.abs(this.smoothP - this.lastShadowSmoothP) > 0.045 && nowMs - this.lastShadowMs >= 140;
+    const shouldRenderShadow = this.shadowDirty || stageChanged || animTick || pCoreTick;
+
+    // 1) Unified Directional Shadow Pass (uses pure depth-only shader when no hole discard is active!)
+    if (shouldRenderShadow) {
+      this.shadowDirty = false;
+      this.lastShadowStageSig = sig;
+      this.lastShadowMs = nowMs;
+      this.lastShadowSmoothP = this.smoothP;
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo);
+      gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthMask(true);
+      gl.depthFunc(gl.LESS);
+      gl.enable(gl.CULL_FACE);
+      gl.cullFace(gl.BACK);
+      gl.disable(gl.BLEND);
+      gl.enable(gl.POLYGON_OFFSET_FILL);
+      gl.polygonOffset(1.8, 2.5);
+      gl.colorMask(false, false, false, false);
+
+      let activeShadowProg: WebGLProgram | null = null;
+      let boundSolidShadow = false;
+      let boundCutoutShadow = false;
+
+      for (let i = 0; i < activeStageCount; i++) {
+        const { idx, scale } = activeStages[i];
+        if (scale < 0.015 || scale > 40.0) continue;
+        const hole = this.getHoleConfig(idx);
+        const needsDiscard = this.stageNeedsDiscard(hole);
+        const prog = needsDiscard ? this.shadowCutoutProg : this.shadowProg;
+        const locs = needsDiscard ? this.uShadowCutout : this.uShadow;
+        if (activeShadowProg !== prog) {
+          activeShadowProg = prog;
+          if ((needsDiscard && !boundCutoutShadow) || (!needsDiscard && !boundSolidShadow)) {
+            this.bindShadowProgramUniforms(prog, locs, elapsedSec, camX, camY, camZ);
+            if (needsDiscard) boundCutoutShadow = true;
+            else boundSolidShadow = true;
+          } else {
+            gl.useProgram(prog);
+          }
+        }
+        this.bindStageHoleUniforms(locs, idx, scale);
+        const lensClearance =
+          idx === 6
+            ? this.smoothstep(1.6, 3.6, scale) * 2.45
+            : idx === 8
+              ? this.smoothstep(1.8, 4.5, scale) * 5.2
+              : 0.0;
+        gl.uniform1f(locs.uLensClearance, lensClearance);
+        this.drawOpaqueStage(this.stages[idx]);
+      }
+
+      gl.disable(gl.POLYGON_OFFSET_FILL);
+      gl.colorMask(true, true, true, true);
+    } else {
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthMask(true);
+      gl.depthFunc(gl.LESS);
+      gl.enable(gl.CULL_FACE);
+      gl.cullFace(gl.BACK);
+      gl.disable(gl.BLEND);
     }
 
-    gl.disable(gl.POLYGON_OFFSET_FILL);
-    gl.colorMask(true, true, true, true);
-
-    // 2A) Unified 4x MSAA HDR Opaque PBR Pass — ALL nested scales share ONE 3D depth buffer!
-    // Clear alpha to 0.0 so empty obsidian backdrop carries CoC = 0.0!
+    // 2A) Unified MSAA HDR Opaque PBR Pass — discard-free fast path preserves Apple Silicon TBDR HSR!
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.msaaFbo ?? this.hdrMain.fbo);
     gl.viewport(0, 0, this.canvasW, this.canvasH);
     gl.clearColor(0.003, 0.005, 0.009, 0.0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    gl.useProgram(this.sceneProg);
-    gl.uniformMatrix4fv(this.uScene.uViewProj, false, this.viewProjMat);
-    gl.uniformMatrix4fv(this.uScene.uLightVP, false, this.lightVPMat);
-    gl.uniform1f(this.uScene.uTime, elapsedSec);
-    gl.uniform4f(this.uScene.uMacLoads, this.smoothP, this.smoothE, this.smoothGpu, this.smoothMem);
-    gl.uniform4f(
-      this.uScene.uCoreA,
-      this.smoothCores[0],
-      this.smoothCores[1],
-      this.smoothCores[2],
-      this.smoothCores[3]
-    );
-    gl.uniform4f(
-      this.uScene.uCoreB,
-      this.smoothCores[4],
-      this.smoothCores[5],
-      this.smoothCores[6],
-      this.smoothCores[7]
-    );
-    gl.uniform1f(this.uScene.uNetLoad, this.smoothNet);
-    gl.uniform1f(this.uScene.uPulsePhase, this.pulsePhase);
-    gl.uniform1f(this.uScene.uSocTemp, this.smoothTemp);
-
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
-    gl.uniform1i(this.uScene.uShadowMap, 0);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.coinTex);
-    gl.uniform1i(this.uScene.uCoinTex, 1);
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.coinNormTex);
-    gl.uniform1i(this.uScene.uCoinNormTex, 2);
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.matTex);
-    gl.uniform1i(this.uScene.uMatTex, 3);
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.matNormTex);
-    gl.uniform1i(this.uScene.uMatNormTex, 4);
     gl.activeTexture(gl.TEXTURE5);
     gl.bindTexture(gl.TEXTURE_2D, this.dieLithoTex);
-    gl.uniform1i(this.uScene.uDieLithoTex, 5);
     gl.activeTexture(gl.TEXTURE6);
     gl.bindTexture(gl.TEXTURE_2D, this.dieNormTex);
-    gl.uniform1i(this.uScene.uDieNormTex, 6);
     gl.activeTexture(gl.TEXTURE7);
     gl.bindTexture(gl.TEXTURE_2D, this.abfTex);
-    gl.uniform1i(this.uScene.uAbfTex, 7);
     gl.activeTexture(gl.TEXTURE8);
     gl.bindTexture(gl.TEXTURE_2D, this.abfNormTex);
-    gl.uniform1i(this.uScene.uAbfNormTex, 8);
     gl.activeTexture(gl.TEXTURE9);
     gl.bindTexture(gl.TEXTURE_2D, this.ramDecalTex);
-    gl.uniform1i(this.uScene.uRamDecalTex, 9);
     gl.activeTexture(gl.TEXTURE10);
     gl.bindTexture(gl.TEXTURE_2D, this.envTex);
-    gl.uniform1i(this.uScene.uEnvTex, 10);
-    gl.uniform4f(this.uScene.uCoinSpec, QUARTER_X, QUARTER_Z, QUARTER_RADIUS, QUARTER_HY);
-    gl.uniform2f(this.uScene.uFocusXZ, focusX, focusZ);
-    gl.uniform1f(this.uScene.uFocusDist, focusDist);
-    gl.uniform1f(this.uScene.uDofStrength, dofStrength);
-    gl.uniform1f(this.uScene.uFogDensity, fogDensity);
-    gl.uniform3f(this.uScene.uCamPos, camX, camY, camZ);
-    gl.uniform1f(this.uScene.uZoom, this.zoom);
-    gl.uniform1f(this.uScene.uSemFactor, semFactor);
-    gl.uniform1f(this.uScene.uThermal, this.thermal ? 1.0 : 0.0);
-    gl.uniform1f(this.uScene.uTranslucent, 0.0);
-    gl.uniform1f(this.uScene.uRegionKind, this.activeRegionKind);
-    gl.uniform4f(
-      this.uScene.uIntroLight,
-      this.introLightSweep,
-      this.introKeyIntensity,
-      this.introRimBoost,
-      0.0
-    );
-    gl.uniform4f(
-      this.uScene.uBootA,
-      this.bootPwrRails,
-      this.bootFabricLock,
-      this.bootMemTrain,
-      this.bootEcoreWake
-    );
-    gl.uniform4f(
-      this.uScene.uBootB,
-      this.bootPcoreWake,
-      this.bootGpuWake,
-      this.bootAuxWake,
-      this.bootActive
-    );
 
-    for (let i = 0; i < activeStages.length; i++) {
+    let activeSceneProg: WebGLProgram | null = null;
+    let boundSolidScene = false;
+    let boundCutoutScene = false;
+
+    for (let i = 0; i < activeStageCount; i++) {
       const { idx, scale } = activeStages[i];
       const stage = this.stages[idx];
-      this.bindStageHoleUniforms(this.uScene, idx, scale);
-      gl.uniform1f(this.uScene.uFloorY, stage.floorY);
+      const hole = this.getHoleConfig(idx);
+      const needsDiscard = this.stageNeedsDiscard(hole);
+      const prog = needsDiscard ? this.sceneCutoutProg : this.sceneProg;
+      const locs = needsDiscard ? this.uSceneCutout : this.uScene;
+
+      if (activeSceneProg !== prog) {
+        activeSceneProg = prog;
+        if ((needsDiscard && !boundCutoutScene) || (!needsDiscard && !boundSolidScene)) {
+          this.bindSceneSharedUniforms(
+            prog,
+            locs,
+            elapsedSec,
+            camX,
+            camY,
+            camZ,
+            semFactor,
+            focusX,
+            focusZ,
+            focusDist,
+            dofStrength,
+            fogDensity
+          );
+          if (needsDiscard) boundCutoutScene = true;
+          else boundSolidScene = true;
+        } else {
+          gl.useProgram(prog);
+        }
+      }
+
+      this.bindStageHoleUniforms(locs, idx, scale);
+      gl.uniform1f(locs.uFloorY, stage.floorY);
 
       const lensClearance =
         idx === 6
@@ -2020,34 +2338,34 @@ export class SiliconEngine {
           : idx === 8
             ? this.smoothstep(1.8, 4.5, scale) * 5.2
             : 0.0;
-      gl.uniform1f(this.uScene.uLensClearance, lensClearance);
+      gl.uniform1f(locs.uLensClearance, lensClearance);
 
       const showInspect = idx === 0 && this.inspectAlpha > 0.004 && this.renderInspectBox[2] > 0.001;
       const showHover = idx === 0 && this.hoverAlpha > 0.004 && this.renderHoverBox[2] > 0.001;
       if (showInspect) {
         gl.uniform4f(
-          this.uScene.uInspectBox,
+          locs.uInspectBox,
           this.renderInspectBox[0],
           this.renderInspectBox[1],
           this.renderInspectBox[2],
           this.renderInspectBox[3]
         );
       } else {
-        gl.uniform4f(this.uScene.uInspectBox, 0, 0, 0, 0);
+        gl.uniform4f(locs.uInspectBox, 0, 0, 0, 0);
       }
       if (showHover) {
         gl.uniform4f(
-          this.uScene.uHoverBox,
+          locs.uHoverBox,
           this.renderHoverBox[0],
           this.renderHoverBox[1],
           this.renderHoverBox[2],
           this.renderHoverBox[3]
         );
       } else {
-        gl.uniform4f(this.uScene.uHoverBox, 0, 0, 0, 0);
+        gl.uniform4f(locs.uHoverBox, 0, 0, 0, 0);
       }
       gl.uniform4f(
-        this.uScene.uHighlightFade,
+        locs.uHighlightFade,
         showHover ? this.hoverAlpha : 0.0,
         showInspect ? this.inspectAlpha : 0.0,
         this.renderHoverIsRing,
@@ -2056,15 +2374,36 @@ export class SiliconEngine {
       this.drawOpaqueStage(stage);
     }
 
-    // 2B) Translucent Volumetric Quantum Orbital Pass (depth-tested, additive RGB while preserving opaque CoC alpha!)
+    // 2B) Translucent Volumetric Quantum Orbital Pass (always uses discard-free sceneProg!)
     let hasTranslucent = false;
-    for (let i = 0; i < activeStages.length; i++) {
+    for (let i = 0; i < activeStageCount; i++) {
       if (this.stages[activeStages[i].idx].transSphereCount > 0) {
         hasTranslucent = true;
         break;
       }
     }
     if (hasTranslucent) {
+      if (activeSceneProg !== this.sceneProg) {
+        if (!boundSolidScene) {
+          this.bindSceneSharedUniforms(
+            this.sceneProg,
+            this.uScene,
+            elapsedSec,
+            camX,
+            camY,
+            camZ,
+            semFactor,
+            focusX,
+            focusZ,
+            focusDist,
+            dofStrength,
+            fogDensity
+          );
+          boundSolidScene = true;
+        } else {
+          gl.useProgram(this.sceneProg);
+        }
+      }
       gl.enable(gl.BLEND);
       gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ZERO, gl.ONE);
       gl.depthMask(false);
@@ -2074,7 +2413,7 @@ export class SiliconEngine {
       gl.uniform4f(this.uScene.uHoverBox, 0, 0, 0, 0);
       gl.uniform4f(this.uScene.uHighlightFade, 0, 0, 0, 0);
 
-      for (let i = 0; i < activeStages.length; i++) {
+      for (let i = 0; i < activeStageCount; i++) {
         const { idx, scale } = activeStages[i];
         const stage = this.stages[idx];
         if (stage.transSphereCount === 0) continue;
@@ -2108,14 +2447,224 @@ export class SiliconEngine {
     }
   }
 
+  /** Blit a tight CSS-space padded region between two full-res sRGB framebuffers */
+  private blitCssRegion(cx: number, cy: number, hw: number, hh: number, padCss: number): void {
+    const scaleX = this.canvasW / Math.max(1, this.cssW);
+    const scaleY = this.canvasH / Math.max(1, this.cssH);
+    const centerGlY = this.cssH - cy;
+    const x0 = Math.max(0, Math.floor((cx - hw - padCss) * scaleX));
+    const x1 = Math.min(this.canvasW, Math.ceil((cx + hw + padCss) * scaleX));
+    const y0 = Math.max(0, Math.floor((centerGlY - hh - padCss) * scaleY));
+    const y1 = Math.min(this.canvasH, Math.ceil((centerGlY + hh + padCss) * scaleY));
+    if (x1 > x0 && y1 > y0) {
+      this.gl.blitFramebuffer(x0, y0, x1, y1, x0, y0, x1, y1, this.gl.COLOR_BUFFER_BIT, this.gl.NEAREST);
+    }
+  }
+
+  /** Draw tight screen-space quads for Liquid Glass (~2% of pixels instead of 200% full-screen!) */
+  private renderLiquidGlass(elapsedSec: number): void {
+    const gl = this.gl;
+
+    // Smooth fluid viscosity decay for pointer surface interaction
+    this.glassPointerVelX *= 0.84;
+    this.glassPointerVelY *= 0.84;
+    if (Math.abs(this.glassPointerVelX) < 0.01) this.glassPointerVelX = 0;
+    if (Math.abs(this.glassPointerVelY) < 0.01) this.glassPointerVelY = 0;
+
+    // 1) Hardware-blit full crisp composite scene srgbA -> default screen framebuffer
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.srgbA.fbo);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    gl.blitFramebuffer(
+      0,
+      0,
+      this.canvasW,
+      this.canvasH,
+      0,
+      0,
+      this.canvasW,
+      this.canvasH,
+      gl.COLOR_BUFFER_BIT,
+      gl.NEAREST
+    );
+
+    const drawStageQuads = (targetStage: 0 | 1) => {
+      const pad = targetStage === 1 ? 20.0 : 36.0;
+      for (let i = 0; i < this.glassCount; i++) {
+        const o = i * 4;
+        const p3 = this.glassParams[o + 3];
+        const rawStyle = Math.floor(p3 * 0.25);
+        const style = Math.round(rawStyle);
+        const alpha = p3 - rawStyle * 4.0;
+        if (alpha < 0.005) continue;
+        if (targetStage === 0 && style === 2) continue;
+        if (targetStage === 1 && style !== 2) continue;
+        gl.uniform4f(
+          this.uLiquid.uGlassRect,
+          this.glassRects[o],
+          this.glassRects[o + 1],
+          this.glassRects[o + 2],
+          this.glassRects[o + 3]
+        );
+        gl.uniform4f(
+          this.uLiquid.uGlassParams,
+          this.glassParams[o],
+          this.glassParams[o + 1],
+          this.glassParams[o + 2],
+          p3
+        );
+        gl.uniform1f(this.uLiquid.uQuadPad, pad);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      }
+    };
+
+    const bindLiquidShared = () => {
+      gl.useProgram(this.liquidGlProg);
+      gl.uniform2f(this.uLiquid.uResolution, this.canvasW, this.canvasH);
+      gl.uniform2f(this.uLiquid.uCssSize, this.cssW, this.cssH);
+      gl.uniform1f(this.uLiquid.uTime, elapsedSec);
+      gl.uniform4f(
+        this.uLiquid.uPointerFluid,
+        this.glassPointerX,
+        this.glassPointerY,
+        this.glassPointerVelX * this.glassPointerActive,
+        this.glassPointerVelY * this.glassPointerActive
+      );
+      gl.uniform1i(this.uLiquid.uTex, 0);
+    };
+
+    if (!this.glassHasElevated) {
+      // Single-stage: draw Stage 0 glass quads directly onto screen reading srgbA
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, this.canvasW, this.canvasH);
+      bindLiquidShared();
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.srgbA.tex);
+      drawStageQuads(0);
+      return;
+    }
+
+    // Two-stage stacked droplets: seed ONLY the small needed patches of srgbB from srgbA
+    const refractMargin = Math.ceil(Math.min(this.cssW, this.cssH) * 0.10) + 28;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.srgbA.fbo);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.srgbB.fbo);
+    for (let i = 0; i < this.glassCount; i++) {
+      const o = i * 4;
+      const p3 = this.glassParams[o + 3];
+      const rawStyle = Math.floor(p3 * 0.25);
+      const style = Math.round(rawStyle);
+      const alpha = p3 - rawStyle * 4.0;
+      if (alpha < 0.005) continue;
+      this.blitCssRegion(
+        this.glassRects[o],
+        this.glassRects[o + 1],
+        this.glassRects[o + 2],
+        this.glassRects[o + 3],
+        style === 2 ? refractMargin : 36.0
+      );
+    }
+
+    // Draw Stage 0 base glass quads into srgbB (sampling srgbA)
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.srgbB.fbo);
+    gl.viewport(0, 0, this.canvasW, this.canvasH);
+    bindLiquidShared();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.srgbA.tex);
+    drawStageQuads(0);
+
+    // Blit just the rendered Stage 0 glass rects from srgbB -> screen
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.srgbB.fbo);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    for (let i = 0; i < this.glassCount; i++) {
+      const o = i * 4;
+      const p3 = this.glassParams[o + 3];
+      const rawStyle = Math.floor(p3 * 0.25);
+      const style = Math.round(rawStyle);
+      const alpha = p3 - rawStyle * 4.0;
+      if (alpha < 0.005 || style === 2) continue;
+      this.blitCssRegion(
+        this.glassRects[o],
+        this.glassRects[o + 1],
+        this.glassRects[o + 2],
+        this.glassRects[o + 3],
+        36.0
+      );
+    }
+
+    // Draw Stage 1 elevated droplet quads directly onto screen (sampling srgbB!)
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvasW, this.canvasH);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.srgbB.tex);
+    drawStageQuads(1);
+  }
+
   private loop = (): void => {
-    if (this.disposed) return;
+    if (this.disposed || this.pageHidden) {
+      this.rafId = 0;
+      return;
+    }
     this.rafId = requestAnimationFrame(this.loop);
 
     const now = performance.now();
+    if (this.introAwaitingBoot) {
+      if (this.introHoldRendered) {
+        return;
+      }
+      this.introHoldRendered = true;
+      const gl = this.gl;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, this.canvasW, this.canvasH);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      return;
+    }
+
+    const hoverDistinctNow = this.hasHover && (!this.hasInspect || this.hoverId !== this.inspectId);
+    const idleAgeMs = now - this.lastActivityMs;
+    const isMoving =
+      this.introActive ||
+      this.tourActive ||
+      this.flightActive ||
+      this.dragging ||
+      this.autoOrbit ||
+      this.burstActive ||
+      this.pendingTexUploads.length > 0 ||
+      Math.abs(this.targetZoom - this.zoom) > 0.0002 ||
+      Math.abs(this.targetYaw - this.yaw) > 0.0002 ||
+      Math.abs(this.targetPitch - this.pitch) > 0.0002 ||
+      Math.abs(this.targetAnchor0[0] - this.anchors[0][0]) > 0.0004 ||
+      Math.abs(this.targetAnchor0[1] - this.anchors[0][2]) > 0.0004 ||
+      Math.abs(this.smoothCamShiftX) > 0.0004 ||
+      Math.abs(this.smoothCamShiftY) > 0.0004 ||
+      Math.abs(this.smoothCamShiftZ) > 0.0004 ||
+      this.bootActive > 0.002 ||
+      (this.hasInspect && this.inspectAlpha < 0.996) ||
+      (!this.hasInspect && this.inspectAlpha > 0.002) ||
+      (hoverDistinctNow && this.hoverAlpha < 0.996) ||
+      (!hoverDistinctNow && this.hoverAlpha > 0.002) ||
+      Math.abs(this.glassPointerVelX) > 0.03 ||
+      Math.abs(this.glassPointerVelY) > 0.03;
+
+    const needsFullRate = isMoving || idleAgeMs < IDLE_HOLD_MS;
+    this.isIdlePaced = !needsFullRate;
+    if (!needsFullRate) {
+      const minInterval = !this.windowFocused
+        ? BLURRED_FRAME_MS
+        : idleAgeMs < COOLDOWN_END_MS
+          ? COOLDOWN_FRAME_MS
+          : IDLE_FRAME_MS;
+      if (now - this.lastRenderMs < minInterval) {
+        return;
+      }
+    }
+    this.lastRenderMs = now;
+
     const rawDtMs = now - this.lastFrame;
     this.lastFrame = now;
-    const dt = Math.min(0.05, Math.max(0.001, rawDtMs / 1000));
+    const dt = Math.min(0.10, Math.max(0.001, rawDtMs / 1000));
     const elapsedSec = (now - this.startTime) / 1000;
 
     if (rawDtMs > 0.5 && rawDtMs < 150) {
@@ -2162,19 +2711,20 @@ export class SiliconEngine {
       const t = this.introElapsed;
       const progress = clamp(t / INTRO_DURATION, 0, 1);
 
-      // Pure black during centered title card (0.0-1.45s), then entire dormant chip fades in wide (-0.27),
-      // then glides smoothly into hero framing (0.0) as the silicon powers up!
-      const uCam = this.smootherstep(2.55, 6.75, t);
-      this.yaw = INTRO_START_YAW + (HERO_YAW - INTRO_START_YAW) * uCam;
-      this.pitch = INTRO_START_PITCH + (HERO_PITCH - INTRO_START_PITCH) * uCam;
-      this.zoom = INTRO_START_ZOOM + (HERO_ZOOM - INTRO_START_ZOOM) * uCam;
+      // Dead-straight wide horizontal silhouette (-0.44 zoom, ~12.6° flat angle),
+      // then slowly cranes upward & glides into hero framing (0.0 zoom, 49° angle) as the silicon powers up!
+      const uPitch = this.smootherstep(2.15, 6.65, t);
+      const uZoom = this.smootherstep(2.35, 6.75, t);
+      this.yaw = HERO_YAW;
+      this.pitch = INTRO_START_PITCH + (HERO_PITCH - INTRO_START_PITCH) * uPitch;
+      this.zoom = INTRO_START_ZOOM + (HERO_ZOOM - INTRO_START_ZOOM) * uZoom;
       this.targetYaw = this.yaw;
       this.targetPitch = this.pitch;
       this.targetZoom = this.zoom;
 
-      // Stay pure #000 while centered title card holds, then silky fade-in of the entire unpowered chip (1.45 -> 2.38s),
-      // then sweep the overhead cleanroom softbox open as the core arrays wake!
-      const fadeInOff = this.smootherstep(1.45, 2.38, t) * 0.78;
+      // Stay pure #000 while centered title card holds, then silky cross-dissolve of the unpowered chip (1.38 -> 2.42s)
+      // right behind the optical rack-out of the title, before sweeping the cleanroom softbox open!
+      const fadeInOff = this.smootherstep(1.38, 2.42, t) * 0.78;
       const earlyHint = this.smootherstep(2.50, 4.20, t) * 0.10;
       const studioReveal = this.smootherstep(3.90, 6.25, t);
       this.introExposure = fadeInOff + 0.22 * this.smootherstep(2.80, 6.05, t);
@@ -2268,20 +2818,52 @@ export class SiliconEngine {
         }
       }
 
-      // Frame-rate-independent snappy zoom & optical motion tracking
-      const zFactor = 1 - Math.exp(-this.zoomRate * dt);
-      this.zoom += (this.targetZoom - this.zoom) * zFactor;
-      if (Math.abs(this.targetZoom - this.zoom) < 0.0002) {
-        this.zoom = this.targetZoom;
-      }
+      // Motorized quintic-eased optical objective flight (zero initial velocity kick, buttery arrival!)
+      if (this.flightActive) {
+        this.flightElapsed += dt;
+        const u = clamp(this.flightElapsed / Math.max(0.05, this.flightDuration), 0, 1);
+        const s = this.smootherstep(0, 1, u);
+        this.zoom = this.flightStartZoom + (this.flightEndZoom - this.flightStartZoom) * s;
 
-      if (this.autoOrbit && !this.dragging && !this.tourActive) {
-        this.targetYaw += dt * 0.075;
+        // Blend with natural intermediate scale pitch during multi-stop dives so camera arcs gracefully through layers
+        const [midPitch] = this.getCameraPoseForZoom(this.zoom);
+        const directPitch = this.flightStartPitch + (this.flightEndPitch - this.flightStartPitch) * s;
+        const arcBlend = Math.sin(Math.PI * u) * clamp((Math.abs(this.flightEndZoom - this.flightStartZoom) - 1.2) / 3.0, 0, 0.55);
+        this.pitch = directPitch + (midPitch - directPitch) * arcBlend;
+        this.yaw = this.flightStartYaw + (this.flightEndYaw - this.flightStartYaw) * s;
+
+        if (this.flightHasAnchor) {
+          this.anchors[0][0] = this.flightStartAnchorX + (this.flightEndAnchorX - this.flightStartAnchorX) * s;
+          this.anchors[0][2] = this.flightStartAnchorZ + (this.flightEndAnchorZ - this.flightStartAnchorZ) * s;
+          this.recomputeEffOffsets();
+        }
+
+        this.targetZoom = this.zoom;
+        this.targetPitch = this.pitch;
+        this.targetYaw = this.yaw;
+
+        if (u >= 1.0) {
+          this.flightActive = false;
+          this.zoom = this.targetZoom = this.flightEndZoom;
+          this.pitch = this.targetPitch = this.flightEndPitch;
+          this.yaw = this.targetYaw = this.flightEndYaw;
+        }
+      } else {
+        // Frame-rate-independent snappy zoom & optical motion tracking
+        const zFactor = 1 - Math.exp(-this.zoomRate * dt);
+        this.zoom += (this.targetZoom - this.zoom) * zFactor;
+        if (Math.abs(this.targetZoom - this.zoom) < 0.00015) {
+          this.zoom = this.targetZoom;
+        }
+
+        if (this.autoOrbit && !this.dragging && !this.tourActive) {
+          this.targetYaw += dt * 0.075;
+        }
+        const rotRate = this.dragging ? 14.0 : this.tourActive ? 3.8 : 6.0;
+        const rotFactor = 1 - Math.exp(-rotRate * dt);
+        this.yaw += (this.targetYaw - this.yaw) * rotFactor;
+        this.pitch += (this.targetPitch - this.pitch) * rotFactor;
       }
-      const rotRate = this.dragging ? 14.0 : this.tourActive ? 3.8 : 6.0;
-      const rotFactor = 1 - Math.exp(-rotRate * dt);
-      this.yaw += (this.targetYaw - this.yaw) * rotFactor;
-      this.pitch += (this.targetPitch - this.pitch) * rotFactor;
     }
 
     const zoomVel = this.introActive ? 0.0 : Math.abs(this.zoom - prevZ) / dt;
@@ -2289,9 +2871,8 @@ export class SiliconEngine {
     const targetMotion = Math.min(1.0, zoomVel * 0.20);
     this.smoothMotion += (targetMotion - this.smoothMotion) * (1 - Math.exp(-14.0 * dt));
 
-    // Track active functional die region (0 = Logic/CPU, 1 = SRAM/SLC, 2 = GPU)
-    const dieRegion = pickDieRegion(this.anchors[0][0], this.anchors[0][2], this.dieSpec);
-    this.activeRegionKind = dieRegion ? dieRegion.regionKind : 0;
+    // Track active functional die region (zero-allocation fast check: 0 = Logic/CPU, 1 = SRAM/SLC, 2 = GPU)
+    this.activeRegionKind = getDieRegionKind(this.anchors[0][0], this.anchors[0][2]);
 
     const fps = Math.round(1000 / Math.max(4, this.emaFrameMs));
     this.hooks.onZoomFrame(
@@ -2409,15 +2990,17 @@ export class SiliconEngine {
     this.updateLightMatrix(lookX, lookZ, 7.2 + macroOut * 8.6);
     const fogDensity = 0.0082 * Math.pow(0.10, outT) + this.introFogBoost;
 
-    // Collect all physically visible nested scales (allow deeper visibility for World 8 during the 1800x empty-space plunge!)
+    // Collect all physically visible nested scales (zero per-frame array/object allocation!)
     const distLogAdj = Math.log(5.4 / Math.max(5.4, dist));
-    const activeStages: { idx: number; scale: number }[] = [];
+    let activeStageCount = 0;
     for (let k = 0; k < this.stages.length; k++) {
       if (!this.isStageRevealed(k, this.zoom)) continue;
       const logS = logCamScale - LOG_CUM_SCALE[k];
       const minLogS = k === 8 ? -7.2 : -6.0;
-      if (logS + distLogAdj > minLogS && logS < 4.35) {
-        activeStages.push({ idx: k, scale: this.stageScales[k] });
+      if (logS + distLogAdj > minLogS && logS < 4.75) {
+        const entry = this.activeStagesBuf[activeStageCount++];
+        entry.idx = k;
+        entry.scale = this.stageScales[k];
       }
     }
 
@@ -2433,7 +3016,9 @@ export class SiliconEngine {
 
     // PASS 0 + 1: Unified Multi-Scale 3D Render (ZERO 2D fading!)
     this.renderUnifiedScene(
-      activeStages,
+      this.activeStagesBuf,
+      activeStageCount,
+      now,
       elapsedSec,
       camX,
       camY,
@@ -2519,53 +3104,22 @@ export class SiliconEngine {
     gl.uniform1f(this.uComp.uIntroExposure, this.introExposure);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    // PASS 3B & 3C: True sRGB liquidGL Refraction + Stacked Droplet Lenses -> Screen
+    // PASS 3B & 3C: Tight Per-Region Quad sRGB liquidGL Refraction + Stacked Droplet Lenses -> Screen
     if (runGlass) {
-      // Smooth fluid viscosity decay for pointer surface interaction
-      this.glassPointerVelX *= 0.84;
-      this.glassPointerVelY *= 0.84;
-      if (Math.abs(this.glassPointerVelX) < 0.01) this.glassPointerVelX = 0;
-      if (Math.abs(this.glassPointerVelY) < 0.01) this.glassPointerVelY = 0;
-
-      gl.useProgram(this.liquidGlProg);
-      gl.uniform2f(this.uLiquid.uResolution, this.canvasW, this.canvasH);
-      gl.uniform2f(this.uLiquid.uCssSize, this.cssW, this.cssH);
-      gl.uniform1f(this.uLiquid.uTime, elapsedSec);
-      gl.uniform1i(this.uLiquid.uGlassCount, this.glassCount);
-      gl.uniform4fv(this.uLiquid.uGlassRect, this.glassRects);
-      gl.uniform4fv(this.uLiquid.uGlassParams, this.glassParams);
-      gl.uniform4f(
-        this.uLiquid.uPointerFluid,
-        this.glassPointerX,
-        this.glassPointerY,
-        this.glassPointerVelX * this.glassPointerActive,
-        this.glassPointerVelY * this.glassPointerActive
-      );
-
-      // Stage 0: Base capsules & sheets (refract live sRGB scene)
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.glassHasElevated ? this.srgbB.fbo : null);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.srgbA.tex);
-      gl.uniform1i(this.uLiquid.uTex, 0);
-      gl.uniform1i(this.uLiquid.uPassStage, 0);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-      // Stage 1: Elevated stacked droplet lenses (refract Stage 0 glass + scene!)
-      if (this.glassHasElevated) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.srgbB.tex);
-        gl.uniform1i(this.uLiquid.uTex, 0);
-        gl.uniform1i(this.uLiquid.uPassStage, 1);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
-      }
+      this.renderLiquidGlass(elapsedSec);
     }
   };
 
   public dispose(): void {
     this.disposed = true;
-    cancelAnimationFrame(this.rafId);
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
     window.removeEventListener('resize', this.resize);
+    window.removeEventListener('focus', this.onWindowFocus);
+    window.removeEventListener('blur', this.onWindowBlur);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.canvas.removeEventListener('contextmenu', this.onContextMenu);
     this.canvas.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
@@ -2596,6 +3150,8 @@ export class SiliconEngine {
     gl.deleteBuffer(this.coinCylIbo);
     gl.deleteBuffer(this.sphereVbo);
     gl.deleteBuffer(this.sphereIbo);
+    gl.deleteBuffer(this.orbitalSphereVbo);
+    gl.deleteBuffer(this.orbitalSphereIbo);
     gl.deleteBuffer(this.bondVbo);
     gl.deleteBuffer(this.bondIbo);
     gl.deleteVertexArray(this.emptyVao);
@@ -2612,7 +3168,9 @@ export class SiliconEngine {
       if (s.bondBuf) gl.deleteBuffer(s.bondBuf);
     }
     gl.deleteProgram(this.shadowProg);
+    gl.deleteProgram(this.shadowCutoutProg);
     gl.deleteProgram(this.sceneProg);
+    gl.deleteProgram(this.sceneCutoutProg);
     gl.deleteProgram(this.prefilterProg);
     gl.deleteProgram(this.bloomDownProg);
     gl.deleteProgram(this.bloomUpProg);

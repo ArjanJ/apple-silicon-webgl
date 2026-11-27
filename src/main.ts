@@ -50,6 +50,7 @@ const ICONS = {
   volumeOn: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`,
   volumeOff: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/></svg>`,
   close: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+  power: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/></svg>`,
 };
 
 function buildReticleSvg(): string {
@@ -143,6 +144,13 @@ function mountApp(): void {
       <div id="intro-title" class="intro-title" aria-hidden="true">
         <div id="intro-eyebrow" class="intro-eyebrow">INSIDE YOUR MAC</div>
         <div id="intro-chip-name" class="intro-chip-name">Apple Silicon</div>
+        <div id="intro-boot-cue" class="intro-boot-cue">
+          <div class="boot-pill">
+            <span class="boot-pill-icon">${ICONS.power}</span>
+            <span class="boot-pill-label">Power On</span>
+          </div>
+          <div class="boot-subhint">Click anywhere or press any key</div>
+        </div>
       </div>
 
       <!-- Whisper-Quiet Hover Preview Pill -->
@@ -267,9 +275,11 @@ function mountApp(): void {
 
   const editorialBrandEl = document.getElementById('editorial-brand')!;
   const chipNameEl = document.getElementById('chip-name')!;
+  const appleStageEl = document.querySelector<HTMLElement>('.apple-stage')!;
   const introTitleEl = document.getElementById('intro-title')!;
   const introEyebrowEl = document.getElementById('intro-eyebrow')!;
   const introChipNameEl = document.getElementById('intro-chip-name')!;
+  const introBootCueEl = document.getElementById('intro-boot-cue')!;
   const editorialMetaEl = document.getElementById('editorial-meta')!;
   const hudChromeEl = document.getElementById('hud-chrome')!;
   const restoreHudBtn = document.getElementById('restore-hud-btn')!;
@@ -401,12 +411,15 @@ function mountApp(): void {
   const r = 242;
   const circ = 2 * Math.PI * r;
 
-  const renderInspectCard = () => {
+  const renderInspectCard = (syncGlass = true) => {
     if (!activeInspect) {
-      inspectCard.style.display = 'none';
-      syncGlassLayout();
+      if (inspectCard.style.display !== 'none') {
+        inspectCard.style.display = 'none';
+        syncGlassLayout();
+      }
       return;
     }
+    const wasHidden = inspectCard.style.display === 'none';
     inspectCard.style.display = 'flex';
     inspectTitle.textContent = activeInspect.title(telemetry);
     inspectSub.textContent = activeInspect.subtitle(telemetry);
@@ -414,7 +427,9 @@ function mountApp(): void {
     inspectDetail.textContent = activeInspect.detail(telemetry);
     const stopName = ZOOM_STOPS.find((s) => Math.abs(s.z - activeInspect!.diveZoom) < 0.01)?.label ?? 'Die';
     inspectDive.textContent = `Dive to ${stopName} →`;
-    syncGlassLayout();
+    if (syncGlass || wasHidden) {
+      syncGlassLayout();
+    }
   };
 
   const renderHoverPill = (hit: DieInspectHit | null, cx: number, cy: number) => {
@@ -441,12 +456,33 @@ function mountApp(): void {
           : 'WEB SIM';
 
   let introActive = false;
+  let awaitingPowerOn = false;
   let introHudAlpha = 1.0;
   let introPhase: 'idle' | 'black' | 'title' | 'dissolve' | 'boot' | 'lock' | 'hud' | 'settle' | 'done' = 'idle';
 
+  const setAwaitingPowerOn = (waiting: boolean) => {
+    awaitingPowerOn = waiting;
+    appleStageEl.classList.toggle('awaiting-boot', waiting);
+    introBootCueEl.classList.toggle('visible', waiting);
+    if (waiting) {
+      introTitleEl.classList.remove('exiting', 'skipped');
+      introTitleEl.classList.add('visible');
+    }
+  };
+
   const syncIntroUi = (active: boolean, elapsed: number) => {
     introActive = active;
+    if (awaitingPowerOn && active) {
+      introHudAlpha = 0.0;
+      reticleLayer.classList.remove('intro-lock', 'engaged');
+      reticleLayer.classList.add('intro-hidden');
+      hudChromeEl.classList.add('intro-staging');
+      nmBracket.style.display = 'none';
+      pushGlassToEngine();
+      return;
+    }
     if (!active) {
+      setAwaitingPowerOn(false);
       if (introPhase === 'done' && introHudAlpha >= 0.999) return;
       const wasEarlySkip =
         introPhase === 'black' ||
@@ -467,8 +503,10 @@ function mountApp(): void {
       return;
     }
 
-    const nextHudAlpha = elapsed < 6.08 ? 0.0 : Math.min(1.0, (elapsed - 6.08) / 0.85);
-    const alphaChanged = Math.abs(nextHudAlpha - introHudAlpha) > 0.008;
+    const rawHudU = elapsed < 6.08 ? 0.0 : Math.min(1.0, (elapsed - 6.08) / 0.82);
+    // Cubic ease-out matches CSS `.hud-chrome` transition so Liquid Glass & DOM text emerge as one object!
+    const nextHudAlpha = 1.0 - Math.pow(1.0 - rawHudU, 3);
+    const alphaChanged = Math.abs(nextHudAlpha - introHudAlpha) > 0.005;
     introHudAlpha = nextHudAlpha;
 
     if (elapsed < 0.08) {
@@ -482,7 +520,7 @@ function mountApp(): void {
         nmBracket.style.display = 'none';
         pushGlassToEngine();
       }
-    } else if (elapsed < 1.35) {
+    } else if (elapsed < 1.22) {
       if (introPhase !== 'title') {
         if (introPhase === 'idle') audio.startIntroScore(elapsed);
         introPhase = 'title';
@@ -494,7 +532,7 @@ function mountApp(): void {
         nmBracket.style.display = 'none';
         pushGlassToEngine();
       }
-    } else if (elapsed < 2.20) {
+    } else if (elapsed < 2.45) {
       if (introPhase !== 'dissolve') {
         introPhase = 'dissolve';
         introTitleEl.classList.remove('visible', 'skipped');
@@ -535,6 +573,7 @@ function mountApp(): void {
   };
 
   const engine = new SiliconEngine(gpuMount, {
+    deferIntroStart: true,
     onIntroFrame: ({ active, elapsed }) => {
       syncIntroUi(active, elapsed);
     },
@@ -729,8 +768,51 @@ function mountApp(): void {
     engine.setGlassPointer(0, 0, false);
   });
 
+  // Autoplay-adaptive Cold Boot launch:
+  //   - If browser allows unmuted autoplay, starts immediately from 0.0s with full audio
+  //   - If browser blocks autoplay (e.g. aside browser), holds on the title card until first click/key
+  //     so the entire Cold Boot light + music sequence plays in perfect sync!
+  const launchHeldPowerOn = () => {
+    if (!awaitingPowerOn) return;
+    setAwaitingPowerOn(false);
+    introPhase = 'idle';
+    audio.unlockFromGesture();
+    // Title is already centered & crisp: cue melts away smoothly, immediate C1 sub-bass -> optical push-through at +0.44s!
+    engine.releaseIntroHold(0.78);
+  };
+
+  if (engine.isIntroHeld) {
+    audio.probeAutoplay(
+      () => {
+        if (!engine.isIntroHeld) return;
+        setAwaitingPowerOn(false);
+        introPhase = 'idle';
+        engine.releaseIntroHold(0.0);
+      },
+      () => {
+        if (!engine.isIntroHeld) return;
+        setAwaitingPowerOn(true);
+      }
+    );
+  }
+
   // Unlock procedural Web Audio smoothly on the first user interaction (unless explicitly muted)
   const unlockAudioOnGesture = (ev: Event) => {
+    if (awaitingPowerOn) {
+      if (ev instanceof KeyboardEvent) {
+        if (ev.key === 'Escape') {
+          setAwaitingPowerOn(false);
+          engine.skipIntro();
+          return;
+        }
+        if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.key === 'Shift' || ev.key === 'Meta' || ev.key === 'Control' || ev.key === 'Alt') {
+          return;
+        }
+      }
+      ev.stopPropagation();
+      launchHeldPowerOn();
+      return;
+    }
     const target = ev.target as HTMLElement | null;
     if (target && (target === btnSound || btnSound.contains(target))) return;
     if (ev instanceof KeyboardEvent && (ev.key === 'm' || ev.key === 'M')) return;
@@ -899,6 +981,7 @@ function mountApp(): void {
   btnBurst.addEventListener('click', () => {
     if (bursting) return;
     bursting = true;
+    engine.setBurstActive(true);
     browserTelemetry.setBurst(true);
     audio.triggerBurst(3.5);
     btnBurst.classList.add('active');
@@ -923,6 +1006,7 @@ function mountApp(): void {
       workers.forEach((w) => w.terminate());
       URL.revokeObjectURL(url);
       bursting = false;
+      engine.setBurstActive(false);
       browserTelemetry.setBurst(false);
       btnBurst.classList.remove('active');
       btnBurstLbl.textContent = 'Burst';
@@ -947,7 +1031,7 @@ function mountApp(): void {
     const tempPart = data.socTempC !== null ? `${data.socTempC.toFixed(0)}°C · ` : '';
     editorialMetaEl.textContent = `${tempPart}${cpuPct}% CPU · ${gpuPct}% GPU`;
     renderActivitySheet();
-    if (activeInspect) renderInspectCard();
+    if (activeInspect) renderInspectCard(false);
     if (activeHover && hoverPill.classList.contains('visible')) {
       hoverValEl.textContent = conciseHoverMetric(activeHover, telemetry);
     }
@@ -955,16 +1039,38 @@ function mountApp(): void {
 
   let useBrowserMode = false;
   let pollTimer: number | null = null;
+  let activePollFn: (() => void) | null = null;
+  let activePollMs = 1000;
+
+  const startPollLoop = (fn: () => void, intervalMs: number) => {
+    activePollFn = fn;
+    activePollMs = intervalMs;
+    if (pollTimer !== null) {
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    if (!document.hidden) {
+      fn();
+      pollTimer = window.setInterval(fn, intervalMs);
+    }
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    } else if (activePollFn && pollTimer === null) {
+      activePollFn();
+      pollTimer = window.setInterval(activePollFn, activePollMs);
+    }
+  });
 
   const startBrowserTelemetry = () => {
     if (useBrowserMode) return;
     useBrowserMode = true;
-    if (pollTimer !== null) {
-      window.clearInterval(pollTimer);
-    }
-    const tick = () => applyTelemetry(browserTelemetry.sample(engine.getFrameActivity()));
-    tick();
-    pollTimer = window.setInterval(tick, 450);
+    startPollLoop(() => applyTelemetry(browserTelemetry.sample(engine.getFrameActivity())), 650);
   };
 
   const isLocalHost =
@@ -977,6 +1083,7 @@ function mountApp(): void {
   } else {
     let liveFailures = 0;
     const pollTelemetry = async () => {
+      if (document.hidden) return;
       try {
         const res = await fetch('/api/telemetry', { cache: 'no-store' });
         const ct = res.headers.get('content-type') || '';
@@ -997,8 +1104,9 @@ function mountApp(): void {
       }
     };
 
-    void pollTelemetry();
-    pollTimer = window.setInterval(pollTelemetry, 650);
+    startPollLoop(() => {
+      void pollTelemetry();
+    }, 1000);
   }
 }
 

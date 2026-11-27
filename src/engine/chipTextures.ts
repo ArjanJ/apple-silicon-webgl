@@ -1148,7 +1148,7 @@ export function createChipTexturePack(): ChipTexturePack {
   };
 }
 
-/** Asynchronously decode and process all 4 seamless macro material photographs into PBR layers. */
+/** Asynchronously decode and process all 4 seamless macro material photographs (1 per frame for zero stutter). */
 export function loadMacroMaterialLayers(onLayerReady: (update: MaterialArrayLayerUpdate) => void): void {
   const sources: readonly [number, string][] = [
     [0, epoxyImgUrl],
@@ -1157,13 +1157,34 @@ export function loadMacroMaterialLayers(onLayerReady: (update: MaterialArrayLaye
     [3, semSiliconImgUrl],
   ];
 
+  const queue: { layer: number; img: HTMLImageElement }[] = [];
+  let draining = false;
+
+  const drainNext = () => {
+    const item = queue.shift();
+    if (!item) {
+      draining = false;
+      return;
+    }
+    const pbr = processMacroMaterialImage(item.img, item.layer);
+    onLayerReady({ layer: item.layer, albedo: pbr.albedo, relief: pbr.relief });
+    if (queue.length > 0) {
+      window.setTimeout(() => requestAnimationFrame(drainNext), 16);
+    } else {
+      draining = false;
+    }
+  };
+
   for (const [layer, url] of sources) {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
       if ((img.naturalWidth || img.width) < 32) return;
-      const pbr = processMacroMaterialImage(img, layer);
-      onLayerReady({ layer, albedo: pbr.albedo, relief: pbr.relief });
+      queue.push({ layer, img });
+      if (!draining) {
+        draining = true;
+        requestAnimationFrame(drainNext);
+      }
     };
     img.src = url;
   }

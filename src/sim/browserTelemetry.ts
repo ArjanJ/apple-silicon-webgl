@@ -39,6 +39,7 @@ export interface BrowserFrameSignal {
   frameMs: number;
   motion: number;
   zoom: number;
+  idlePaced?: boolean;
 }
 
 function parseChipName(renderer: string | null): { chipName: string; gpuCores: number } {
@@ -221,8 +222,10 @@ export class BrowserTelemetrySource {
     const pCoreAvg = avg(coreLoads.slice(this.eCoreCount));
     const cpuTotal = avg(coreLoads);
 
-    // GPU load reacts genuinely to real WebGL2 frame cost, camera motion, and zoom depth
-    const framePressure = Math.max(0, Math.min(0.55, (signal.frameMs - 6.0) / 28.0));
+    // GPU load reacts genuinely to real WebGL2 frame cost, camera motion, and zoom depth (ignore intentional idle pacing!)
+    const framePressure = signal.idlePaced
+      ? 0.04
+      : Math.max(0, Math.min(0.55, (signal.frameMs - 6.0) / 28.0));
     const zoomComplexity = Math.max(0, Math.min(0.14, (signal.zoom + 1.0) * 0.015));
     const gpuWave = (Math.sin(this.phase * 1.4) * 0.5 + 0.5) * 0.08;
     const gpuEst = Math.max(

@@ -15,6 +15,14 @@ export interface DieInspectHit {
   detail: (t: LiveMacTelemetry) => string;
 }
 
+/** Zero-allocation fast regionKind lookup for per-frame engine use (0 = logic, 1 = SRAM/cache, 2 = GPU) */
+export function getDieRegionKind(wx: number, wz: number): 0 | 1 | 2 {
+  if (wx >= 0.50 && wx <= 2.86 && wz >= -1.88 && wz <= 0.32) return 2;
+  if (wx >= -0.36 && wx <= 0.36 && wz >= -2.18 && wz <= 2.18) return 1;
+  if (Math.abs(wx) >= 3.42 && Math.abs(wx) <= 5.02 && Math.abs(wz) <= 2.48) return 1;
+  return 0;
+}
+
 /**
  * Analytical hit-test against every functional block on the Apple Silicon Die (World 0).
  * Dynamically matches the telemetry-driven floorplan in buildWorld0(spec)!

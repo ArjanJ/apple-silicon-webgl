@@ -192,24 +192,25 @@ void buildLocalPosAndNorm(
 void applyDynamicCutouts(
   int ch, vec3 center, inout vec3 halfSize, inout float bevelR
 ) {
-  if (uHoleBox.z > 0.001) {
+  float keepCut = 1.0 - clamp(uHoleOpen, 0.0, 1.0);
+  if (uHoleBox.z > 0.001 && uHoleOpen > 0.001) {
     bool isTiledCull = (uHoleMode > 0.5 && uHoleMode < 1.5 && center.y > uHoleMinY);
     bool isRibbonCull = (uHoleMode > 3.5 && abs(center.y) < 0.26 && ch != 18);
     if (isTiledCull || isRibbonCull) {
       float margin = (ch == 16) ? -0.025 : 0.003;
       vec2 d = abs(center.xz - uHoleBox.xy) - (uHoleBox.zw + margin);
       if (max(d.x, d.y) < 0.0) {
-        halfSize = vec3(0.0);
-        bevelR = 0.0;
+        halfSize *= keepCut;
+        bevelR *= keepCut;
       }
     }
   }
-  if (uAtomHole.w > 0.001 && (ch == 16 || halfSize.x < 0.60)) {
+  if (uAtomHole.w > 0.001 && uHoleOpen > 0.001 && (ch == 16 || halfSize.x < 0.60)) {
     float dAtom = length(center - uAtomHole.xyz);
     float cutR = (ch == 16) ? uAtomHole.w : 0.06;
     if (dAtom < cutR) {
-      halfSize = vec3(0.0);
-      bevelR = 0.0;
+      halfSize *= keepCut;
+      bevelR *= keepCut;
     }
   }
 }
@@ -227,11 +228,13 @@ layout(location = 4) in vec4 aInstC;
 uniform mat4 uLightVP;
 uniform float uWorldScale;
 uniform float uYExtrude;
+uniform float uStageReveal;
 uniform vec3 uStageOffset;
 uniform float uAtomRotY;
 uniform vec4 uHoleBox;
 uniform float uHoleMinY;
 uniform float uHoleMode;
+uniform float uHoleOpen;
 uniform vec4 uAtomHole;
 uniform vec3 uCamPos;
 uniform float uLensClearance;
@@ -264,6 +267,11 @@ void main() {
     halfSize.y *= ext;
     bevelR = min(bevelR, halfSize.y * 0.45);
   }
+  if (uStageReveal < 0.999) {
+    float rev = clamp(uStageReveal, 0.0, 1.0);
+    halfSize *= rev;
+    bevelR *= rev;
+  }
 
   if (uLensClearance > 0.01 && length(center - uStageOffset) > 0.45) {
     vec3 sc = (center - uStageOffset) * uWorldScale;
@@ -295,15 +303,22 @@ void main() {
 
 export const SHADOW_FS = `#version 300 es
 precision highp float;
+void main() {}
+`;
+
+export const SHADOW_CUTOUT_FS = `#version 300 es
+precision highp float;
 
 in vec3 vWorldPos;
 uniform vec4 uHoleBox;
 uniform float uHoleMinY;
 uniform float uHoleMode;
+uniform float uHoleOpen;
 
 void main() {
-  if (uHoleBox.z > 0.001 && uHoleMode > 0.5 && uHoleMode < 3.5 && vWorldPos.y > uHoleMinY) {
-    vec2 d = abs(vWorldPos.xz - uHoleBox.xy) - uHoleBox.zw;
+  if (uHoleBox.z > 0.001 && uHoleOpen > 0.01 && uHoleMode > 0.5 && uHoleMode < 3.5 && vWorldPos.y > uHoleMinY) {
+    vec2 openHalf = uHoleBox.zw * smoothstep(0.0, 0.85, uHoleOpen);
+    vec2 d = abs(vWorldPos.xz - uHoleBox.xy) - openHalf;
     if (max(d.x, d.y) < 0.0) discard;
   }
 }
@@ -322,11 +337,13 @@ uniform mat4 uViewProj;
 uniform mat4 uLightVP;
 uniform float uWorldScale;
 uniform float uYExtrude;
+uniform float uStageReveal;
 uniform vec3 uStageOffset;
 uniform float uAtomRotY;
 uniform vec4 uHoleBox;
 uniform float uHoleMinY;
 uniform float uHoleMode;
+uniform float uHoleOpen;
 uniform vec4 uAtomHole;
 uniform vec3 uCamPos;
 uniform float uLensClearance;
@@ -364,6 +381,11 @@ void main() {
     center.y *= ext;
     halfSize.y *= ext;
     bevelR = min(bevelR, halfSize.y * 0.45);
+  }
+  if (uStageReveal < 0.999) {
+    float rev = clamp(uStageReveal, 0.0, 1.0);
+    halfSize *= rev;
+    bevelR *= rev;
   }
 
   if (uLensClearance > 0.01 && length(center - uStageOffset) > 0.45) {
@@ -408,7 +430,17 @@ void main() {
 }
 `;
 
-export const SCENE_FS = `#version 300 es
+function buildSceneFs(enableHoleDiscard: boolean): string {
+  const holeDiscardBlock = enableHoleDiscard
+    ? `
+  // Smooth iris-expanding recessed aperture discard for nested layers
+  if (uHoleBox.z > 0.001 && uHoleOpen > 0.01 && uHoleMode > 0.5 && uHoleMode < 3.5 && p.y > uHoleMinY) {
+    vec2 openHalf = uHoleBox.zw * smoothstep(0.0, 0.85, uHoleOpen);
+    vec2 dHole = abs(p.xz - uHoleBox.xy) - openHalf;
+    if (max(dHole.x, dHole.y) < 0.0) discard;
+  }`
+    : '';
+  return `#version 300 es
 precision highp float;
 precision highp sampler2DShadow;
 precision highp sampler2DArray;
@@ -426,6 +458,7 @@ flat in float vExtraA;
 flat in float vExtraB;
 
 uniform sampler2DShadow uShadowMap;
+uniform float uShadowTexel;
 uniform sampler2D uCoinTex;
 uniform sampler2D uCoinNormTex;
 uniform sampler2DArray uMatTex;
@@ -457,6 +490,8 @@ uniform vec4 uHighlightFade; // (hoverAlpha, inspectAlpha, hoverIsRing, inspectI
 uniform vec4 uHoleBox;    // Dynamic recessed aperture (cx, cz, hx, hz)
 uniform float uHoleMinY;
 uniform float uHoleMode;
+uniform float uHoleOpen;
+uniform float uStageReveal;
 uniform vec4 uIntroLight; // (lightSweep 0..1, keyIntensity 0..1, rimBoost 1..2.5, unused)
 uniform vec4 uBootA;      // (pwrRails, fabricLock, memTrain, ecoreWake) — all 1.0 when steady
 uniform vec4 uBootB;      // (pcoreWake, gpuWake, auxWake, bootActive)   — (1,1,1,0) when steady
@@ -499,51 +534,71 @@ float G_SchlickGGX(float ndotv, float ndotl, float rough) {
 }
 
 vec3 F_Schlick(float cosTheta, vec3 F0) {
-  return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+  float m = clamp(1.0 - cosTheta, 0.0, 1.0);
+  float m2 = m * m;
+  return F0 + (1.0 - F0) * (m2 * m2 * m);
 }
 
 // Roughness-attenuated Fresnel for IBL so matte dielectrics never wash out at grazing angles
 vec3 F_SchlickRoughness(float cosTheta, vec3 F0, float rough) {
-  return F0 + (max(vec3(1.0 - rough), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+  float m = clamp(1.0 - cosTheta, 0.0, 1.0);
+  float m2 = m * m;
+  return F0 + (max(vec3(1.0 - rough), F0) - F0) * (m2 * m2 * m);
 }
 
-// Triplanar hardware-mipmapped PBR micro-material sampler (albedo+rough + world-space bump + cavity AO)
+// Axis-selective Triplanar hardware-mipmapped PBR micro-material sampler (2 fetches on flat faces vs 6!)
 void sampleTriplanarMat(
   float layer, vec3 wp, vec3 wn, float scale,
   out vec4 albRough, out vec3 bumpDelta, out float cavAO
 ) {
-  vec3 bw = pow(abs(wn), vec3(4.0));
+  vec3 bw = abs(wn);
+  bw = bw * bw;
+  bw = bw * bw;
   bw /= max(bw.x + bw.y + bw.z, 0.0001);
 
-  vec2 uvY = wp.xz * scale;
-  vec2 uvX = wp.zy * scale;
-  vec2 uvZ = wp.xy * scale;
+  vec3 wps = wp * scale;
+  vec3 ddx = dFdx(wps);
+  vec3 ddy = dFdy(wps);
 
-  vec4 aY = texture(uMatTex, vec3(uvY, layer));
-  vec4 aX = texture(uMatTex, vec3(uvX, layer));
-  vec4 aZ = texture(uMatTex, vec3(uvZ, layer));
-  albRough = aY * bw.y + aX * bw.x + aZ * bw.z;
+  albRough = vec4(0.0);
+  bumpDelta = vec3(0.0);
+  cavAO = 0.0;
 
-  vec4 rY = texture(uMatNormTex, vec3(uvY, layer));
-  vec4 rX = texture(uMatNormTex, vec3(uvX, layer));
-  vec4 rZ = texture(uMatNormTex, vec3(uvZ, layer));
-
-  vec2 tY = rY.rg * 2.0 - 1.0;
-  vec2 tX = rX.rg * 2.0 - 1.0;
-  vec2 tZ = rZ.rg * 2.0 - 1.0;
-
-  bumpDelta = vec3(tY.x, 0.0, tY.y) * bw.y
-            + vec3(0.0, tX.y, tX.x) * bw.x
-            + vec3(tZ.x, tZ.y, 0.0) * bw.z;
-  cavAO = rY.b * bw.y + rX.b * bw.x + rZ.b * bw.z;
+  if (bw.y > 0.005) {
+    vec4 aY = textureGrad(uMatTex, vec3(wps.xz, layer), ddx.xz, ddy.xz);
+    vec4 rY = textureGrad(uMatNormTex, vec3(wps.xz, layer), ddx.xz, ddy.xz);
+    vec2 tY = rY.rg * 2.0 - 1.0;
+    albRough += aY * bw.y;
+    bumpDelta += vec3(tY.x, 0.0, tY.y) * bw.y;
+    cavAO += rY.b * bw.y;
+  }
+  if (bw.x > 0.005) {
+    vec4 aX = textureGrad(uMatTex, vec3(wps.zy, layer), ddx.zy, ddy.zy);
+    vec4 rX = textureGrad(uMatNormTex, vec3(wps.zy, layer), ddx.zy, ddy.zy);
+    vec2 tX = rX.rg * 2.0 - 1.0;
+    albRough += aX * bw.x;
+    bumpDelta += vec3(0.0, tX.y, tX.x) * bw.x;
+    cavAO += rX.b * bw.x;
+  }
+  if (bw.z > 0.005) {
+    vec4 aZ = textureGrad(uMatTex, vec3(wps.xy, layer), ddx.xy, ddy.xy);
+    vec4 rZ = textureGrad(uMatNormTex, vec3(wps.xy, layer), ddx.xy, ddy.xy);
+    vec2 tZ = rZ.rg * 2.0 - 1.0;
+    albRough += aZ * bw.z;
+    bumpDelta += vec3(tZ.x, tZ.y, 0.0) * bw.z;
+    cavAO += rZ.b * bw.z;
+  }
 }
 
-// Prefiltered RGBM HDR Studio Softbox + Negative-Fill Environment IBL
-vec3 sampleStudioEnv(vec3 dir, float rough, float semMix) {
+vec2 envDirToUv(vec3 dir) {
   vec3 d = normalize(dir);
   float phi = atan(d.z, d.x);
   float theta = acos(clamp(d.y, -1.0, 1.0));
-  vec2 uv = vec2(phi / (2.0 * PI) + 0.5, clamp(theta / PI, 0.002, 0.998));
+  return vec2(phi * (0.5 / PI) + 0.5, clamp(theta * (1.0 / PI), 0.002, 0.998));
+}
+
+// Prefiltered RGBM HDR Studio Softbox + Negative-Fill Environment IBL
+vec3 sampleStudioEnvUv(vec2 uv, float rough, float semMix) {
   float mip = clamp(rough * 5.8, 0.0, 6.0);
   vec4 rgbm = textureLod(uEnvTex, uv, mip);
   vec3 env = rgbm.rgb * (rgbm.a * 8.0);
@@ -572,9 +627,9 @@ float sampleShadow(vec4 sc, float ndotl) {
   if (proj.x < 0.01 || proj.x > 0.99 || proj.y < 0.01 || proj.y > 0.99 || proj.z > 0.998) {
     return 1.0;
   }
-  float bias = max(0.0010 * (1.0 - ndotl), 0.00045);
+  float bias = max(0.0012 * (1.0 - ndotl), 0.00055);
   float z = proj.z - bias;
-  float tx = 1.0 / 2048.0;
+  float tx = uShadowTexel;
   float s = 0.0;
   s += texture(uShadowMap, vec3(proj.xy, z)) * 0.36;
   s += texture(uShadowMap, vec3(proj.xy + vec2( tx * 0.95,  tx * 0.52), z)) * 0.16;
@@ -632,12 +687,7 @@ vec3 keynoteSignalColor(float pkt) {
 
 void main() {
   vec3 p = vWorldPos;
-
-  // Dynamic recessed aperture discard for nested layers
-  if (uHoleBox.z > 0.001 && uHoleMode > 0.5 && uHoleMode < 3.5 && p.y > uHoleMinY) {
-    vec2 dHole = abs(p.xz - uHoleBox.xy) - uHoleBox.zw;
-    if (max(dHole.x, dHole.y) < 0.0) discard;
-  }
+${holeDiscardBlock}
 
   // Machined chamfer edge detector: interpolated normals shorten specifically along 45-degree bevel strips!
   float rawNormLen = length(vNormal);
@@ -667,7 +717,7 @@ void main() {
     float fogDist = length(vScaledPos);
     float fog = exp(-0.015 * fogDist * fogDist);
     float nearCam = smoothstep(0.9, 3.2, camDist);
-    float fade = fog * nearCam;
+    float fade = fog * nearCam * clamp(uStageReveal, 0.0, 1.0);
     float alpha = clamp((0.11 + rim * 0.58 + qWave * 0.06) * fade, 0.0, 0.85);
     fragColor = vec4(max(glow * fade, 0.0), alpha);
     return;
@@ -1463,12 +1513,15 @@ void main() {
 
   // Prefiltered HDR Studio Softbox + Negative-Fill Environment Reflection + Clearcoat Reflection
   vec3 reflDir = reflect(-v, n);
-  vec3 reflCol = sampleStudioEnv(reflDir, rough, uSemFactor);
+  vec2 reflUv = envDirToUv(reflDir);
+  vec3 reflCol = sampleStudioEnvUv(reflUv, rough, uSemFactor);
   vec3 Fenv = F_SchlickRoughness(ndotv, F0, rough);
   vec3 envReflection = reflCol * Fenv * mix(0.82, 0.32, rough * rough) * (0.48 + 0.52 * metal) * ao * envLift;
   if (clearcoat > 0.01) {
-    vec3 ccEnv = sampleStudioEnv(reflDir, 0.04, uSemFactor);
-    float ccF = 0.04 + 0.96 * pow(1.0 - ndotv, 5.0);
+    vec3 ccEnv = sampleStudioEnvUv(reflUv, 0.04, uSemFactor);
+    float m1 = 1.0 - ndotv;
+    float m2 = m1 * m1;
+    float ccF = 0.04 + 0.96 * (m2 * m2 * m1);
     envReflection += ccEnv * ccF * clearcoat * 0.68 * ao * envLift;
   }
 
@@ -1477,7 +1530,7 @@ void main() {
 
   // Dark-Field / SEM Grazing Rim Light
   vec3 semRim = vec3(0.46, 0.68, 0.96) * pow(1.0 - ndotv, 3.4) * (0.04 + 0.32 * uSemFactor) * ao * localRim;
-  vec3 envDiff = sampleStudioEnv(n, 0.95, uSemFactor);
+  vec3 envDiff = (metal < 0.92) ? sampleStudioEnvUv(envDirToUv(n), 0.95, uSemFactor) : vec3(0.10);
   vec3 ambient = baseCol * (vec3(0.042, 0.056, 0.084) + envDiff * (1.0 - metal) * 0.16) * ao * mix(0.04, 1.0, introKey);
 
   // Subtle localized self-illumination bounce in the dark studio as V_DD rails & fabric ignite!
@@ -1568,6 +1621,10 @@ void main() {
   fragColor = vec4(max(col, 0.0), coc);
 }
 `;
+}
+
+export const SCENE_FS = buildSceneFs(false);
+export const SCENE_CUTOUT_FS = buildSceneFs(true);
 
 export const FULLSCREEN_VS = `#version 300 es
 precision highp float;
@@ -1695,13 +1752,14 @@ void main() {
   float rDist = length(centered);
   vec2 dir = normalize(centered + vec2(0.0001));
 
-  // Subtle microscope edge chromatic dispersion (kept razor-clean across center 55%)
+  // Subtle microscope edge chromatic dispersion (zero extra fetches across center 55%)
   float ca = smoothstep(0.52, 1.08, rDist) * (0.0007 + uMotion * 0.0015);
   vec4 centerTex = texture(uTex, vUv);
-  vec3 base;
-  base.r = texture(uTex, vUv + dir * ca).r;
-  base.g = centerTex.g;
-  base.b = texture(uTex, vUv - dir * ca).b;
+  vec3 base = centerTex.rgb;
+  if (ca > 0.00005) {
+    base.r = texture(uTex, vUv + dir * ca).r;
+    base.b = texture(uTex, vUv - dir * ca).b;
+  }
 
   // Depth-aware Leica / Zeiss macro optical Depth-of-Field (zero cost on sharp center pixels!)
   float coc = centerTex.a;
@@ -1730,9 +1788,9 @@ void main() {
     base = acc;
   }
 
-  // 5-Tap Contrast-Adaptive Sharpening (CAS) on in-focus pixels for razor-crisp lithography & metallic micro-grain!
+  // 5-Tap Contrast-Adaptive Sharpening (CAS) on lit in-focus pixels (skip on dark obsidian void!)
   float casAmt = (1.0 - smoothstep(0.04, 0.28, coc)) * (1.0 - smoothstep(0.04, 0.25, uMotion)) * 0.42;
-  if (casAmt > 0.01) {
+  if (casAmt > 0.01 && max(base.r, max(base.g, base.b)) > 0.014) {
     vec3 nN = texture(uTex, clamp(vUv + vec2(0.0, invRes.y), vec2(0.001), vec2(0.999))).rgb;
     vec3 nS = texture(uTex, clamp(vUv - vec2(0.0, invRes.y), vec2(0.001), vec2(0.999))).rgb;
     vec3 nE = texture(uTex, clamp(vUv + vec2(invRes.x, 0.0), vec2(0.001), vec2(0.999))).rgb;
@@ -1776,11 +1834,40 @@ void main() {
 `;
 
 /**
- * True sRGB Liquid Glass Optical Pass (ported directly from naughtyduk/liquidGL):
+ * Tight Screen-Space Quad Vertex Shader for Liquid Glass regions:
+ * Rasterizes ONLY the ~2% of screen pixels covered by each glass pill/sheet + shadow pad!
+ */
+export const LIQUID_GL_VS = `#version 300 es
+precision highp float;
+const vec2 CORNERS[4] = vec2[4](
+  vec2(0.0, 0.0),
+  vec2(1.0, 0.0),
+  vec2(0.0, 1.0),
+  vec2(1.0, 1.0)
+);
+uniform vec2 uCssSize;
+uniform vec4 uGlassRect; // (cx, cy, halfW, halfH) in DOM CSS px (top-left origin)
+uniform float uQuadPad;
+out vec2 vUv;
+
+void main() {
+  vec2 cssSize = max(uCssSize, vec2(1.0));
+  vec2 centerGl = vec2(uGlassRect.x, cssSize.y - uGlassRect.y);
+  vec2 halfExt = max(uGlassRect.zw, vec2(1.0)) + vec2(uQuadPad);
+  vec2 minGl = clamp(centerGl - halfExt, vec2(0.0), cssSize);
+  vec2 maxGl = clamp(centerGl + halfExt, vec2(0.0), cssSize);
+  vec2 pGl = mix(minGl, maxGl, CORNERS[gl_VertexID]);
+  vUv = pGl / cssSize;
+  gl_Position = vec4(vUv * 2.0 - 1.0, 0.0, 1.0);
+}
+`;
+
+/**
+ * True sRGB Liquid Glass Optical Pass (tight per-region quad — ~50x less fillrate!):
  *   - Runs in display sRGB space AFTER ACES tonemapping so glass clarity & speculars never wash out
  *   - Exact liquidGL two-term bevel optics: offsetAmt = edge * refraction + pow(edge, 10.0) * bevelDepth
  *   - Exact liquidGL cornerNormal, centreBlend, optical lens magnification, RGB chromatic aberration
- *   - Smooth 16-tap Golden-Angle Vogel disk frost (artifact-free) + 5-tap micro-AA clear droplet mode
+ *   - Fast 10-tap Golden-Angle Vogel disk frost (1 RGB fetch/tap in interior, RGB split only on refracting rim!)
  *   - True two-stage stacked lenses (Pass 0 = base capsules/sheets, Pass 1 = elevated droplets refracting Pass 0)
  *   - Fluid pointer surface interaction + drifting liquidGL dual studio specular sheen
  */
@@ -1793,11 +1880,9 @@ uniform sampler2D uTex;
 uniform vec2 uResolution;
 uniform vec2 uCssSize;
 uniform float uTime;
-uniform int uPassStage; // 0 = base capsules & sheets (style 0,1), 1 = elevated stacked lenses (style 2)
-uniform int uGlassCount;
-uniform vec4 uGlassRect[16];   // (cx, cy, halfW, halfH) in DOM CSS px (top-left origin)
-uniform vec4 uGlassParams[16]; // (radius, bevelWidthFrac, frost, style*4.0 + alpha)
-uniform vec4 uPointerFluid;    // (ptrX, ptrY, velX, velY) in DOM CSS px
+uniform vec4 uGlassRect;     // (cx, cy, halfW, halfH) in DOM CSS px (top-left origin)
+uniform vec4 uGlassParams;   // (radius, bevelWidthFrac, frost, style*4.0 + alpha)
+uniform vec4 uPointerFluid;  // (ptrX, ptrY, velX, velY) in DOM CSS px
 
 float ign(vec2 p) {
   return fract(52.9829189 * fract(dot(floor(p), vec2(0.06711056, 0.00583715))));
@@ -1831,36 +1916,30 @@ vec3 saturateSrgb(vec3 c, float sat) {
   return clamp(mix(vec3(l), c, sat), 0.0, 1.0);
 }
 
-vec3 evalLiquidGL(vec3 bgCol, vec2 pGl, vec2 cssSize, vec4 rect, vec4 params) {
-  float rawStyle = floor(params.w * 0.25);
+void main() {
+  vec3 bgCol = texture(uTex, vUv).rgb;
+  vec2 cssSize = max(uCssSize, vec2(1.0));
+  vec2 pGl = vUv * cssSize;
+
+  float rawStyle = floor(uGlassParams.w * 0.25);
   int style = int(rawStyle + 0.5);
+  float alpha = clamp(uGlassParams.w - rawStyle * 4.0, 0.0, 1.0);
+  if (alpha < 0.005) {
+    fragColor = vec4(bgCol, 1.0);
+    return;
+  }
 
-  // Stage filtering: pass 0 draws base capsules/sheets, pass 1 draws elevated stacked droplets
-  if (uPassStage == 0 && style == 2) return bgCol;
-  if (uPassStage == 1 && style != 2) return bgCol;
-
-  float alpha = clamp(params.w - rawStyle * 4.0, 0.0, 1.0);
-  if (alpha < 0.005) return bgCol;
-
-  // Convert DOM top-down center to WebGL Y-up CSS pixels
-  vec2 centerGl = vec2(rect.x, cssSize.y - rect.y);
-  vec2 b_px = max(rect.zw, vec2(1.0));
+  vec2 centerGl = vec2(uGlassRect.x, cssSize.y - uGlassRect.y);
+  vec2 b_px = max(uGlassRect.zw, vec2(1.0));
   vec2 boxSize = b_px * 2.0;
   vec2 originalPoint = pGl - centerGl;
-  float radius = min(params.x, min(b_px.x, b_px.y));
-  float shadowPad = (style == 2) ? 16.0 : 30.0;
-
-  // Fast AABB rejection
-  if (abs(originalPoint.x) > b_px.x + shadowPad || abs(originalPoint.y) > b_px.y + shadowPad) {
-    return bgCol;
-  }
+  float radius = min(uGlassParams.x, min(b_px.x, b_px.y));
 
   // Fluid viscosity pointer deformation (liquidGL deformPoint)
   vec2 p_px = originalPoint;
   vec2 ptrGl = vec2(uPointerFluid.x, cssSize.y - uPointerFluid.y);
   vec2 ptrVelGl = vec2(uPointerFluid.z, -uPointerFluid.w);
-  float velMag = length(ptrVelGl);
-  if (velMag > 0.0005) {
+  if (dot(ptrVelGl, ptrVelGl) > 1e-6) {
     float reach = max(min(boxSize.x, boxSize.y) * 1.15, 48.0);
     float infl = 1.0 - smoothstep(0.0, reach, length(pGl - ptrGl));
     p_px -= clamp(ptrVelGl * 0.35, vec2(-10.0), vec2(10.0)) * infl;
@@ -1880,28 +1959,26 @@ vec3 evalLiquidGL(vec3 bgCol, vec2 pGl, vec2 cssSize, vec4 rect, vec4 params) {
   }
 
   if (inShape <= 0.002) {
-    return col;
+    fragColor = vec4(col, 1.0);
+    return;
   }
 
-  // Preset optical parameters tuned to naughtyduk/liquidGL demos (menu-bar, frost-specular, audio-player)
   float refraction = (style == 2) ? 0.022 : (style == 1 ? 0.015 : 0.014);
   float bevelDepth = (style == 2) ? 0.062 : (style == 1 ? 0.088 : 0.068);
-  float bevelWidth = params.y; // normalized fraction of min(boxSize.x, boxSize.y)
+  float bevelWidth = uGlassParams.y;
   float aberration = (style == 2) ? 0.95  : (style == 1 ? 0.65  : 0.72);
   float magnify    = (style == 2) ? 1.10  : (style == 1 ? 1.03  : 1.045);
-  float frost      = params.z;
+  float frost      = uGlassParams.z;
 
-  vec2 lensUV = (p_px + b_px) / boxSize; // 0..1 inside lens
+  vec2 lensUV = (p_px + b_px) / boxSize;
   vec2 pNorm = p_px / max(boxSize.y, 1.0);
 
-  // Exact liquidGL two-term optical bevel refraction (gentle lens + sharp pow(edge, 10) crystal rim!)
   float edge = edgeFactor(p_px, b_px, radius, bevelWidth, boxSize);
   float offsetAmt = edge * refraction + pow(edge, 10.0) * bevelDepth;
   float centreBlend = smoothstep(0.12, 0.44, length(pNorm));
   vec2 refractDir = cornerNormal(p_px, b_px, radius, normalize(pNorm + vec2(1e-6)));
   vec2 offset = refractDir * offsetAmt * centreBlend;
 
-  // Aspect-normalized UV displacement + optical magnification
   vec2 aspectScale = vec2(min(cssSize.x, cssSize.y)) / cssSize;
   vec2 offsetUv = offset * aspectScale;
   vec2 localUV = (lensUV - 0.5) / magnify + 0.5;
@@ -1915,22 +1992,27 @@ vec3 evalLiquidGL(vec3 bgCol, vec2 pGl, vec2 cssSize, vec4 rect, vec4 params) {
   vec3 refrCol;
 
   if (frost > 0.05) {
-    // Smooth 16-tap Golden-Angle Vogel disk frost (zero harsh grain!)
+    // Fast 10-tap Golden-Angle Vogel disk frost: 1 RGB fetch/tap in flat interior, split RGB only on bevel rim!
     float radiusCss = frost * 3.0;
     vec2 radUv = vec2(radiusCss) / cssSize;
     float rot = ign(gl_FragCoord.xy) * 6.2831853;
     vec3 acc = vec3(0.0);
     const float GOLDEN_ANGLE = 2.39996323;
-    for (int i = 0; i < 16; i++) {
-      float fi = (float(i) + 0.5) / 16.0;
+    bool hasChroma = dot(chroma, chroma) > 1e-7;
+    for (int i = 0; i < 10; i++) {
+      float fi = (float(i) + 0.5) * 0.1;
       float rTap = sqrt(fi);
       float ang = float(i) * GOLDEN_ANGLE + rot;
       vec2 foff = vec2(cos(ang), sin(ang)) * rTap * radUv;
-      acc.r += texture(uTex, clamp(sampleUV + foff - chroma, vec2(0.001), vec2(0.999))).r;
-      acc.g += texture(uTex, clamp(sampleUV + foff,          vec2(0.001), vec2(0.999))).g;
-      acc.b += texture(uTex, clamp(sampleUV + foff + chroma, vec2(0.001), vec2(0.999))).b;
+      if (hasChroma) {
+        acc.r += texture(uTex, clamp(sampleUV + foff - chroma, vec2(0.001), vec2(0.999))).r;
+        acc.g += texture(uTex, clamp(sampleUV + foff,          vec2(0.001), vec2(0.999))).g;
+        acc.b += texture(uTex, clamp(sampleUV + foff + chroma, vec2(0.001), vec2(0.999))).b;
+      } else {
+        acc += texture(uTex, clamp(sampleUV + foff, vec2(0.001), vec2(0.999))).rgb;
+      }
     }
-    refrCol = acc / 16.0;
+    refrCol = acc * 0.1;
   } else {
     // Pure crystal-clear liquidGL droplet lens (5-tap micro-AA + razor-sharp RGB dispersion!)
     vec2 texel = 1.0 / max(uResolution, vec2(1.0));
@@ -1939,31 +2021,25 @@ vec3 evalLiquidGL(vec3 bgCol, vec2 pGl, vec2 cssSize, vec4 rect, vec4 params) {
     refrCol += texture(uTex, clamp(sampleUV + vec2(-texel.x, 0.0), vec2(0.001), vec2(0.999))).rgb;
     refrCol += texture(uTex, clamp(sampleUV + vec2(0.0,  texel.y), vec2(0.001), vec2(0.999))).rgb;
     refrCol += texture(uTex, clamp(sampleUV + vec2(0.0, -texel.y), vec2(0.001), vec2(0.999))).rgb;
-    refrCol /= 5.0;
+    refrCol *= 0.2;
     refrCol.r = texture(uTex, clamp(sampleUV - chroma, vec2(0.001), vec2(0.999))).r;
     refrCol.b = texture(uTex, clamp(sampleUV + chroma, vec2(0.001), vec2(0.999))).b;
   }
 
-  // Subtle glass vibrancy in true sRGB
   refrCol = saturateSrgb(refrCol, (style == 2) ? 1.18 : 1.15);
 
-  // Clean optical tinting in sRGB (adaptive only for bright highlights so white text stays crisp!)
   float luma = dot(refrCol, vec3(0.2126, 0.7152, 0.0722));
   if (style == 2) {
-    // Stacked crystal water droplet (menu-bar lens style): clear + subtle luminous lift
     float brightTame = mix(1.04, 0.74, smoothstep(0.45, 0.95, luma));
     refrCol = refrCol * brightTame + vec3(0.075, 0.082, 0.098) * (1.0 - 0.55 * luma);
   } else if (style == 1) {
-    // Translucent dark-glass sheet (Activity / Inspect): clear refracted glass with crisp legibility
     float tintStrength = mix(0.28, 0.56, smoothstep(0.18, 0.85, luma));
     refrCol = mix(refrCol, refrCol * vec3(0.46, 0.50, 0.60), tintStrength) + vec3(0.025, 0.029, 0.038);
   } else {
-    // Ultra-clear glass capsule (Toolbar / Zoom Rail / Brand): pure optical clarity!
     float tintStrength = mix(0.14, 0.46, smoothstep(0.25, 0.88, luma));
     refrCol = mix(refrCol, refrCol * vec3(0.55, 0.60, 0.70), tintStrength) + vec3(0.022, 0.026, 0.036);
   }
 
-  // Exact liquidGL drifting dual studio specular sheen (subtle, organic, alive!)
   vec2 lp1 = vec2(sin(uTime * 0.20), cos(uTime * 0.30)) * 0.6 + 0.5;
   vec2 lp2 = vec2(sin(uTime * -0.40 + 1.5), cos(uTime * 0.25 - 0.5)) * 0.6 + 0.5;
   float sheen = 0.0;
@@ -1971,32 +2047,17 @@ vec3 evalLiquidGL(vec3 bgCol, vec2 pGl, vec2 cssSize, vec4 rect, vec4 params) {
   sheen += smoothstep(0.52, 0.0, distance(lensUV, lp2)) * ((style == 2) ? 0.065 : 0.042);
   refrCol += vec3(sheen);
 
-  // Whisper-thin 0.9px physical glass lip catch-light (true sRGB: crisp specular, zero milky halo!)
   float distIn = max(-dmask, 0.0);
   float rimLine = exp(-pow(distIn / 0.88, 2.0));
   float keyCatch = pow(max(dot(refractDir, normalize(vec2(-0.55, 0.84))), 0.0), 1.9);
   float bncCatch = pow(max(dot(refractDir, normalize(vec2( 0.55,-0.84))), 0.0), 2.1);
   float rimAmt = (0.10 + 0.68 * keyCatch + 0.36 * bncCatch) * ((style == 2) ? 0.58 : 0.38);
 
-  // Subtle interactive cursor catch on the razor edge
   float ptrDist = length(pGl - ptrGl);
   float ptrEdge = exp(-(ptrDist * ptrDist) / (115.0 * 115.0)) * rimLine * 0.28;
 
   refrCol += vec3(0.95, 0.98, 1.0) * (rimLine * rimAmt + ptrEdge);
 
-  return mix(col, clamp(refrCol, 0.0, 1.0), inShape * alpha);
-}
-
-void main() {
-  vec3 col = texture(uTex, vUv).rgb;
-  if (uGlassCount > 0) {
-    vec2 cssSize = max(uCssSize, vec2(1.0));
-    vec2 pGl = vUv * cssSize;
-    for (int i = 0; i < 16; i++) {
-      if (i >= uGlassCount) break;
-      col = evalLiquidGL(col, pGl, cssSize, uGlassRect[i], uGlassParams[i]);
-    }
-  }
-  fragColor = vec4(col, 1.0);
+  fragColor = vec4(mix(col, clamp(refrCol, 0.0, 1.0), inShape * alpha), 1.0);
 }
 `;

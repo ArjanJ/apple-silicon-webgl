@@ -39,6 +39,9 @@ static fn_CopyProperty pCopyProperty = NULL;
 static fn_CopyEvent pCopyEvent = NULL;
 static fn_GetFloatValue pGetFloatValue = NULL;
 static IOHIDEventSystemClientRef gHidClient = NULL;
+static CFArrayRef gThermalServices = NULL;
+static uint8_t *gIsDieSensor = NULL;
+static CFIndex gThermalCount = 0;
 
 static void initThermalHid(void) {
     void *h = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
@@ -56,21 +59,39 @@ static void initThermalHid(void) {
     if (!gHidClient) return;
     NSDictionary *match = @{ @"PrimaryUsagePage": @(0xff00), @"PrimaryUsage": @(5) };
     pSetMatching(gHidClient, (__bridge CFDictionaryRef)match);
+
+    // Cache HID thermal service list & die-sensor flags once (avoids dozens of Mach IPC calls every tick!)
+    gThermalServices = pCopyServices(gHidClient);
+    if (!gThermalServices) return;
+    gThermalCount = CFArrayGetCount(gThermalServices);
+    if (gThermalCount > 0) {
+        gIsDieSensor = (uint8_t *)calloc((size_t)gThermalCount, 1);
+        for (CFIndex i = 0; i < gThermalCount; i++) {
+            IOHIDServiceClientRef svc = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(gThermalServices, i);
+            if (!svc) continue;
+            CFTypeRef prodRef = pCopyProperty(svc, CFSTR("Product"));
+            if (prodRef && CFGetTypeID(prodRef) == CFStringGetTypeID()) {
+                NSString *prod = (__bridge NSString *)prodRef;
+                if ([prod containsString:@"tdie"] || [prod containsString:@"SOC MTR"] ||
+                    [prod containsString:@"pACC"] || [prod containsString:@"eACC"]) {
+                    gIsDieSensor[i] = 1;
+                }
+            }
+            if (prodRef) CFRelease(prodRef);
+        }
+    }
 }
 
 static double sampleSocTempC(void) {
-    if (!gHidClient) return -1.0;
-    CFArrayRef services = pCopyServices(gHidClient);
-    if (!services) return -1.0;
+    if (!gThermalServices || gThermalCount <= 0) return -1.0;
 
-    CFIndex count = CFArrayGetCount(services);
     double sumDie = 0.0;
     int cntDie = 0;
     double sumAll = 0.0;
     int cntAll = 0;
 
-    for (CFIndex i = 0; i < count; i++) {
-        IOHIDServiceClientRef svc = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(services, i);
+    for (CFIndex i = 0; i < gThermalCount; i++) {
+        IOHIDServiceClientRef svc = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(gThermalServices, i);
         if (!svc) continue;
         // kIOHIDEventTypeTemperature = 15; kIOHIDEventFieldTemperatureLevel = 15 << 16
         IOHIDEventRef ev = pCopyEvent(svc, 15, 0, 0);
@@ -79,20 +100,13 @@ static double sampleSocTempC(void) {
         CFRelease(ev);
         if (temp < 15.0 || temp > 125.0) continue;
 
-        CFTypeRef prodRef = pCopyProperty(svc, CFSTR("Product"));
-        NSString *prod = nil;
-        if (prodRef && CFGetTypeID(prodRef) == CFStringGetTypeID()) {
-            prod = (__bridge NSString *)prodRef;
-        }
-        if (prod && ([prod containsString:@"tdie"] || [prod containsString:@"SOC MTR"] || [prod containsString:@"pACC"] || [prod containsString:@"eACC"])) {
+        if (gIsDieSensor && gIsDieSensor[i]) {
             sumDie += temp;
             cntDie++;
         }
         sumAll += temp;
         cntAll++;
-        if (prodRef) CFRelease(prodRef);
     }
-    CFRelease(services);
     if (cntDie > 0) return sumDie / cntDie;
     if (cntAll > 0) return sumAll / cntAll;
     return -1.0;
@@ -223,6 +237,9 @@ int main(int argc, const char *argv[]) {
             usleep(120 * 1000);
         }
 
+        double cachedTempC = sampleSocTempC();
+        int tempTick = 0;
+
         while (1) {
             if (!once) {
                 usleep((useconds_t)(intervalMs * 1000));
@@ -266,7 +283,10 @@ int main(int argc, const char *argv[]) {
 
                 double memUsedGB = sampleMemUsedGB(memTotalGB);
                 GpuStats gpu = sampleGpuStats();
-                double socTempC = sampleSocTempC();
+                if ((tempTick++ & 1) == 0 || once) {
+                    cachedTempC = sampleSocTempC();
+                }
+                double socTempC = cachedTempC;
                 const char *thermState = thermalStateLabel([[NSProcessInfo processInfo] thermalState]);
 
                 // Print compact NDJSON line

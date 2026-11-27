@@ -93,7 +93,7 @@ function liveMacTelemetryPlugin(): Plugin {
     }
     if (!fs.existsSync(nativeBin)) return;
 
-    const proc = spawn(nativeBin, ['--ms=600'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const proc = spawn(nativeBin, ['--ms=1000'], { stdio: ['ignore', 'pipe', 'ignore'] });
     nativeProc = proc;
 
     const rl = readline.createInterface({ input: proc.stdout });
@@ -115,7 +115,7 @@ function liveMacTelemetryPlugin(): Plugin {
 
   async function refreshTopProcsIfStale(): Promise<void> {
     const now = Date.now();
-    if (now - lastPsMs < 2400 && cachedTopProcs.length > 0) return;
+    if (now - lastPsMs < 4000 && cachedTopProcs.length > 0) return;
     lastPsMs = now;
     try {
       const { stdout } = await execFileAsync('ps', ['-Arcwwwxo', '%cpu,comm']);

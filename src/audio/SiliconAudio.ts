@@ -50,6 +50,9 @@ export class SiliconAudio {
   private initialized = false;
   private userMuted = false;
   private tabHidden = false;
+  private autoSuspended = false;
+  private activeUntilWallMs = 0;
+  private idleSuspendTimer: number | null = null;
   private stateChangeCb?: (active: boolean, muted: boolean) => void;
 
   // Master graph (close-miked mechanical acoustics + wide cinematic hall bus for Cold Boot score)
@@ -90,13 +93,136 @@ export class SiliconAudio {
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
         this.tabHidden = document.hidden;
-        this.syncMasterGain(0.06);
+        if (this.tabHidden) {
+          this.syncMasterGain(0.04);
+          if (this.ctx?.state === 'running') {
+            this.autoSuspended = true;
+            void this.ctx.suspend();
+          }
+        } else if (this.ctx?.state === 'running') {
+          this.syncMasterGain(0.04);
+        }
       });
     }
   }
 
   public isActive(): boolean {
-    return this.initialized && !this.userMuted && !this.tabHidden && this.ctx?.state === 'running';
+    return (
+      this.initialized &&
+      !this.userMuted &&
+      !this.tabHidden &&
+      (this.ctx?.state === 'running' || this.autoSuspended)
+    );
+  }
+
+  /**
+   * Probe whether the browser permits unmuted Web Audio autoplay on fresh load.
+   * Calls `onAllowed` immediately if AudioContext runs (within ~90ms), or `onBlocked`
+   * if Chromium's autoplay policy holds AudioContext suspended awaiting a user gesture.
+   */
+  public probeAutoplay(onAllowed: () => void, onBlocked: () => void): void {
+    if (this.userMuted) {
+      onAllowed();
+      return;
+    }
+    if (!this.initialized) {
+      this.initGraph();
+    }
+    const ctx = this.ctx;
+    if (!ctx) {
+      onAllowed();
+      return;
+    }
+    if (ctx.state === 'running') {
+      this.autoSuspended = false;
+      this.syncMasterGain(0.015);
+      this.emitState();
+      onAllowed();
+      return;
+    }
+
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      if (ctx.state === 'running') {
+        this.autoSuspended = false;
+        this.syncMasterGain(0.015);
+        this.emitState();
+        onAllowed();
+      } else {
+        onBlocked();
+      }
+    }, 90);
+
+    void ctx
+      .resume()
+      .then(() => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        if (ctx.state === 'running') {
+          this.autoSuspended = false;
+          this.syncMasterGain(0.015);
+          this.emitState();
+          onAllowed();
+        } else {
+          onBlocked();
+        }
+      })
+      .catch(() => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        onBlocked();
+      });
+  }
+
+  /** True when the Cold Boot intro is running but browser autoplay policy is holding AudioContext suspended */
+  public isIntroAwaitingUnlock(): boolean {
+    return (
+      this.introRunning &&
+      !this.introScheduled &&
+      !this.userMuted &&
+      !this.tabHidden &&
+      (!this.ctx || (this.ctx.state === 'suspended' && !this.autoSuspended))
+    );
+  }
+
+  /** Keep AudioContext awake while sounds & reverb tails play, then suspend to 0% CPU when silent! */
+  private touchAudio(tailSec = 1.8): void {
+    if (!this.ctx || this.userMuted || this.tabHidden) return;
+    if (this.ctx.state === 'suspended' && this.autoSuspended) {
+      this.autoSuspended = false;
+      void this.ctx.resume().then(() => {
+        this.syncMasterGain(0.015);
+      });
+    } else if (this.ctx.state === 'running') {
+      this.syncMasterGain(0.015);
+    }
+    const targetWall = performance.now() + tailSec * 1000;
+    if (targetWall > this.activeUntilWallMs) {
+      this.activeUntilWallMs = targetWall;
+    }
+    this.scheduleIdleSuspend();
+  }
+
+  private scheduleIdleSuspend(): void {
+    if (this.idleSuspendTimer !== null) {
+      window.clearTimeout(this.idleSuspendTimer);
+      this.idleSuspendTimer = null;
+    }
+    const delayMs = Math.max(400, this.activeUntilWallMs - performance.now() + 500);
+    this.idleSuspendTimer = window.setTimeout(() => {
+      this.idleSuspendTimer = null;
+      if (!this.ctx || this.ctx.state !== 'running') return;
+      if (performance.now() < this.activeUntilWallMs) {
+        this.scheduleIdleSuspend();
+        return;
+      }
+      this.autoSuspended = true;
+      void this.ctx.suspend();
+    }, delayMs);
   }
 
   public isMuted(): boolean {
@@ -116,9 +242,11 @@ export class SiliconAudio {
     if (!this.ctx) return;
 
     const onRunning = () => {
+      this.autoSuspended = false;
       this.syncMasterGain(0.015);
       this.emitState();
       this.maybeLaunchPendingIntro();
+      this.touchAudio(2.0);
     };
 
     if (this.ctx.state === 'suspended') {
@@ -130,13 +258,14 @@ export class SiliconAudio {
 
   /** Explicit toggle from Sound HUD button or `M` key */
   public toggle(): boolean {
-    if (!this.initialized || this.ctx?.state !== 'running') {
+    if (!this.initialized || (this.ctx?.state !== 'running' && !this.autoSuspended)) {
       this.userMuted = false;
       if (!this.initialized) {
         this.initGraph();
       }
       if (this.ctx) {
         void this.ctx.resume().then(() => {
+          this.autoSuspended = false;
           this.syncMasterGain(0.012);
           this.emitState();
           if (this.introRunning && !this.introScheduled) {
@@ -152,6 +281,7 @@ export class SiliconAudio {
 
     this.userMuted = !this.userMuted;
     if (!this.userMuted) {
+      this.touchAudio(1.8);
       this.syncMasterGain(0.012);
       if (this.introRunning && !this.introScheduled) {
         this.maybeLaunchPendingIntro();
@@ -162,6 +292,8 @@ export class SiliconAudio {
       this.stopIntroScore(0.12);
       this.playMuteSwitch();
       this.syncMasterGain(0.08);
+      this.activeUntilWallMs = performance.now() + 450;
+      this.scheduleIdleSuspend();
     }
     this.emitState();
     return !this.userMuted;
@@ -507,6 +639,7 @@ export class SiliconAudio {
   }
 
   private routeOut(panVal = 0, roomMix = 1.0, cinemaMix = 0.0): AudioNode {
+    this.touchAudio(cinemaMix > 0 ? 3.2 : 1.5);
     const ctx = this.ctx!;
     const pan = ctx.createStereoPanner();
     pan.pan.setValueAtTime(clamp(panVal, -0.8, 0.8), ctx.currentTime);
@@ -849,6 +982,7 @@ export class SiliconAudio {
    */
   public triggerBurst(durationSec = 3.5): void {
     if (!this.ctx || !this.isActive()) return;
+    this.touchAudio(durationSec + 3.4);
     const ctx = this.ctx;
     const now = ctx.currentTime;
     const out = this.routeOut(0, 0.55, 0.52);
@@ -932,20 +1066,22 @@ export class SiliconAudio {
     if (!this.ctx) return;
 
     if (this.ctx.state === 'running') {
+      this.autoSuspended = false;
       this.syncMasterGain(0.015);
       this.emitState();
       this.scheduleCinematicIntro(offsetSec);
     } else if (this.ctx.state === 'suspended') {
-      // Attempt autoplay silently (succeeds when browser permits or when called inside a user gesture like `R`!)
+      // Attempt autoplay silently (succeeds when browser permits or when waking from autoSuspended / user gesture like `R`!)
       void this.ctx
         .resume()
         .then(() => {
+          this.autoSuspended = false;
           this.syncMasterGain(0.015);
           this.emitState();
           this.maybeLaunchPendingIntro();
         })
         .catch(() => {
-          // Autoplay blocked; will join seamlessly if user unlocks audio during the intro or replays with `R`
+          this.emitState();
         });
     }
   }
@@ -992,6 +1128,7 @@ export class SiliconAudio {
 
   private scheduleCinematicIntro(offsetSec: number): void {
     if (!this.ctx || !this.isActive()) return;
+    this.touchAudio(Math.max(4.0, 14.5 - offsetSec));
     this.introScheduled = true;
 
     const ctx = this.ctx;
