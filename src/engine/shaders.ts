@@ -48,8 +48,6 @@ void evalInstance(
   } else if (ch == 1) {
     float load = getPCoreLoad(int(param + 0.5));
     liveEnergy = load;
-    halfSize.y += load * 0.006;
-    center.y += load * 0.003;
   } else if (ch == 2) {
     liveEnergy = uMacLoads.y * 0.95;
   } else if (ch == 3) {
@@ -433,6 +431,8 @@ void main() {
 function buildSceneFs(enableHoleDiscard: boolean): string {
   const holeDiscardBlock = enableHoleDiscard
     ? `
+  // Planar reflection clip plane (skips studio plinth & anything below mirror plane during reflection pass)
+  if (uClipPlane.y > 0.5 && vScaledPos.y < uClipPlane.x) discard;
   // Smooth iris-expanding recessed aperture discard for nested layers
   if (uHoleBox.z > 0.001 && uHoleOpen > 0.01 && uHoleMode > 0.5 && uHoleMode < 3.5 && p.y > uHoleMinY) {
     vec2 openHalf = uHoleBox.zw * smoothstep(0.0, 0.85, uHoleOpen);
@@ -442,7 +442,6 @@ function buildSceneFs(enableHoleDiscard: boolean): string {
     : '';
   return `#version 300 es
 precision highp float;
-precision highp sampler2DShadow;
 precision highp sampler2DArray;
 
 in vec3 vWorldPos;
@@ -457,7 +456,7 @@ flat in float vParam;
 flat in float vExtraA;
 flat in float vExtraB;
 
-uniform sampler2DShadow uShadowMap;
+uniform sampler2D uShadowMap;
 uniform float uShadowTexel;
 uniform sampler2D uCoinTex;
 uniform sampler2D uCoinNormTex;
@@ -469,6 +468,11 @@ uniform sampler2D uAbfTex;
 uniform sampler2D uAbfNormTex;
 uniform sampler2D uRamDecalTex;
 uniform sampler2D uEnvTex;
+uniform sampler2D uPlanarReflTex;
+uniform sampler2D uPlanarReflBlurTex;
+uniform mat4 uReflViewProj;
+uniform float uPlanarReflActive;
+uniform vec4 uClipPlane; // (planeY, enabled, 0, 0)
 uniform vec4 uCoinSpec; // (cx, cz, radius, hy)
 uniform vec2 uFocusXZ;
 uniform float uFocusDist;
@@ -496,9 +500,14 @@ uniform vec4 uIntroLight; // (lightSweep 0..1, keyIntensity 0..1, rimBoost 0.15.
 uniform vec4 uBootA;      // (pwrRails, fabricLock, memTrain, ecoreWake) — all 1.0 when steady
 uniform vec4 uBootB;      // (pcoreWake, gpuWake, auxWake, bootActive)   — (1,1,1,0) when steady
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
+layout(location = 1) out vec4 gbufColor;
 
 const float PI = 3.14159265359;
+
+float ignNoise(vec2 p) {
+  return fract(52.9829189 * fract(dot(floor(p), vec2(0.06711056, 0.00583715))));
+}
 
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -606,37 +615,113 @@ vec3 sampleStudioEnvUv(vec2 uv, float rough, float semMix) {
   return mix(env, env * vec3(0.90, 0.99, 1.12), semMix * 0.48);
 }
 
-// Physically inspired anisotropic Bragg diffraction + thin-film SiO2 interference on bare silicon
+// Smooth Gaussian CIE spectral wavelength (380..720 nm) -> linear sRGB (mul-based, zero pow!)
+vec3 spectralWavelengthToRgb(float lambdaNm) {
+  float dr = (lambdaNm - 605.0) * (1.0 / 48.0);
+  float dr2 = (lambdaNm - 442.0) * (1.0 / 26.0);
+  float dg = (lambdaNm - 538.0) * (1.0 / 42.0);
+  float db = (lambdaNm - 455.0) * (1.0 / 36.0);
+  float r = exp(-(dr * dr)) + 0.24 * exp(-(dr2 * dr2));
+  float g = exp(-(dg * dg));
+  float b = exp(-(db * db));
+  float visWindow = smoothstep(375.0, 415.0, lambdaNm) * (1.0 - smoothstep(665.0, 725.0, lambdaNm));
+  return vec3(r, g, b) * visWindow;
+}
+
+// Physical Airy thin-film interference for SiO2 passivation (n = 1.46) over bare silicon
+vec3 airyThinFilmSiO2(float cosThetaI, float thicknessNm) {
+  const float invN2 = 1.0 / (1.46 * 1.46);
+  float sin2I = max(0.0, 1.0 - cosThetaI * cosThetaI);
+  float cosT = sqrt(max(0.001, 1.0 - sin2I * invN2));
+  float opd = (2.0 * 1.46) * thicknessNm * cosT;
+  vec3 phase = (2.0 * PI * opd) * vec3(1.0 / 630.0, 1.0 / 532.0, 1.0 / 465.0);
+  // Half-wave phase shift at SiO2/Si interface -> constructive interference peaks at (m + 0.5)*lambda
+  return 0.5 - 0.5 * cos(phase);
+}
+
+// Physical 1st/2nd-order optical grating diffraction + Airy SiO2 thin-film interference on delidded silicon
 vec3 braggDiffraction(vec3 n, vec3 v, vec3 l, float pitchVal, float orientVal, vec2 pos) {
   vec3 h = normalize(l + v);
   float ndotv = max(dot(n, v), 0.0);
-  vec2 gAxis = (orientVal < 0.35) ? vec2(1.0, 0.0) : ((orientVal > 0.65) ? vec2(0.0, 1.0) : vec2(0.707, 0.707));
-  float gratingShift = abs(dot(h.xz, gAxis)) * 1.45;
-  float macroDrift = sin(pos.x * 0.42 - pos.y * 0.34) * 0.18;
-  float phase = 1.65 + pitchVal * 1.35 + gratingShift * (0.75 + pitchVal * 0.55) + ndotv * 0.55 + macroDrift;
-  vec3 spectral = 0.5 + 0.5 * cos(6.28318 * (phase + vec3(0.00, 0.31, 0.64)));
-  // Real bare silicon stays dark metallic charcoal-slate with crisp sapphire/steel/violet-amber diffraction!
-  vec3 bareSi = vec3(0.075, 0.088, 0.112);
-  vec3 diffTint = mix(vec3(0.09, 0.16, 0.28), spectral * vec3(0.28, 0.42, 0.62), 0.72);
-  return mix(bareSi, diffTint, 0.62);
+  float ndoth = max(dot(n, h), 0.0);
+
+  // Per-block lithography grating vector (X, Z, or 45-degree diagonal) & sub-micron pitch (540..1180 nm)
+  vec2 gAxis = (orientVal < 0.35) ? vec2(1.0, 0.0) : ((orientVal > 0.65) ? vec2(0.0, 1.0) : vec2(0.7071, 0.7071));
+  float dPitchNm = mix(540.0, 1180.0, pitchVal);
+  float macroFilmDrift = sin(pos.x * 0.42 - pos.y * 0.34) * 18.0;
+
+  // Grating equation: m * lambda = d * |dot(L + V, gAxis)| — skip out-of-band higher orders!
+  float gratingProj = abs(dot(l.xz + v.xz, gAxis));
+  float opdGrating = dPitchNm * (0.28 + gratingProj * 0.85);
+  vec3 gratingSpectrum = vec3(0.0);
+  if (opdGrating > 375.0 && opdGrating < 725.0) {
+    gratingSpectrum += spectralWavelengthToRgb(opdGrating);
+  }
+  float opd2 = opdGrating * 0.5;
+  if (opd2 > 375.0 && opd2 < 725.0) {
+    gratingSpectrum += spectralWavelengthToRgb(opd2) * 0.72;
+  }
+  float opd3 = opdGrating * 0.333333;
+  if (opd3 > 375.0 && opd3 < 725.0) {
+    gratingSpectrum += spectralWavelengthToRgb(opd3) * 0.35;
+  }
+  gratingSpectrum = min(gratingSpectrum, vec3(1.35));
+
+  // Grating flashes strongly near Bragg specular alignment, stays dark mirror-charcoal off-axis!
+  float braggLobe = (ndoth * ndoth * sqrt(ndoth)) * (0.35 + 0.65 * smoothstep(0.08, 0.65, gratingProj));
+  vec3 thinFilm = airyThinFilmSiO2(ndotv, 155.0 + pitchVal * 115.0 + macroFilmDrift);
+
+  vec3 bareSi = vec3(0.068, 0.078, 0.098);
+  vec3 filmTint = mix(bareSi, bareSi * 0.72 + thinFilm * vec3(0.11, 0.16, 0.25), 0.52);
+  vec3 diffBounce = gratingSpectrum * vec3(0.32, 0.40, 0.54) * braggLobe;
+  return filmTint + diffBounce;
 }
 
+// 2-Stage PCSS Variable-Penumbra Soft Shadows (6-tap blocker search + 8-tap IGN-rotated Vogel PCF; 1-tap in planar refl!)
 float sampleShadow(vec4 sc, float ndotl) {
   vec3 proj = sc.xyz / sc.w;
   proj = proj * 0.5 + 0.5;
   if (proj.x < 0.01 || proj.x > 0.99 || proj.y < 0.01 || proj.y > 0.99 || proj.z > 0.998) {
     return 1.0;
   }
-  float bias = max(0.0012 * (1.0 - ndotl), 0.00055);
-  float z = proj.z - bias;
+  float bias = max(0.0014 * (1.0 - ndotl), 0.00045);
+  float receiverZ = proj.z - bias;
+  // Fast 1-tap shadow test during blurred half-res planar reflection pass
+  if (uClipPlane.y > 0.5) {
+    return mix(0.08, 1.0, step(receiverZ, texture(uShadowMap, proj.xy).r));
+  }
   float tx = uShadowTexel;
-  float s = 0.0;
-  s += texture(uShadowMap, vec3(proj.xy, z)) * 0.36;
-  s += texture(uShadowMap, vec3(proj.xy + vec2( tx * 0.95,  tx * 0.52), z)) * 0.16;
-  s += texture(uShadowMap, vec3(proj.xy + vec2(-tx * 0.95, -tx * 0.52), z)) * 0.16;
-  s += texture(uShadowMap, vec3(proj.xy + vec2(-tx * 0.52,  tx * 0.95), z)) * 0.16;
-  s += texture(uShadowMap, vec3(proj.xy + vec2( tx * 0.52, -tx * 0.95), z)) * 0.16;
-  return mix(0.05, 1.0, s);
+  float rot = ignNoise(gl_FragCoord.xy) * 6.2831853;
+  const float GOLDEN_ANGLE = 2.39996323;
+
+  // Stage 1: Blocker search (6 Vogel taps)
+  float blockerSum = 0.0;
+  float blockerCount = 0.0;
+  float searchRadius = 11.5 * tx;
+  for (int i = 0; i < 6; i++) {
+    float r = sqrt((float(i) + 0.5) * (1.0 / 6.0)) * searchRadius;
+    float a = float(i) * GOLDEN_ANGLE + rot;
+    float d = texture(uShadowMap, proj.xy + vec2(cos(a), sin(a)) * r).r;
+    if (d < receiverZ) {
+      blockerSum += d;
+      blockerCount += 1.0;
+    }
+  }
+  if (blockerCount < 0.5) {
+    return 1.0;
+  }
+
+  // Stage 2: Contact-hardening variable penumbra PCF (8 IGN-rotated Vogel taps)
+  float avgBlocker = blockerSum / blockerCount;
+  float penumbra = clamp((receiverZ - avgBlocker) * 145.0, 1.05, 10.5) * tx;
+  float lit = 0.0;
+  for (int i = 0; i < 8; i++) {
+    float r = sqrt((float(i) + 0.5) * 0.125) * penumbra;
+    float a = float(i) * GOLDEN_ANGLE + rot + 0.5;
+    float d = texture(uShadowMap, proj.xy + vec2(cos(a), sin(a)) * r).r;
+    lit += step(receiverZ, d);
+  }
+  return mix(0.05, 1.0, lit * 0.125);
 }
 
 // RC-filtered 3-bit digital transaction burst along finite conductor [-1..+1] (soft endpoint fades)
@@ -720,6 +805,7 @@ ${holeDiscardBlock}
     float fade = fog * nearCam * clamp(uStageReveal, 0.0, 1.0);
     float alpha = clamp((0.11 + rim * 0.58 + qWave * 0.06) * fade, 0.0, 0.85);
     fragColor = vec4(max(glow * fade, 0.0), alpha);
+    gbufColor = vec4(0.0);
     return;
   }
 
@@ -918,20 +1004,23 @@ ${holeDiscardBlock}
       matCavAO = mix(1.0, abfN.b, interposerMask * 0.85);
 
       float trace = abf.r;
-      float enig = abf.g;
+      float isSilk = step(trace, 0.10) * smoothstep(0.18, 0.55, abf.g);
+      float enig = smoothstep(0.25, 0.45, trace) * abf.g;
       float weave = abf.b;
       float busMask = abf.a;
 
-      // Deep dark emerald-slate ABF solder mask (dielectric!) with raised translucent copper traces + gold ENIG rings
+      // Deep dark emerald-slate ABF solder mask (dielectric!) with raised translucent copper traces, gold ENIG rings & matte silkscreen
       vec3 solderMaskCol = vec3(0.008, 0.021, 0.019) * (0.82 + weave * 0.36);
       vec3 coveredCopper = vec3(0.024, 0.062, 0.044);
       vec3 enigGold = vec3(0.76, 0.56, 0.22);
+      vec3 silkInk = vec3(0.56, 0.59, 0.63);
 
       baseCol = mix(solderMaskCol, coveredCopper, trace * 0.85);
       baseCol = mix(baseCol, enigGold, enig);
-      rough = mix(0.28 - trace * 0.06, 0.16, enig);
-      metal = mix(0.02, 0.94, enig);
-      clearcoat = (1.0 - enig) * 0.52 * interposerMask;
+      baseCol = mix(baseCol, silkInk, isSilk * 0.82);
+      rough = mix(mix(0.28 - trace * 0.06, 0.16, enig), 0.54, isSilk);
+      metal = mix(mix(0.02, 0.94, enig), 0.04, isSilk);
+      clearcoat = (1.0 - enig) * (1.0 - isSilk * 0.85) * 0.52 * interposerMask;
 
       // Subtle contact AO hugging the die perimeter, 4x LPDDR5 packages & SMD capacitors on the substrate
       vec2 dDie = max(abs(p.xz) - vec2(3.08, 2.50), vec2(0.0));
@@ -1012,9 +1101,9 @@ ${holeDiscardBlock}
       float slateGrain = (plTex.r - 0.18) * 0.012;
       float heroGlow = exp(-0.022 * dot(p.xz, p.xz)) * 0.008 + exp(-0.045 * dot(p.xz - uCoinSpec.xy, p.xz - uCoinSpec.xy)) * 0.006;
       baseCol = vec3(0.008, 0.011, 0.015) + slateGrain + vec3(0.011, 0.016, 0.024) * heroGlow * plinthMask;
-      rough = mix(0.42, 0.24, plinthMask * (0.45 + 0.55 * exp(-0.018 * dot(p.xz, p.xz))));
+      rough = mix(0.42, 0.20, plinthMask * (0.48 + 0.52 * exp(-0.018 * dot(p.xz, p.xz))));
       metal = mix(0.18, 0.34, plinthMask);
-      clearcoat = 0.0;
+      clearcoat = 0.28 * plinthMask;
 
       // Ultra-subtle architectural 10 mm / 50 mm studio scale mat hairlines when zoomed out past Die
       if (uZoom < -0.15) {
@@ -1027,6 +1116,28 @@ ${holeDiscardBlock}
         float grid = (line10 * 0.30 + line50 * 0.72) * macroVis * matFade * pkgAO * coinAO;
         baseCol += vec3(0.026, 0.034, 0.046) * grid;
         rough = mix(rough, 0.22, grid * 0.5);
+      }
+
+      // True World 0 Planar Reflection of the Apple Silicon package, LPDDR5, MLCC caps & US Quarter!
+      if (uPlanarReflActive > 0.01 && uClipPlane.y < 0.5) {
+        vec4 rp = uReflViewProj * vec4(vScaledPos, 1.0);
+        if (rp.w > 0.001) {
+          vec2 reflUv = (rp.xy / rp.w) * 0.5 + 0.5;
+          // Subtle anodized obsidian micro-ripple from slate grain
+          reflUv += vec2(slateGrain * 0.85, slateGrain * 0.65);
+          if (reflUv.x > 0.002 && reflUv.x < 0.998 && reflUv.y > 0.002 && reflUv.y < 0.998) {
+            float nearObjDist = min(pkgDist, coinDist);
+            float blurMix = clamp(smoothstep(0.0, 2.2, nearObjDist) * 0.74 + rough * 0.45, 0.0, 1.0);
+            vec4 reflSharp = texture(uPlanarReflTex, reflUv);
+            vec4 reflSoft = texture(uPlanarReflBlurTex, reflUv);
+            vec3 planarCol = mix(reflSharp.rgb, reflSoft.rgb, blurMix);
+            float planarCov = mix(reflSharp.a, reflSoft.a, blurMix);
+            float edgeFade = smoothstep(0.002, 0.06, min(min(reflUv.x, 1.0 - reflUv.x), min(reflUv.y, 1.0 - reflUv.y)));
+            float distFade = exp(-0.16 * nearObjDist);
+            float fresnelPlinth = 0.16 + 0.52 * pow(1.0 - ndotv, 2.4);
+            emissive += planarCol * planarCov * fresnelPlinth * distFade * edgeFade * plinthMask * uPlanarReflActive * 1.35;
+          }
+        }
       }
     }
   } else if (matId < 1.5) {
@@ -1415,8 +1526,8 @@ ${holeDiscardBlock}
       vec3 capGlow = mix(vec3(1.24, 0.52, 0.12), vec3(1.92, 1.12, 0.44), chargeWave);
       emissive += capGlow * (0.18 + chargeWave * 1.32) * pwrEnv * uBootB.w * 1.08;
     }
-  } else {
-    // Mat 16: Bright Silver-Tin (Sn/Ni) Soldered SMD End Termination
+  } else if (matId < 16.5) {
+    // Mat 16: Bright Silver-Tin (Sn/Ni) Soldered SMD End Termination & Reflow Solder Fillets
     vec4 snAlb;
     vec3 snBump;
     float snCav;
@@ -1434,6 +1545,13 @@ ${holeDiscardBlock}
       float pwrEnv = smoothstep(0.0, 0.10, pwrP) * (1.0 - smoothstep(0.64, 1.0, pwrP));
       emissive += vec3(1.55, 0.88, 0.34) * chargeWave * pwrEnv * uBootB.w * 0.95;
     }
+  } else {
+    // Mat 17: Glossy Jet-Black Capillary Epoxy Underfill Meniscus (hugging bare silicon die & LPDDR5 edges)
+    float ufGrain = noise2D(p.xz * 26.0 + p.y * 18.0);
+    baseCol = vec3(0.008, 0.009, 0.012) + vec3(0.005, 0.006, 0.007) * ufGrain;
+    rough = 0.13 + ufGrain * 0.04;
+    metal = 0.02;
+    clearcoat = 0.92;
   }
 
   // Machined micro-chamfer edge polish: crisper specular gleam specifically along machined bevels!
@@ -1459,15 +1577,39 @@ ${holeDiscardBlock}
   float wallAO = mix(mix(0.66, 0.54, uSemFactor), 1.0, clamp(n.y * 0.5 + 0.5, 0.0, 1.0));
   float ao = clamp(floorAO * wallAO * studioContactAO * matCavAO, 0.12, 1.0);
 
-  // Studio 3-Point Key / Rim / Fill Lighting + Tight 5-Tap Hardware PCF Soft Shadows
+  // Studio 3-Point Key (Representative-Point Rectangular Softbox Area Light) / Rim / Fill + 2-Stage PCSS Soft Shadows
   float ndotlK = max(dot(n, keyDir), 0.0);
-  float sh = sampleShadow(vShadowCoord, ndotlK);
+  float introKey = clamp(uIntroLight.y, 0.0, 1.0);
+  float introRim = clamp(uIntroLight.z, 0.15, 2.5);
+  float introPulse = clamp(uIntroLight.w, 0.0, 1.5);
 
   vec3 F0 = mix(vec3(0.04), baseCol, metal);
   vec3 diffAlbedo = baseCol * (1.0 - metal) / PI;
 
-  // Key light (Cook-Torrance GGX + subtle anisotropic stretch on brushed metals)
-  vec3 hK = normalize(keyDir + v);
+  // Multi-Scattering GGX Energy Compensation (Turquin / Fdez-Agüera fast analytical E_ss)
+  float oneMinusV = 1.0 - ndotv;
+  float ess = 1.0 - rough * (0.28 + 0.34 * oneMinusV * oneMinusV);
+  vec3 multiScatter = 1.0 + F0 * (1.0 / max(ess, 0.35) - 1.0) * 0.88;
+
+  // Representative-Point Rectangular Studio Softbox Specular (matches overhead softbox in uEnvTex!)
+  vec3 reflDir = reflect(-v, n);
+  vec3 kUpRef = abs(keyDir.y) < 0.96 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+  vec3 kRight = normalize(cross(kUpRef, keyDir));
+  vec3 kUp = cross(keyDir, kRight);
+  float rDotK = max(dot(reflDir, keyDir), 0.12);
+  vec3 hitOnPlane = reflDir / rDotK - keyDir;
+  float projU = clamp(dot(hitOnPlane, kRight), -0.34, 0.34);
+  float projV = clamp(dot(hitOnPlane, kUp), -0.20, 0.20);
+  vec3 areaDir = normalize(keyDir + kRight * projU + kUp * projV);
+  float ndotlSpecK = max(dot(n, areaDir), 0.0);
+
+  // Early-out 14-tap PCSS on back-facing surfaces and pure-black intro frames!
+  float sh = (introKey > 0.005 && (ndotlK > 0.002 || ndotlSpecK > 0.002))
+    ? sampleShadow(vShadowCoord, ndotlK)
+    : 1.0;
+
+  // Key light (Cook-Torrance GGX area-normalized specular + subtle anisotropic stretch on brushed metals)
+  vec3 hK = normalize(areaDir + v);
   float ndothK = max(dot(n, hK), 0.0);
   float vdothK = max(dot(v, hK), 0.0);
   vec3 Fk = F_Schlick(vdothK, F0);
@@ -1477,13 +1619,17 @@ ${holeDiscardBlock}
     float hdotT = dot(hK, tA);
     effRoughK = clamp(rough * mix(1.0, 0.72 + 0.56 * abs(hdotT), anisoStrength), 0.06, 0.5);
   }
-  float Dk = D_GGX(ndothK, effRoughK);
-  float Gk = G_SchlickGGX(ndotv, ndotlK, effRoughK);
-  vec3 specK = (Dk * Gk * Fk) / max(4.0 * ndotv * ndotlK, 0.001);
+  float aOrig = max(effRoughK * effRoughK, 0.0025);
+  float aArea = clamp(aOrig + 0.085, 0.004, 1.0);
+  float areaNorm = (aOrig / aArea) * (aOrig / aArea);
+  float effAreaRough = sqrt(aArea);
+  float Dk = D_GGX(ndothK, effAreaRough) * mix(1.0, areaNorm, 0.42);
+  float Gk = G_SchlickGGX(ndotv, max(ndotlSpecK, 0.02), effRoughK);
+  vec3 specK = ((Dk * Gk * Fk) / max(4.0 * ndotv * max(ndotlSpecK, 0.02), 0.001)) * multiScatter;
   vec3 kDk = (vec3(1.0) - Fk);
 
-  // Optional Optical SiO2 / ABF / MLCC Clearcoat Lobe on key light
-  float ccSpecK = clearcoat > 0.01 ? (D_GGX(ndothK, 0.07) * 0.28 * F_Schlick(vdothK, vec3(0.04)).r * clearcoat) : 0.0;
+  // Optional Optical SiO2 / ABF / MLCC / Underfill Clearcoat Lobe on area key light
+  float ccSpecK = clearcoat > 0.01 ? (D_GGX(ndothK, 0.11) * 0.34 * F_Schlick(vdothK, vec3(0.04)).r * clearcoat) : 0.0;
 
   // Rim light (Cook-Torrance GGX — crisp dark-field metallic edge separation!)
   float ndotlR = max(dot(n, rimDir), 0.0);
@@ -1493,16 +1639,12 @@ ${holeDiscardBlock}
   vec3 Fr = F_Schlick(vdothR, F0);
   float Dr = D_GGX(ndothR, max(rough * 0.90, 0.06));
   float Gr = G_SchlickGGX(ndotv, ndotlR, rough);
-  vec3 specR = (Dr * Gr * Fr) / max(4.0 * ndotv * ndotlR, 0.001);
+  vec3 specR = ((Dr * Gr * Fr) / max(4.0 * ndotv * ndotlR, 0.001)) * multiScatter;
 
   float ndotlF = max(dot(n, fillDir), 0.0);
 
   vec3 keyTint = mix(vec3(1.05, 1.01, 0.96), vec3(0.96, 1.00, 1.06), uSemFactor * 0.5);
   vec3 rimTint = mix(vec3(0.42, 0.72, 1.18), vec3(0.56, 0.82, 1.24), uSemFactor);
-
-  float introKey = clamp(uIntroLight.y, 0.0, 1.0);
-  float introRim = clamp(uIntroLight.z, 0.15, 2.5);
-  float introPulse = clamp(uIntroLight.w, 0.0, 1.5);
 
   // Deep blackout studio while unpowered: minimal softbox & dark-mirror reflection so chip silhouette whispers out of shadow
   // Musical beatPulse breathes crisp sapphire/platinum grazing light along machined chamfers strictly on bass thumps!
@@ -1511,22 +1653,23 @@ ${holeDiscardBlock}
   float localRim = mix(introRim + introPulse * 0.82, 1.0 + introPulse * 0.35, introKey);
 
   vec3 direct = vec3(0.0);
-  direct += (kDk * diffAlbedo + specK + vec3(ccSpecK)) * keyTint * (ndotlK * 2.65) * sh * localKey;
+  direct += (kDk * diffAlbedo * ndotlK + (specK + vec3(ccSpecK)) * max(ndotlSpecK, ndotlK * 0.65)) * keyTint * 2.65 * sh * localKey;
   direct += ((vec3(1.0) - Fr) * diffAlbedo * 0.60 + specR * 0.82) * rimTint * (ndotlR * mix(1.38, 1.95, uSemFactor)) * localRim;
   direct += diffAlbedo * ndotlF * vec3(0.24, 0.30, 0.42) * 1.10 * mix(0.03, 1.0, introKey);
 
-  // Prefiltered HDR Studio Softbox + Negative-Fill Environment Reflection + Clearcoat Reflection
-  vec3 reflDir = reflect(-v, n);
+  // Prefiltered HDR Studio Softbox + Negative-Fill Environment Reflection + Lagarde Specular Occlusion
   vec2 reflUv = envDirToUv(reflDir);
   vec3 reflCol = sampleStudioEnvUv(reflUv, rough, uSemFactor);
   vec3 Fenv = F_SchlickRoughness(ndotv, F0, rough);
-  vec3 envReflection = reflCol * Fenv * mix(0.82, 0.32, rough * rough) * (0.48 + 0.52 * metal) * ao * envLift;
+  float specAO = clamp(pow(ndotv + ao, exp2(-16.0 * rough - 1.0)) - 1.0 + ao, 0.0, 1.0);
+  vec3 envReflection = reflCol * Fenv * multiScatter * mix(0.84, 0.36, rough * rough) * (0.48 + 0.52 * metal) * specAO * envLift;
   if (clearcoat > 0.01) {
     vec3 ccEnv = sampleStudioEnvUv(reflUv, 0.04, uSemFactor);
     float m1 = 1.0 - ndotv;
     float m2 = m1 * m1;
     float ccF = 0.04 + 0.96 * (m2 * m2 * m1);
-    envReflection += ccEnv * ccF * clearcoat * 0.68 * ao * envLift;
+    float ccSpecAO = clamp(pow(ndotv + ao, exp2(-16.0 * 0.06 - 1.0)) - 1.0 + ao, 0.0, 1.0);
+    envReflection += ccEnv * ccF * clearcoat * 0.68 * ccSpecAO * envLift;
   }
 
   // Machined chamfer glint along precision beveled silicon & metal edges (pulses with bass thumps & ignition!)
@@ -1621,10 +1764,20 @@ ${holeDiscardBlock}
   col = mix(col, vec3(0.003, 0.005, 0.009), clamp(fog, 0.0, 1.0));
 
   // Pack analytical optical microscope Circle-of-Confusion (CoC) into alpha for zero-overhead DOF!
+  // During planar reflection pass (uClipPlane.y > 0.5), alpha = 1.0 marks valid reflected geometry coverage!
   float focalDelta = abs(camDist - uFocusDist) / max(uFocusDist * 0.62, 0.5);
   float coc = clamp(smoothstep(0.32, 1.32, focalDelta) * uDofStrength, 0.0, 1.0);
+  float outAlpha = (uClipPlane.y > 0.5) ? (1.0 - clamp(fog, 0.0, 1.0)) : coc;
 
-  fragColor = vec4(max(col, 0.0), coc);
+  fragColor = vec4(max(col, 0.0), outAlpha);
+
+  // Lightweight G-buffer attachment for half-res GTAO, Contact Shadows & Screen-Space Reflections:
+  // R = metal (or clearcoat proxy), G = rough, B = emissive protection, A = surface flag (1.0 = geometry, 0.5 = plinth)
+  float reflMetal = max(metal, clearcoat * 0.65);
+  float reflRough = (clearcoat > 0.4 && metal < 0.25) ? min(rough, 0.18) : rough;
+  float emLuma = clamp(max(emissive.r, max(emissive.g, emissive.b)) * 1.15, 0.0, 1.0);
+  float isPlinth = (matId < 0.5 && p.y < -0.50 && n.y > 0.8 && uZoom < 0.65) ? 1.0 : 0.0;
+  gbufColor = vec4(reflMetal, reflRough, emLuma, isPlinth > 0.5 ? 0.5 : 1.0);
 }
 `;
 }
@@ -2153,5 +2306,402 @@ void main() {
 
   float mask = edgeFade * focusAlpha * alpha;
   fragColor = texCol * mask; // Premultiplied RGBA -> zero dark halo when magnified!
+}
+`;
+
+/** Separable 9-tap Gaussian blur for half-res World 0 planar reflection & SSR roughness cone */
+export const PLANAR_BLUR_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uTex;
+uniform vec2 uDir; // (texelX, 0) or (0, texelY)
+
+void main() {
+  vec4 acc = texture(uTex, vUv) * 0.227027;
+  acc += texture(uTex, clamp(vUv + uDir * 1.3846, vec2(0.001), vec2(0.999))) * 0.316216;
+  acc += texture(uTex, clamp(vUv - uDir * 1.3846, vec2(0.001), vec2(0.999))) * 0.316216;
+  acc += texture(uTex, clamp(vUv + uDir * 3.2308, vec2(0.001), vec2(0.999))) * 0.070270;
+  acc += texture(uTex, clamp(vUv - uDir * 3.2308, vec2(0.001), vec2(0.999))) * 0.070270;
+  fragColor = acc;
+}
+`;
+
+/**
+ * Half-Res Horizon-Based GTAO + Screen-Space Contact Shadows:
+ *   - Uses 4-scalar frustum projection math (uProjParams) instead of mat4*vec4 (~60% less ALU!)
+ *   - 3 IGN-rotated horizon slices x 3 steps = smooth omnidirectional crevice occlusion across all 10 scales
+ *   - 6-step short-range contact shadow raymarch along key light direction for MLCC caps, vias & GAA spacers
+ *   - Outputs vec4(gtao, contactShadow, linearViewZ * 0.02, 1.0)
+ */
+export const GTAO_CS_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uDepthTex;
+uniform vec4 uProjParams; // (invP00, invP11, proj10, proj14)
+uniform vec2 uProjScale;  // (proj00 * 0.5, proj11 * 0.5)
+uniform vec2 uTexelSize;
+uniform vec3 uLightDirView;
+uniform float uAoStrength;
+uniform float uCsStrength;
+
+float ign(vec2 p) {
+  return fract(52.9829189 * fract(dot(floor(p), vec2(0.06711056, 0.00583715))));
+}
+
+float sampleLinearZ(vec2 uv, out float rawD) {
+  rawD = texture(uDepthTex, uv).r;
+  float ndcZ = rawD * 2.0 - 1.0;
+  return uProjParams.w / (ndcZ + uProjParams.z);
+}
+
+float sampleLinearZFast(vec2 uv) {
+  float ndcZ = texture(uDepthTex, uv).r * 2.0 - 1.0;
+  return uProjParams.w / (ndcZ + uProjParams.z);
+}
+
+vec3 reconstructViewPos(vec2 uv, float viewZ) {
+  vec2 ndc = uv * 2.0 - 1.0;
+  return vec3(ndc * uProjParams.xy * viewZ, -viewZ);
+}
+
+void main() {
+  float dC;
+  float viewZ = sampleLinearZ(vUv, dC);
+  if (dC >= 0.9995 || uAoStrength < 0.01) {
+    fragColor = vec4(1.0, 1.0, 1.0, 1.0);
+    return;
+  }
+
+  vec3 posC = reconstructViewPos(vUv, viewZ);
+  vec2 tx = uTexelSize;
+
+  // Silhouette-preserving view-space normal reconstruction (minimum depth-delta cross product)
+  vec2 uvR = clamp(vUv + vec2(tx.x, 0.0), vec2(0.001), vec2(0.999));
+  vec2 uvL = clamp(vUv - vec2(tx.x, 0.0), vec2(0.001), vec2(0.999));
+  vec2 uvU = clamp(vUv + vec2(0.0, tx.y), vec2(0.001), vec2(0.999));
+  vec2 uvD = clamp(vUv - vec2(0.0, tx.y), vec2(0.001), vec2(0.999));
+  float zR = sampleLinearZFast(uvR);
+  float zL = sampleLinearZFast(uvL);
+  float zU = sampleLinearZFast(uvU);
+  float zD = sampleLinearZFast(uvD);
+  vec3 dX = (abs(zR - viewZ) < abs(viewZ - zL))
+    ? (reconstructViewPos(uvR, zR) - posC)
+    : (posC - reconstructViewPos(uvL, zL));
+  vec3 dY = (abs(zU - viewZ) < abs(viewZ - zD))
+    ? (reconstructViewPos(uvU, zU) - posC)
+    : (posC - reconstructViewPos(uvD, zD));
+  vec3 viewN = normalize(cross(dX, dY) + vec3(0.0, 0.0, 1e-5));
+  vec3 viewV = normalize(-posC);
+  if (dot(viewN, viewV) < 0.0) viewN = -viewN;
+
+  // Adaptive world-space radius scaled to current camera distance (works uniformly across all 10 scales!)
+  float worldRad = clamp(viewZ * 0.048, 0.05, 0.55);
+  float invMaxDist = 1.0 / (worldRad * 1.85);
+  float screenRadUv = clamp((worldRad * uProjScale.y) / max(viewZ, 0.05), 0.004, 0.065);
+  float invAspect = uProjParams.x / max(uProjParams.y, 0.001);
+
+  float noiseA = ign(gl_FragCoord.xy);
+  float noiseR = ign(gl_FragCoord.xy + vec2(17.0, 31.0));
+  const float PI_THIRD = 1.04719755;
+
+  // 3-slice x 3-step Horizon-Based GTAO (IGN-rotated + depth-aware bilateral blur)
+  float occSum = 0.0;
+  for (int s = 0; s < 3; s++) {
+    float phi = (float(s) + noiseA) * PI_THIRD;
+    vec2 dir = vec2(cos(phi) / invAspect, sin(phi));
+    float maxH1 = -0.15;
+    float maxH2 = -0.15;
+
+    for (int st = 1; st <= 3; st++) {
+      float frac = (float(st) - 0.5 + 0.45 * noiseR) * (1.0 / 3.0);
+      vec2 off = dir * (screenRadUv * frac * frac * 1.15 + tx * 1.1);
+
+      vec2 uv1 = vUv + off;
+      if (uv1.x > 0.002 && uv1.x < 0.998 && uv1.y > 0.002 && uv1.y < 0.998) {
+        vec3 diff1 = reconstructViewPos(uv1, sampleLinearZFast(uv1)) - posC;
+        float len1 = length(diff1);
+        if (len1 > 1e-4) {
+          float falloff = clamp(1.0 - len1 * invMaxDist, 0.0, 1.0);
+          maxH1 = max(maxH1, (dot(diff1, viewN) / len1) * falloff);
+        }
+      }
+
+      vec2 uv2 = vUv - off;
+      if (uv2.x > 0.002 && uv2.x < 0.998 && uv2.y > 0.002 && uv2.y < 0.998) {
+        vec3 diff2 = reconstructViewPos(uv2, sampleLinearZFast(uv2)) - posC;
+        float len2 = length(diff2);
+        if (len2 > 1e-4) {
+          float falloff = clamp(1.0 - len2 * invMaxDist, 0.0, 1.0);
+          maxH2 = max(maxH2, (dot(diff2, viewN) / len2) * falloff);
+        }
+      }
+    }
+
+    float o1 = clamp(maxH1 - 0.07, 0.0, 1.0);
+    float o2 = clamp(maxH2 - 0.07, 0.0, 1.0);
+    occSum += (o1 + o2) * 0.5;
+  }
+
+  float ao = clamp(1.0 - (occSum * (1.0 / 3.0)) * 1.38 * uAoStrength, 0.16, 1.0);
+
+  // Short-Range Screen-Space Contact Shadows (6 steps along key light in view space)
+  float contactSh = 1.0;
+  float ndotl = dot(viewN, uLightDirView);
+  if (uCsStrength > 0.01 && ndotl > 0.04) {
+    float marchDist = clamp(viewZ * 0.022, 0.02, 0.30);
+    float thickness = clamp(viewZ * 0.015, 0.015, 0.22);
+    float bias = clamp(viewZ * 0.0022, 0.002, 0.028);
+    float hit = 0.0;
+
+    for (int i = 1; i <= 6; i++) {
+      float t = (float(i) - 0.35 + 0.55 * noiseR) * (1.0 / 6.0);
+      vec3 sampleVp = posC + uLightDirView * (marchDist * t);
+      float rayZ = -sampleVp.z;
+      if (rayZ <= 0.001) break;
+      vec2 suv = (sampleVp.xy * uProjScale) / rayZ + 0.5;
+      if (suv.x < 0.002 || suv.x > 0.998 || suv.y < 0.002 || suv.y > 0.998) break;
+      float delta = rayZ - sampleLinearZFast(suv);
+      if (delta > bias && delta < thickness) {
+        float fade = (1.0 - t * 0.65) * smoothstep(thickness, thickness * 0.25, delta);
+        hit = max(hit, fade);
+      }
+    }
+    contactSh = 1.0 - hit * 0.58 * uCsStrength;
+  }
+
+  fragColor = vec4(ao, contactSh, clamp(viewZ * 0.02, 0.0, 1.0), 1.0);
+}
+`;
+
+/** Depth-aware separable bilateral blur for GTAO & Contact Shadows (preserves crisp geometric silhouettes!) */
+export const AO_BLUR_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uAoTex;
+uniform vec2 uDir; // (texelX, 0) or (0, texelY)
+
+void main() {
+  vec4 c0 = texture(uAoTex, vUv);
+  float z0 = c0.b;
+  vec2 acc = c0.rg * 0.28;
+  float wSum = 0.28;
+
+  const float offs[4] = float[4](-2.0, -1.0, 1.0, 2.0);
+  const float kW[4] = float[4](0.12, 0.24, 0.24, 0.12);
+  for (int i = 0; i < 4; i++) {
+    vec2 suv = clamp(vUv + uDir * offs[i], vec2(0.001), vec2(0.999));
+    vec4 s = texture(uAoTex, suv);
+    float dz = abs(s.b - z0);
+    float depthW = exp(-dz * dz * 1800.0);
+    float w = kW[i] * depthW;
+    acc += s.rg * w;
+    wSum += w;
+  }
+  fragColor = vec4(acc / max(wSum, 0.001), z0, 1.0);
+}
+`;
+
+/**
+ * Half-Res Screen-Space Reflections (SSR) for Inter-Surface Metallic & Signal Bounce:
+ *   - Uses 4-scalar frustum projection math (zero mat4*vec4 in raymarch loop!)
+ *   - 12-step quadratic view-space raymarch + 3-step binary refinement
+ *   - Skips matte epoxy, sky, and World 0 plinth (which already uses exact planar reflection!)
+ */
+export const SSR_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uHdrTex;
+uniform sampler2D uDepthTex;
+uniform sampler2D uGbufTex;
+uniform vec4 uProjParams; // (invP00, invP11, proj10, proj14)
+uniform vec2 uProjScale;  // (proj00 * 0.5, proj11 * 0.5)
+uniform vec2 uTexelSize;
+uniform float uSsrStrength;
+
+float ign(vec2 p) {
+  return fract(52.9829189 * fract(dot(floor(p), vec2(0.06711056, 0.00583715))));
+}
+
+float sampleLinearZ(vec2 uv, out float rawD) {
+  rawD = texture(uDepthTex, uv).r;
+  float ndcZ = rawD * 2.0 - 1.0;
+  return uProjParams.w / (ndcZ + uProjParams.z);
+}
+
+float sampleLinearZFast(vec2 uv) {
+  float ndcZ = texture(uDepthTex, uv).r * 2.0 - 1.0;
+  return uProjParams.w / (ndcZ + uProjParams.z);
+}
+
+vec3 reconstructViewPos(vec2 uv, float viewZ) {
+  vec2 ndc = uv * 2.0 - 1.0;
+  return vec3(ndc * uProjParams.xy * viewZ, -viewZ);
+}
+
+void main() {
+  if (uSsrStrength < 0.01) {
+    fragColor = vec4(0.0);
+    return;
+  }
+  vec4 gbuf = texture(uGbufTex, vUv);
+  // Skip background (a < 0.75 skips sky AND World 0 plinth which already uses exact planar reflection!)
+  if (gbuf.a < 0.75 || gbuf.r < 0.20 || gbuf.g > 0.46) {
+    fragColor = vec4(0.0);
+    return;
+  }
+
+  float dC;
+  float viewZ = sampleLinearZ(vUv, dC);
+  if (dC >= 0.9995) {
+    fragColor = vec4(0.0);
+    return;
+  }
+
+  vec3 posC = reconstructViewPos(vUv, viewZ);
+  vec2 tx = uTexelSize;
+  vec2 uvR = clamp(vUv + vec2(tx.x, 0.0), vec2(0.001), vec2(0.999));
+  vec2 uvL = clamp(vUv - vec2(tx.x, 0.0), vec2(0.001), vec2(0.999));
+  vec2 uvU = clamp(vUv + vec2(0.0, tx.y), vec2(0.001), vec2(0.999));
+  vec2 uvD = clamp(vUv - vec2(0.0, tx.y), vec2(0.001), vec2(0.999));
+  float zR = sampleLinearZFast(uvR);
+  float zL = sampleLinearZFast(uvL);
+  float zU = sampleLinearZFast(uvU);
+  float zD = sampleLinearZFast(uvD);
+  vec3 dX = (abs(zR - viewZ) < abs(viewZ - zL))
+    ? (reconstructViewPos(uvR, zR) - posC)
+    : (posC - reconstructViewPos(uvL, zL));
+  vec3 dY = (abs(zU - viewZ) < abs(viewZ - zD))
+    ? (reconstructViewPos(uvU, zU) - posC)
+    : (posC - reconstructViewPos(uvD, zD));
+  vec3 viewN = normalize(cross(dX, dY) + vec3(0.0, 0.0, 1e-5));
+  vec3 viewDir = normalize(posC);
+  if (dot(viewN, -viewDir) < 0.0) viewN = -viewN;
+
+  vec3 reflDir = normalize(reflect(viewDir, viewN));
+  if (reflDir.z > 0.35) {
+    fragColor = vec4(0.0);
+    return;
+  }
+
+  float maxDist = clamp(viewZ * 0.38, 0.25, 3.6);
+  float thickness = clamp(viewZ * 0.032, 0.03, 0.38);
+  float jitter = ign(gl_FragCoord.xy);
+
+  vec3 rayOrig = posC + viewN * (viewZ * 0.003);
+  vec3 prevPos = rayOrig;
+  bool hitFound = false;
+  vec2 hitUv = vec2(0.0);
+  float hitT = 0.0;
+
+  for (int i = 1; i <= 12; i++) {
+    float t = (float(i) - 0.5 + jitter * 0.8) * (1.0 / 12.0);
+    vec3 currPos = rayOrig + reflDir * (maxDist * t * t);
+    float rayZ = -currPos.z;
+    if (rayZ <= 0.001) break;
+    vec2 suv = (currPos.xy * uProjScale) / rayZ + 0.5;
+    if (suv.x < 0.003 || suv.x > 0.997 || suv.y < 0.003 || suv.y > 0.997) break;
+
+    float delta = rayZ - sampleLinearZFast(suv);
+    if (delta > 0.001 && delta < thickness) {
+      // 3-step binary refinement between prevPos and currPos
+      vec3 lo = prevPos;
+      vec3 hi = currPos;
+      for (int b = 0; b < 3; b++) {
+        vec3 mid = 0.5 * (lo + hi);
+        float mRayZ = -mid.z;
+        vec2 muv = (mid.xy * uProjScale) / max(mRayZ, 1e-5) + 0.5;
+        float mz = sampleLinearZFast(clamp(muv, vec2(0.002), vec2(0.998)));
+        if (mRayZ > mz) {
+          hi = mid;
+          hitUv = muv;
+        } else {
+          lo = mid;
+        }
+      }
+      hitFound = true;
+      hitT = t;
+      break;
+    }
+    prevPos = currPos;
+  }
+
+  if (!hitFound) {
+    fragColor = vec4(0.0);
+    return;
+  }
+
+  vec3 hitCol = min(texture(uHdrTex, clamp(hitUv, vec2(0.002), vec2(0.998))).rgb, vec3(3.2));
+  float edgeFade = smoothstep(0.0, 0.08, min(min(hitUv.x, 1.0 - hitUv.x), min(hitUv.y, 1.0 - hitUv.y)));
+  float distFade = 1.0 - smoothstep(0.45, 1.0, hitT);
+  float backFade = 1.0 - smoothstep(0.05, 0.35, reflDir.z);
+  float conf = edgeFade * distFade * backFade * uSsrStrength;
+  fragColor = vec4(hitCol * conf, conf);
+}
+`;
+
+/**
+ * Full-Res Scene Lighting Resolve (runs on HDR BEFORE Bloom so Bloom responds to real GTAO & SSR!):
+ *   - Combines hdrMain + depth-blurred GTAO + Contact Shadows + Screen-Space Inter-Surface Reflections
+ *   - Applies Lagarde Specular Occlusion & protects emissive signals/orbitals cleanly
+ *   - Preserves optical CoC in alpha!
+ */
+export const SCENE_RESOLVE_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uHdrTex;
+uniform sampler2D uGbufTex;
+uniform sampler2D uAoTex;
+uniform sampler2D uSsrTex;
+uniform sampler2D uSsrBlurTex;
+uniform float uAoMix;
+uniform float uSsrMix;
+
+void main() {
+  vec4 hdr = texture(uHdrTex, vUv);
+  vec4 gbuf = texture(uGbufTex, vUv);
+  vec3 col = hdr.rgb;
+
+  // Only modulate opaque scene geometry (gbuf.a > 0.25); preserve deep void & translucent halos
+  if (gbuf.a > 0.25) {
+    float metal = gbuf.r;
+    float rough = gbuf.g;
+    float emMask = gbuf.b;
+
+    vec2 aoCs = texture(uAoTex, vUv).rg;
+    float gtao = mix(1.0, aoCs.r, uAoMix);
+    float contactSh = mix(1.0, aoCs.g, uAoMix);
+
+    // Protect emissive live pulses/signals from AO & contact shadow darkening
+    float shadeProt = 1.0 - smoothstep(0.06, 0.45, emMask);
+    // Lagarde-inspired metallic contrast: crevices in metals darken cleanly without crushing flat exposed faces
+    float occ = mix(1.0, gtao * mix(1.0, contactSh, 0.72), shadeProt * (0.78 + 0.22 * metal));
+    col *= occ;
+
+    // Inter-Surface Screen-Space Reflections (skip World 0 plinth where gbuf.a ~ 0.5 already has exact planar reflection)
+    if (uSsrMix > 0.01 && gbuf.a > 0.75 && metal > 0.20 && rough < 0.46) {
+      vec4 ssrSharp = texture(uSsrTex, vUv);
+      vec4 ssrSoft = texture(uSsrBlurTex, vUv);
+      float blurW = smoothstep(0.06, 0.36, rough);
+      vec4 ssr = mix(ssrSharp, ssrSoft, blurW);
+      if (ssr.a > 0.004) {
+        vec3 reflRad = ssr.rgb / max(ssr.a, 0.001);
+        float gloss = 1.0 - smoothstep(0.06, 0.46, rough);
+        float reflWeight = ssr.a * gloss * metal * uSsrMix * 0.44 * (0.45 + 0.55 * gtao);
+        col = col * (1.0 - reflWeight * 0.42) + reflRad * reflWeight;
+      }
+    }
+  }
+
+  fragColor = vec4(max(col, 0.0), hdr.a);
 }
 `;

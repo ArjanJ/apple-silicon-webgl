@@ -773,6 +773,22 @@ function bakeAbfSubstrateMaps(): { map: TextureBuffer; norm: TextureBuffer } {
   tCtx.lineWidth = 3.0;
   tCtx.strokeRect(14, 14, S - 28, S - 28);
 
+  // 5) Crisp matte silver-white ABF substrate silkscreen markings (encoded as R=0, G=235 so shader separates silkscreen from ENIG gold!)
+  tCtx.fillStyle = 'rgb(0, 238, 0)';
+  tCtx.font = '600 13px "SF Mono", "JetBrains Mono", Menlo, monospace';
+  tCtx.textBaseline = 'middle';
+  tCtx.textAlign = 'left';
+  tCtx.fillText('APL1105  TSMC N3E', toPxX(-4.65), toPxZ(-2.86));
+  tCtx.textAlign = 'right';
+  tCtx.fillText('REV 2.1   2442-TW', toPxX(4.65), toPxZ(2.86));
+  // Pin-1 silkscreen orientation chevron next to corner gold marker
+  tCtx.beginPath();
+  tCtx.moveTo(toPxX(-4.84), toPxZ(-3.16));
+  tCtx.lineTo(toPxX(-4.70), toPxZ(-3.16));
+  tCtx.lineTo(toPxX(-4.84), toPxZ(-3.00));
+  tCtx.closePath();
+  tCtx.fill();
+
   const tPixels = tCtx.getImageData(0, 0, S, S).data;
   const mapData = new Uint8Array(S * S * 4);
   const height = new Float32Array(S * S);

@@ -29,6 +29,7 @@
  *   14 = Translucent Interfacial SiO2 / Silicon Nitride (SiN) Dielectric Spacer
  *   15 = Glossy Warm Tan MLCC Ceramic Decoupling Capacitor Body
  *   16 = Bright Silver-Tin (Sn/Ni) Soldered SMD End Termination
+ *   17 = Glossy Jet-Black Capillary Epoxy Underfill Meniscus
  */
 
 export const STAGE_RATIOS = [16.0, 9.0, 9.0, 8.0, 8.0, 6.0, 5.0, 1800.0, 10.0] as const;
@@ -257,13 +258,15 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
   }
 
   // 4x Unified Memory (LPDDR5) Packages flanking the silicon die (2 stacked per side, authentic M-Max layout!)
+  // + Glossy jet-black capillary epoxy underfill fillets hugging each package perimeter
   for (const side of [-1, 1]) {
     for (const row of [-1, 1]) {
+      b.addBox(side * 4.22, -0.056 + yOff, row * 1.28, 0.818, 0.044, 1.198, 0.036, 17);
       b.addBox(side * 4.22, 0.03 + yOff, row * 1.28, 0.76, 0.165, 1.14, 0.024, 7, 8, 1.0);
     }
   }
 
-  // Dual-end SMD MLCC Tan Ceramic + Bright Tin-Silver Soldered Decoupling Capacitors around die perimeter
+  // Dual-end SMD MLCC Tan Ceramic + Bright Tin-Silver Soldered Decoupling Capacitors + Reflow Solder Fillets
   for (let i = -13; i <= 13; i++) {
     const x = i * 0.22;
     for (const side of [-1, 1]) {
@@ -271,6 +274,9 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
       b.addBox(x, -0.015 + yOff, z, 0.048, 0.044, 0.044, 0.006, 15);
       b.addBox(x - 0.046, -0.015 + yOff, z, 0.024, 0.046, 0.046, 0.007, 16);
       b.addBox(x + 0.046, -0.015 + yOff, z, 0.024, 0.046, 0.046, 0.007, 16);
+      // Reflowed tin-silver solder meniscus fillets seating each cap onto the ABF land pads
+      b.addBox(x - 0.058, -0.058 + yOff, z, 0.026, 0.018, 0.053, 0.012, 16);
+      b.addBox(x + 0.058, -0.058 + yOff, z, 0.026, 0.018, 0.053, 0.012, 16);
     }
   }
   for (let i = -11; i <= 11; i++) {
@@ -280,13 +286,19 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
       b.addBox(x, -0.015 + yOff, z, 0.044, 0.044, 0.048, 0.006, 15);
       b.addBox(x, -0.015 + yOff, z - 0.046, 0.046, 0.046, 0.024, 0.007, 16);
       b.addBox(x, -0.015 + yOff, z + 0.046, 0.046, 0.046, 0.024, 0.007, 16);
+      b.addBox(x, -0.058 + yOff, z - 0.058, 0.053, 0.018, 0.026, 0.012, 16);
+      b.addBox(x, -0.058 + yOff, z + 0.058, 0.053, 0.018, 0.026, 0.012, 16);
     }
   }
 
-  // Main Mirror-Finished Bare Silicon Die Slab (~21.4 x 17.6 mm, razor-diced silicon edge)
-  b.addBox(0, 0.035 + yOff, 0, 3.06, 0.135, 2.48, 0.011, 1);
+  // Glossy Jet-Black Capillary Epoxy Underfill Meniscus curving cleanly around the bare silicon die perimeter
+  b.addBox(0, -0.036 + yOff, 0, 3.165, 0.052, 2.585, 0.044, 17);
+  b.addBox(0,  0.002 + yOff, 0, 3.112, 0.072, 2.532, 0.034, 17);
 
-  // 1) Top-Left: Performance Core Cluster (dynamically adapts to 4..12 P-Cores; M1 Max = 8P in 4x2!)
+  // Main Mirror-Finished Bare Silicon Die Slab (~21.4 x 17.6 mm, optically planarized monolithic silicon)
+  b.addBox(0, 0.074 + yOff, 0, 3.06, 0.140, 2.48, 0.009, 1);
+
+  // 1) Top-Left: Performance Core Cluster (dynamically adapts to 4..12 P-Cores; near-flush optical passivation relief!)
   const pCount = Math.max(2, Math.min(12, spec.pCores || 8));
   const pRowsN = pCount <= 4 ? 1 : 2;
   const pColsN = Math.ceil(pCount / pRowsN);
@@ -299,7 +311,7 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
     for (let c = 0; c < pColsN && pIdx < pCount; c++) {
       const cx = -1.68 + (c - (pColsN - 1) * 0.5) * pStepX;
       const cz = -1.04 + (r - (pRowsN - 1) * 0.5) * pStepZ;
-      b.addBox(cx, 0.185 + yOff, cz, pStepX * 0.44, 0.028, pStepZ * 0.45, 0.008, 1, 1, pIdx % 8);
+      b.addBox(cx, 0.213 + yOff, cz, pStepX * 0.445, 0.0055, pStepZ * 0.455, 0.0022, 1, 1, pIdx % 8);
       pIdx++;
     }
   }
@@ -309,17 +321,17 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
   const eStepX = 2.48 / eCount;
   for (let c = 0; c < eCount; c++) {
     const cx = -1.68 + (c - (eCount - 1) * 0.5) * eStepX;
-    b.addBox(cx, 0.185 + yOff, 0.52, eStepX * 0.45, 0.026, 0.46, 0.008, 1, 2, 0);
+    b.addBox(cx, 0.213 + yOff, 0.52, eStepX * 0.455, 0.0052, 0.465, 0.0022, 1, 2, 0);
   }
 
   // 3) Bottom-Left: 5x Thunderbolt / USB4 / I/O PHY Strip
   for (let i = -2; i <= 2; i++) {
-    b.addBox(-1.68 + i * 0.44, 0.182 + yOff, 1.70, 0.185, 0.024, 0.40, 0.007, 3, 3, 0);
+    b.addBox(-1.68 + i * 0.44, 0.2125 + yOff, 1.70, 0.188, 0.0050, 0.405, 0.0020, 3, 3, 0);
   }
 
   // 4) Center Spine: Segmented 48 MB System-Level Cache (SLC — 9 SRAM banks)
   for (let i = -4; i <= 4; i++) {
-    b.addBox(0.0, 0.188 + yOff, i * 0.47, 0.30, 0.028, 0.195, 0.007, 4, 4, 0);
+    b.addBox(0.0, 0.2135 + yOff, i * 0.47, 0.305, 0.0055, 0.198, 0.0022, 4, 4, 0);
   }
 
   // 5) Top-Right: GPU Core Array (dynamically adapts to 8..40 GPU cores; M1 Max = 24C in 6x4 or 32C in 8x4!)
@@ -335,7 +347,7 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
     for (let c = 0; c < gColsN && gIdx < gpuCount; c++) {
       const cx = 1.68 + (c - (gColsN - 1) * 0.5) * gStepX;
       const cz = -0.78 + (r - (gRowsN - 1) * 0.5) * gStepZ;
-      b.addBox(cx, 0.185 + yOff, cz, gStepX * 0.43, 0.026, gStepZ * 0.43, 0.006, 1, 5, 0);
+      b.addBox(cx, 0.213 + yOff, cz, gStepX * 0.435, 0.0052, gStepZ * 0.435, 0.0020, 1, 5, 0);
       gIdx++;
     }
   }
@@ -345,21 +357,21 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
   const nRows = [-0.24, 0.24];
   for (let r = 0; r < 2; r++) {
     for (let c = 0; c < 8; c++) {
-      b.addBox(1.68 + nCols[c], 0.185 + yOff, 0.94 + nRows[r], 0.115, 0.026, 0.20, 0.006, 4, 6, 0);
+      b.addBox(1.68 + nCols[c], 0.213 + yOff, 0.94 + nRows[r], 0.118, 0.0052, 0.205, 0.0020, 4, 6, 0);
     }
   }
 
   // 7) Bottom-Right: Display & ProRes Media Engine (4 blocks)
   for (let c = 0; c < 4; c++) {
     const cx = 1.68 + (c - 1.5) * 0.58;
-    b.addBox(cx, 0.182 + yOff, 1.86, 0.245, 0.024, 0.24, 0.007, 1, 7, 0);
+    b.addBox(cx, 0.2125 + yOff, 1.86, 0.248, 0.0050, 0.245, 0.0020, 1, 7, 0);
   }
 
-  // Brushed Silver Global Power & Coherent Fabric Spine Rails (shader-driven internal signal flow!)
-  b.addBox(-0.40, 0.205 + yOff, 0.0, 0.022, 0.014, 2.28, 0.006, 2, 9, 0, 0.08,  0.88);
-  b.addBox( 0.40, 0.205 + yOff, 0.0, 0.022, 0.014, 2.28, 0.006, 2, 9, 0, 0.58, -0.82);
-  b.addBox(-1.68, 0.205 + yOff, -0.04, 1.24, 0.014, 0.022, 0.006, 2, 9, 1, 0.31,  0.80);
-  b.addBox( 1.68, 0.205 + yOff,  0.38, 1.22, 0.014, 0.022, 0.006, 2, 9, 1, 0.77, -0.78);
+  // Sleek Planarized Coherent Fabric Spine Rails (shader-driven internal signal flow; top = -0.0055 < 0!)
+  b.addBox(-0.40, 0.2175 + yOff, 0.0, 0.020, 0.0050, 2.28, 0.0020, 2, 9, 0, 0.08,  0.88);
+  b.addBox( 0.40, 0.2175 + yOff, 0.0, 0.020, 0.0050, 2.28, 0.0020, 2, 9, 0, 0.58, -0.82);
+  b.addBox(-1.68, 0.2175 + yOff, -0.04, 1.24, 0.0050, 0.020, 0.0020, 2, 9, 1, 0.31,  0.80);
+  b.addBox( 1.68, 0.2175 + yOff,  0.38, 1.22, 0.0050, 0.020, 0.0020, 2, 9, 1, 0.77, -0.78);
 
   return b.finish();
 }

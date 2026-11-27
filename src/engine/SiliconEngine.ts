@@ -22,19 +22,24 @@ import {
 import { DieInspectHit, getDieRegionKind, pickDieRegion } from './inspect';
 import { mat4Invert, mat4LookAt, mat4Multiply, mat4Ortho, mat4Perspective } from './math';
 import {
+  AO_BLUR_FS,
   BLOOM_DOWN_FS,
   BLOOM_PREFILTER_FS,
   BLOOM_UP_FS,
   COMPOSITE_FS,
   FULLSCREEN_VS,
+  GTAO_CS_FS,
   LIQUID_GL_FS,
   LIQUID_GL_VS,
+  PLANAR_BLUR_FS,
   SCENE_CUTOUT_FS,
   SCENE_FS,
+  SCENE_RESOLVE_FS,
   SCENE_VS,
   SHADOW_CUTOUT_FS,
   SHADOW_FS,
   SHADOW_VS,
+  SSR_FS,
   VERNIER_STRIP_FS,
   VERNIER_STRIP_VS,
 } from './shaders';
@@ -237,6 +242,11 @@ export class SiliconEngine {
   private compositeProg: WebGLProgram;
   private liquidGlProg: WebGLProgram;
   private vernierProg: WebGLProgram;
+  private planarBlurProg: WebGLProgram;
+  private gtaoProg: WebGLProgram;
+  private aoBlurProg: WebGLProgram;
+  private ssrProg: WebGLProgram;
+  private sceneResolveProg: WebGLProgram;
 
   private boxMesh: MeshBuffers;
   private cylMesh: MeshBuffers;
@@ -278,9 +288,23 @@ export class SiliconEngine {
   private lastLightHalf = Number.NaN;
   private msaaFbo: WebGLFramebuffer | null = null;
   private msaaColorRb: WebGLRenderbuffer | null = null;
+  private msaaGbufRb: WebGLRenderbuffer | null = null;
   private msaaDepthRb: WebGLRenderbuffer | null = null;
-  private fallbackDepthRb: WebGLRenderbuffer | null = null;
+  private depthTex: WebGLTexture | null = null;
+  private gbufTex: WebGLTexture | null = null;
+  private gbufFbo: WebGLFramebuffer | null = null;
   private hdrMain!: FboTarget;
+  private hdrResolved!: FboTarget;
+  private aoRaw!: FboTarget;
+  private aoTmp!: FboTarget;
+  private aoBlur!: FboTarget;
+  private ssrRaw: FboTarget | null = null;
+  private ssrTmp: FboTarget | null = null;
+  private ssrBlur: FboTarget | null = null;
+  private planarReflDepthRb: WebGLRenderbuffer | null = null;
+  private planarRefl!: FboTarget;
+  private planarReflTmp!: FboTarget;
+  private planarReflBlur!: FboTarget;
   private srgbA!: FboTarget;
   private srgbB!: FboTarget;
   private bloomDown: FboTarget[] = [];
@@ -332,12 +356,19 @@ export class SiliconEngine {
   private uComp: Record<string, WebGLUniformLocation | null> = {};
   private uLiquid: Record<string, WebGLUniformLocation | null> = {};
   private uVernier: Record<string, WebGLUniformLocation | null> = {};
+  private uPlanarBlur: Record<string, WebGLUniformLocation | null> = {};
+  private uGtao: Record<string, WebGLUniformLocation | null> = {};
+  private uAoBlur: Record<string, WebGLUniformLocation | null> = {};
+  private uSsr: Record<string, WebGLUniformLocation | null> = {};
+  private uResolve: Record<string, WebGLUniformLocation | null> = {};
 
   // Reusable matrices (zero GC per frame)
   private projMat = new Float32Array(16);
   private viewMat = new Float32Array(16);
   private viewProjMat = new Float32Array(16);
   private invViewProjMat = new Float32Array(16);
+  private reflViewMat = new Float32Array(16);
+  private reflViewProjMat = new Float32Array(16);
   private lightProjMat = new Float32Array(16);
   private lightViewMat = new Float32Array(16);
   private lightVPMat = new Float32Array(16);
@@ -513,6 +544,11 @@ export class SiliconEngine {
     this.compositeProg = this.createProgram(FULLSCREEN_VS, COMPOSITE_FS);
     this.liquidGlProg = this.createProgram(LIQUID_GL_VS, LIQUID_GL_FS);
     this.vernierProg = this.createProgram(VERNIER_STRIP_VS, VERNIER_STRIP_FS);
+    this.planarBlurProg = this.createProgram(FULLSCREEN_VS, PLANAR_BLUR_FS);
+    this.gtaoProg = this.createProgram(FULLSCREEN_VS, GTAO_CS_FS);
+    this.aoBlurProg = this.createProgram(FULLSCREEN_VS, AO_BLUR_FS);
+    this.ssrProg = this.createProgram(FULLSCREEN_VS, SSR_FS);
+    this.sceneResolveProg = this.createProgram(FULLSCREEN_VS, SCENE_RESOLVE_FS);
 
     this.cacheUniforms();
 
@@ -589,7 +625,7 @@ export class SiliconEngine {
     this.anchors[4] = [0, 0, WORLD4_GATE_Z];
     this.recomputeEffOffsets();
 
-    // Setup Hardware-PCF shadow map (1536px desktop, 1024px mobile)
+    // Setup 2-Stage PCSS Depth Shadow Map (1536px desktop, 1024px mobile; raw DEPTH_COMPONENT24 for blocker search!)
     this.shadowTex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
     gl.texImage2D(
@@ -603,12 +639,10 @@ export class SiliconEngine {
       gl.UNSIGNED_INT,
       null
     );
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
 
     this.shadowFbo = gl.createFramebuffer()!;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo);
@@ -1135,6 +1169,11 @@ export class SiliconEngine {
       'uAbfNormTex',
       'uRamDecalTex',
       'uEnvTex',
+      'uPlanarReflTex',
+      'uPlanarReflBlurTex',
+      'uReflViewProj',
+      'uPlanarReflActive',
+      'uClipPlane',
       'uCoinSpec',
       'uFocusXZ',
       'uFocusDist',
@@ -1184,6 +1223,35 @@ export class SiliconEngine {
       'uVernierRect',
       'uTexParams',
       'uFadeParams',
+    ]);
+    this.uPlanarBlur = grab(this.planarBlurProg, ['uTex', 'uDir']);
+    this.uGtao = grab(this.gtaoProg, [
+      'uDepthTex',
+      'uProjParams',
+      'uProjScale',
+      'uTexelSize',
+      'uLightDirView',
+      'uAoStrength',
+      'uCsStrength',
+    ]);
+    this.uAoBlur = grab(this.aoBlurProg, ['uAoTex', 'uDir']);
+    this.uSsr = grab(this.ssrProg, [
+      'uHdrTex',
+      'uDepthTex',
+      'uGbufTex',
+      'uProjParams',
+      'uProjScale',
+      'uTexelSize',
+      'uSsrStrength',
+    ]);
+    this.uResolve = grab(this.sceneResolveProg, [
+      'uHdrTex',
+      'uGbufTex',
+      'uAoTex',
+      'uSsrTex',
+      'uSsrBlurTex',
+      'uAoMix',
+      'uSsrMix',
     ]);
   }
 
@@ -1348,12 +1416,25 @@ export class SiliconEngine {
 
   private destroyRenderTargets(): void {
     const gl = this.gl;
-    const drop = (t?: FboTarget) => {
+    const drop = (t?: FboTarget | null) => {
       if (!t) return;
       gl.deleteFramebuffer(t.fbo);
       gl.deleteTexture(t.tex);
     };
     drop(this.hdrMain);
+    drop(this.hdrResolved);
+    drop(this.aoRaw);
+    drop(this.aoTmp);
+    drop(this.aoBlur);
+    drop(this.ssrRaw);
+    drop(this.ssrTmp);
+    drop(this.ssrBlur);
+    this.ssrRaw = null;
+    this.ssrTmp = null;
+    this.ssrBlur = null;
+    drop(this.planarRefl);
+    drop(this.planarReflTmp);
+    drop(this.planarReflBlur);
     drop(this.srgbA);
     drop(this.srgbB);
     this.bloomDown.forEach(drop);
@@ -1362,12 +1443,20 @@ export class SiliconEngine {
     this.bloomUp = [];
     if (this.msaaFbo) gl.deleteFramebuffer(this.msaaFbo);
     if (this.msaaColorRb) gl.deleteRenderbuffer(this.msaaColorRb);
+    if (this.msaaGbufRb) gl.deleteRenderbuffer(this.msaaGbufRb);
     if (this.msaaDepthRb) gl.deleteRenderbuffer(this.msaaDepthRb);
-    if (this.fallbackDepthRb) gl.deleteRenderbuffer(this.fallbackDepthRb);
+    if (this.depthTex) gl.deleteTexture(this.depthTex);
+    if (this.gbufTex) gl.deleteTexture(this.gbufTex);
+    if (this.gbufFbo) gl.deleteFramebuffer(this.gbufFbo);
+    if (this.planarReflDepthRb) gl.deleteRenderbuffer(this.planarReflDepthRb);
     this.msaaFbo = null;
     this.msaaColorRb = null;
+    this.msaaGbufRb = null;
     this.msaaDepthRb = null;
-    this.fallbackDepthRb = null;
+    this.depthTex = null;
+    this.gbufTex = null;
+    this.gbufFbo = null;
+    this.planarReflDepthRb = null;
   }
 
   private allocRenderTargets(w: number, h: number): void {
@@ -1378,44 +1467,101 @@ export class SiliconEngine {
     this.pendingGpuQueries = [];
     this.destroyRenderTargets();
 
+    // Shared single-sample 24-bit Depth Texture (target of MSAA depth resolve, or direct depth attachment when MSAA is off)
+    this.depthTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, w, h, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // Lightweight RGBA8 G-Buffer auxiliary texture (NEAREST prevents silhouette interpolation bleed in resolve!)
+    this.gbufTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.gbufTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    this.gbufFbo = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.gbufFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.gbufTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // Allocate hdrMain BEFORE msaaFbo so RGBA16F -> RGBA8 fallback settles before MSAA renderbuffer creation!
+    this.hdrMain = this.createColorFbo(w, h, null);
+
     let msaaOk = false;
     if (this.msaaSamples >= 2) {
       const fbo = gl.createFramebuffer()!;
       const colorRb = gl.createRenderbuffer()!;
+      const gbufRb = gl.createRenderbuffer()!;
       const depthRb = gl.createRenderbuffer()!;
       const internalFmt = this.useFloatHdr ? gl.RGBA16F : gl.RGBA8;
 
       gl.bindRenderbuffer(gl.RENDERBUFFER, colorRb);
       gl.renderbufferStorageMultisample(gl.RENDERBUFFER, this.msaaSamples, internalFmt, w, h);
+      gl.bindRenderbuffer(gl.RENDERBUFFER, gbufRb);
+      gl.renderbufferStorageMultisample(gl.RENDERBUFFER, this.msaaSamples, gl.RGBA8, w, h);
       gl.bindRenderbuffer(gl.RENDERBUFFER, depthRb);
       gl.renderbufferStorageMultisample(gl.RENDERBUFFER, this.msaaSamples, gl.DEPTH_COMPONENT24, w, h);
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, colorRb);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.RENDERBUFFER, gbufRb);
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthRb);
 
       if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) {
         this.msaaFbo = fbo;
         this.msaaColorRb = colorRb;
+        this.msaaGbufRb = gbufRb;
         this.msaaDepthRb = depthRb;
         msaaOk = true;
       } else {
         gl.deleteFramebuffer(fbo);
         gl.deleteRenderbuffer(colorRb);
+        gl.deleteRenderbuffer(gbufRb);
         gl.deleteRenderbuffer(depthRb);
       }
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
 
+    // Attach resolved 24-bit depth texture (+ gbufTex as attachment 1 when MSAA is off) to hdrMain
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.hdrMain.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, this.depthTex, 0);
     if (!msaaOk) {
-      this.fallbackDepthRb = gl.createRenderbuffer()!;
-      gl.bindRenderbuffer(gl.RENDERBUFFER, this.fallbackDepthRb);
-      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, this.gbufTex, 0);
     }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-    this.hdrMain = this.createColorFbo(w, h, msaaOk ? null : this.fallbackDepthRb);
+    this.hdrResolved = this.createColorFbo(w, h);
     this.srgbA = this.createColorFbo(w, h, null, true);
     this.srgbB = this.createColorFbo(w, h, null, true);
+
+    // Half-res GTAO, Contact Shadows & Desktop SSR targets (skip SSR VRAM allocation on mobile!)
+    const wHalf = Math.max(2, Math.floor(w / 2));
+    const hHalf = Math.max(2, Math.floor(h / 2));
+    this.aoRaw = this.createColorFbo(wHalf, hHalf, null, true);
+    this.aoTmp = this.createColorFbo(wHalf, hHalf, null, true);
+    this.aoBlur = this.createColorFbo(wHalf, hHalf, null, true);
+    if (!this.isMobile) {
+      this.ssrRaw = this.createColorFbo(wHalf, hHalf);
+      this.ssrTmp = this.createColorFbo(wHalf, hHalf);
+      this.ssrBlur = this.createColorFbo(wHalf, hHalf);
+    }
+
+    // Aspect-preserving World 0 Planar Reflection capped at 720px wide (4x less fillrate on 5K Retina!)
+    const reflScale = Math.min(0.5, 720 / Math.max(1, w));
+    const wRefl = Math.max(2, Math.floor(w * reflScale));
+    const hRefl = Math.max(2, Math.floor(h * reflScale));
+    this.planarReflDepthRb = gl.createRenderbuffer()!;
+    gl.bindRenderbuffer(gl.RENDERBUFFER, this.planarReflDepthRb);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, wRefl, hRefl);
+    this.planarRefl = this.createColorFbo(wRefl, hRefl, this.planarReflDepthRb);
+    this.planarReflTmp = this.createColorFbo(wRefl, hRefl);
+    this.planarReflBlur = this.createColorFbo(wRefl, hRefl);
 
     const w1 = Math.max(2, Math.floor(w / 4));
     const h1 = Math.max(2, Math.floor(h / 4));
@@ -2474,6 +2620,11 @@ export class SiliconEngine {
     gl.uniform1i(locs.uAbfNormTex, 8);
     gl.uniform1i(locs.uRamDecalTex, 9);
     gl.uniform1i(locs.uEnvTex, 10);
+    gl.uniform1i(locs.uPlanarReflTex, 11);
+    gl.uniform1i(locs.uPlanarReflBlurTex, 12);
+    gl.uniformMatrix4fv(locs.uReflViewProj, false, this.reflViewProjMat);
+    gl.uniform1f(locs.uPlanarReflActive, 0.0);
+    gl.uniform4f(locs.uClipPlane, -1000.0, 0.0, 0.0, 0.0);
     gl.uniform4f(locs.uCoinSpec, QUARTER_X, QUARTER_Z, QUARTER_RADIUS, QUARTER_HY);
     gl.uniform2f(locs.uFocusXZ, focusX, focusZ);
     gl.uniform1f(locs.uFocusDist, focusDist);
@@ -2588,14 +2739,7 @@ export class SiliconEngine {
       gl.disable(gl.BLEND);
     }
 
-    // 2A) Unified MSAA HDR Opaque PBR Pass — discard-free fast path preserves Apple Silicon TBDR HSR!
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.msaaFbo ?? this.hdrMain.fbo);
-    gl.viewport(0, 0, this.canvasW, this.canvasH);
-    gl.clearColor(0.003, 0.005, 0.009, 0.0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
+    // Bind shared scene PBR textures once (units 1..10 stay bound across both planar reflection & main pass!)
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.coinTex);
     gl.activeTexture(gl.TEXTURE2);
@@ -2616,6 +2760,98 @@ export class SiliconEngine {
     gl.bindTexture(gl.TEXTURE_2D, this.ramDecalTex);
     gl.activeTexture(gl.TEXTURE10);
     gl.bindTexture(gl.TEXTURE_2D, this.envTex);
+
+    // 1B) World 0 Obsidian Studio Plinth Planar Reflection (capped-res mirrored camera + separable Gaussian blur)
+    const planarActive =
+      this.zoom < 0.65 && hasWorld0 && this.introExposure > 0.01 ? this.smoothstep(0.65, 0.25, this.zoom) : 0.0;
+    if (planarActive > 0.01) {
+      const planeY = (STAGE_FLOOR_Y[0] - this.effOffsets[0][1]) * this.world0Scale;
+      const reflCamY = 2.0 * planeY - camY;
+      const reflLookY = 2.0 * planeY - this.smoothCamShiftY;
+      mat4LookAt(this.reflViewMat, camX, reflCamY, camZ, focusX, reflLookY, focusZ, 0, 1, 0);
+      mat4Multiply(this.reflViewProjMat, this.projMat, this.reflViewMat);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.planarRefl.fbo);
+      gl.viewport(0, 0, this.planarRefl.w, this.planarRefl.h);
+      gl.clearColor(0.0, 0.0, 0.0, 0.0);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthMask(true);
+      gl.depthFunc(gl.LESS);
+      gl.enable(gl.CULL_FACE);
+      gl.cullFace(gl.BACK);
+      gl.disable(gl.BLEND);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
+      // Bind safe dummy textures to 11 & 12 during reflection pass to avoid any FBO feedback loop!
+      gl.activeTexture(gl.TEXTURE11);
+      gl.bindTexture(gl.TEXTURE_2D, this.srgbA.tex);
+      gl.activeTexture(gl.TEXTURE12);
+      gl.bindTexture(gl.TEXTURE_2D, this.srgbB.tex);
+
+      this.bindSceneSharedUniforms(
+        this.sceneCutoutProg,
+        this.uSceneCutout,
+        elapsedSec,
+        camX,
+        reflCamY,
+        camZ,
+        semFactor,
+        focusX,
+        focusZ,
+        focusDist,
+        0.0,
+        fogDensity
+      );
+      gl.uniformMatrix4fv(this.uSceneCutout.uViewProj, false, this.reflViewProjMat);
+      gl.uniform1f(this.uSceneCutout.uPlanarReflActive, 0.0);
+      gl.uniform4f(this.uSceneCutout.uClipPlane, planeY + 0.006, 1.0, 0.0, 0.0);
+      this.bindStageHoleUniforms(this.uSceneCutout, 0, this.stageScales[0]);
+      gl.uniform1f(this.uSceneCutout.uFloorY, this.stages[0].floorY);
+      gl.uniform1f(this.uSceneCutout.uLensClearance, 0.0);
+      gl.uniform4f(this.uSceneCutout.uInspectBox, 0, 0, 0, 0);
+      gl.uniform4f(this.uSceneCutout.uHoverBox, 0, 0, 0, 0);
+      gl.uniform4f(this.uSceneCutout.uHighlightFade, 0, 0, 0, 0);
+      this.drawOpaqueStage(this.stages[0]);
+
+      // Separable Gaussian blur of planar reflection for realistic roughness & distance softening on obsidian plinth
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.bindVertexArray(this.emptyVao);
+      gl.useProgram(this.planarBlurProg);
+      gl.uniform1i(this.uPlanarBlur.uTex, 0);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.planarReflTmp.fbo);
+      gl.viewport(0, 0, this.planarReflTmp.w, this.planarReflTmp.h);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.planarRefl.tex);
+      gl.uniform2f(this.uPlanarBlur.uDir, 1.35 / this.planarRefl.w, 0.0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.planarReflBlur.fbo);
+      gl.viewport(0, 0, this.planarReflBlur.w, this.planarReflBlur.h);
+      gl.bindTexture(gl.TEXTURE_2D, this.planarReflTmp.tex);
+      gl.uniform2f(this.uPlanarBlur.uDir, 0.0, 1.35 / this.planarRefl.h);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      gl.enable(gl.DEPTH_TEST);
+      gl.enable(gl.CULL_FACE);
+    }
+
+    // 2A) Unified MSAA HDR Opaque PBR Pass + MRT G-Buffer — discard-free fast path preserves Apple Silicon TBDR HSR!
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.msaaFbo ?? this.hdrMain.fbo);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+    gl.viewport(0, 0, this.canvasW, this.canvasH);
+    gl.clearColor(0.003, 0.005, 0.009, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
+    gl.activeTexture(gl.TEXTURE11);
+    gl.bindTexture(gl.TEXTURE_2D, this.planarRefl.tex);
+    gl.activeTexture(gl.TEXTURE12);
+    gl.bindTexture(gl.TEXTURE_2D, this.planarReflBlur.tex);
 
     let activeSceneProg: WebGLProgram | null = null;
     let boundSolidScene = false;
@@ -2646,6 +2882,7 @@ export class SiliconEngine {
             dofStrength,
             fogDensity
           );
+          gl.uniform1f(locs.uPlanarReflActive, planarActive);
           if (needsDiscard) boundCutoutScene = true;
           else boundSolidScene = true;
         } else {
@@ -2728,6 +2965,7 @@ export class SiliconEngine {
           gl.useProgram(this.sceneProg);
         }
       }
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
       gl.enable(gl.BLEND);
       gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ZERO, gl.ONE);
       gl.depthMask(false);
@@ -2750,10 +2988,12 @@ export class SiliconEngine {
       gl.disable(gl.BLEND);
     }
 
-    // 3) Resolve MSAA Renderbuffer -> Single Linear HDR Texture
+    // 3) Resolve MSAA Renderbuffers -> Linear HDR Color + 24-bit Depth Texture + G-Buffer Texture
     if (this.msaaFbo) {
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.msaaFbo);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.hdrMain.fbo);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
       gl.blitFramebuffer(
         0,
         0,
@@ -2763,12 +3003,177 @@ export class SiliconEngine {
         0,
         this.hdrMain.w,
         this.hdrMain.h,
-        gl.COLOR_BUFFER_BIT,
+        gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT,
         gl.NEAREST
       );
+
+      if (this.gbufFbo) {
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.gbufFbo);
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+        gl.blitFramebuffer(
+          0,
+          0,
+          this.canvasW,
+          this.canvasH,
+          0,
+          0,
+          this.canvasW,
+          this.canvasH,
+          gl.COLOR_BUFFER_BIT,
+          gl.NEAREST
+        );
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      }
+
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
     }
+  }
+
+  /**
+   * Post-Scene Lighting Enhancement Pass (runs BEFORE Bloom so Bloom responds to real GTAO & SSR!):
+   *   - Half-res Horizon-Based GTAO + 6-step Screen-Space Contact Shadows + Depth-Aware Bilateral Blur
+   *   - Half-res Screen-Space Reflections (SSR) + Gaussian Roughness Cone Blur
+   *   - Full-res HDR Resolve into this.hdrResolved
+   */
+  private renderLightingEnhancement(): void {
+    const gl = this.gl;
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(this.emptyVao);
+
+    // Transform live world key light direction into view space for Contact Shadows
+    const sweep = clamp(this.introLightSweep, 0, 1);
+    const sLen = Math.hypot(0.52, 0.84, 0.40);
+    const iLen = Math.hypot(-0.82, 0.30, -0.49);
+    const kx = (-0.82 / iLen) * (1 - sweep) + (0.52 / sLen) * sweep;
+    const ky = (0.30 / iLen) * (1 - sweep) + (0.84 / sLen) * sweep;
+    const kz = (-0.49 / iLen) * (1 - sweep) + (0.40 / sLen) * sweep;
+    const kNorm = Math.hypot(kx, ky, kz) || 1;
+    const wlx = kx / kNorm;
+    const wly = ky / kNorm;
+    const wlz = kz / kNorm;
+    const vm = this.viewMat;
+    const vlx = vm[0] * wlx + vm[4] * wly + vm[8] * wlz;
+    const vly = vm[1] * wlx + vm[5] * wly + vm[9] * wlz;
+    const vlz = vm[2] * wlx + vm[6] * wly + vm[10] * wlz;
+    const vlLen = Math.hypot(vlx, vly, vlz) || 1;
+
+    // 4-scalar frustum projection parameters (replaces mat4*vec4 in GTAO/CS/SSR loops!)
+    const invP00 = 1.0 / (this.projMat[0] || 1);
+    const invP11 = 1.0 / (this.projMat[5] || 1);
+    const proj10 = this.projMat[10];
+    const proj14 = this.projMat[14];
+    const projScaleX = this.projMat[0] * 0.5;
+    const projScaleY = this.projMat[5] * 0.5;
+
+    // Fade GTAO slightly on deep translucent quantum orbitals while keeping strong crevice depth on Worlds 0-6 & Nucleus (8)
+    const aoMix =
+      this.zoom > 6.3 && this.zoom < 7.65
+        ? 0.32
+        : this.zoom > 8.6
+          ? 0.42
+          : 1.0;
+    const csStrength = this.introKeyIntensity * (1.0 - this.smoothstep(5.6, 6.6, this.zoom));
+    const hasSsrTargets = this.ssrRaw !== null && this.ssrTmp !== null && this.ssrBlur !== null;
+    const ssrMix =
+      this.isMobile || !hasSsrTargets
+        ? 0.0
+        : (1.0 - this.smoothstep(5.2, 6.2, this.zoom)) * (0.30 + 0.70 * this.introKeyIntensity);
+
+    // 1) Half-res GTAO + Screen-Space Contact Shadows
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.aoRaw.fbo);
+    gl.viewport(0, 0, this.aoRaw.w, this.aoRaw.h);
+    gl.useProgram(this.gtaoProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
+    gl.uniform1i(this.uGtao.uDepthTex, 0);
+    gl.uniform4f(this.uGtao.uProjParams, invP00, invP11, proj10, proj14);
+    gl.uniform2f(this.uGtao.uProjScale, projScaleX, projScaleY);
+    gl.uniform2f(this.uGtao.uTexelSize, 1.0 / this.aoRaw.w, 1.0 / this.aoRaw.h);
+    gl.uniform3f(this.uGtao.uLightDirView, vlx / vlLen, vly / vlLen, vlz / vlLen);
+    gl.uniform1f(this.uGtao.uAoStrength, aoMix);
+    gl.uniform1f(this.uGtao.uCsStrength, csStrength);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // 2) Separable Depth-Aware Bilateral Blur (H -> V)
+    gl.useProgram(this.aoBlurProg);
+    gl.uniform1i(this.uAoBlur.uAoTex, 0);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.aoTmp.fbo);
+    gl.viewport(0, 0, this.aoTmp.w, this.aoTmp.h);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.aoRaw.tex);
+    gl.uniform2f(this.uAoBlur.uDir, 1.0 / this.aoRaw.w, 0.0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.aoBlur.fbo);
+    gl.viewport(0, 0, this.aoBlur.w, this.aoBlur.h);
+    gl.bindTexture(gl.TEXTURE_2D, this.aoTmp.tex);
+    gl.uniform2f(this.uAoBlur.uDir, 0.0, 1.0 / this.aoRaw.h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // 3) Half-res Screen-Space Reflections + Roughness Cone Blur (desktop metallic inter-surface bounce)
+    if (ssrMix > 0.01 && this.ssrRaw && this.ssrTmp && this.ssrBlur) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.ssrRaw.fbo);
+      gl.viewport(0, 0, this.ssrRaw.w, this.ssrRaw.h);
+      gl.useProgram(this.ssrProg);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.hdrMain.tex);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, this.gbufTex);
+      gl.uniform1i(this.uSsr.uHdrTex, 0);
+      gl.uniform1i(this.uSsr.uDepthTex, 1);
+      gl.uniform1i(this.uSsr.uGbufTex, 2);
+      gl.uniform4f(this.uSsr.uProjParams, invP00, invP11, proj10, proj14);
+      gl.uniform2f(this.uSsr.uProjScale, projScaleX, projScaleY);
+      gl.uniform2f(this.uSsr.uTexelSize, 1.0 / this.ssrRaw.w, 1.0 / this.ssrRaw.h);
+      gl.uniform1f(this.uSsr.uSsrStrength, ssrMix);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      gl.useProgram(this.planarBlurProg);
+      gl.uniform1i(this.uPlanarBlur.uTex, 0);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.ssrTmp.fbo);
+      gl.viewport(0, 0, this.ssrTmp.w, this.ssrTmp.h);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.ssrRaw.tex);
+      gl.uniform2f(this.uPlanarBlur.uDir, 1.25 / this.ssrRaw.w, 0.0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.ssrBlur.fbo);
+      gl.viewport(0, 0, this.ssrBlur.w, this.ssrBlur.h);
+      gl.bindTexture(gl.TEXTURE_2D, this.ssrTmp.tex);
+      gl.uniform2f(this.uPlanarBlur.uDir, 0.0, 1.25 / this.ssrRaw.h);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    // 4) Full-Res HDR Scene Resolve -> this.hdrResolved (feeds Bloom & Optical Composite!)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.hdrResolved.fbo);
+    gl.viewport(0, 0, this.hdrResolved.w, this.hdrResolved.h);
+    gl.useProgram(this.sceneResolveProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.hdrMain.tex);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.gbufTex);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.aoBlur.tex);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.ssrRaw ? this.ssrRaw.tex : this.hdrMain.tex);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this.ssrBlur ? this.ssrBlur.tex : this.hdrMain.tex);
+    gl.uniform1i(this.uResolve.uHdrTex, 0);
+    gl.uniform1i(this.uResolve.uGbufTex, 1);
+    gl.uniform1i(this.uResolve.uAoTex, 2);
+    gl.uniform1i(this.uResolve.uSsrTex, 3);
+    gl.uniform1i(this.uResolve.uSsrBlurTex, 4);
+    gl.uniform1f(this.uResolve.uAoMix, aoMix);
+    gl.uniform1f(this.uResolve.uSsrMix, ssrMix);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   /** Blit a tight CSS-space padded region between two full-res sRGB framebuffers */
@@ -3460,7 +3865,7 @@ export class SiliconEngine {
       }
     }
 
-    // PASS 0 + 1: Unified Multi-Scale 3D Render (ZERO 2D fading!)
+    // PASS 0 + 1: Unified Multi-Scale 3D Render + World 0 Planar Reflection (ZERO 2D fading!)
     this.renderUnifiedScene(
       this.activeStagesBuf,
       activeStageCount,
@@ -3477,6 +3882,9 @@ export class SiliconEngine {
       fogDensity
     );
 
+    // PASS 1.5: Half-Res GTAO + Screen-Space Contact Shadows + SSR + Full-Res HDR Resolve
+    this.renderLightingEnhancement();
+
     // PASS 2: Fast 3-Level Dual-Kawase Bloom
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
@@ -3487,7 +3895,7 @@ export class SiliconEngine {
     gl.viewport(0, 0, d0.w, d0.h);
     gl.useProgram(this.prefilterProg);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.hdrMain.tex);
+    gl.bindTexture(gl.TEXTURE_2D, this.hdrResolved.tex);
     gl.uniform1i(this.uPrefilter.uTex, 0);
     gl.uniform2f(this.uPrefilter.uTexelSize, 1.0 / this.canvasW, 1.0 / this.canvasH);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -3536,7 +3944,7 @@ export class SiliconEngine {
     gl.viewport(0, 0, this.canvasW, this.canvasH);
     gl.useProgram(this.compositeProg);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.hdrMain.tex);
+    gl.bindTexture(gl.TEXTURE_2D, this.hdrResolved.tex);
     gl.uniform1i(this.uComp.uTex, 0);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.bloomUp[1].tex);
@@ -3641,6 +4049,11 @@ export class SiliconEngine {
     gl.deleteProgram(this.compositeProg);
     gl.deleteProgram(this.liquidGlProg);
     gl.deleteProgram(this.vernierProg);
+    gl.deleteProgram(this.planarBlurProg);
+    gl.deleteProgram(this.gtaoProg);
+    gl.deleteProgram(this.aoBlurProg);
+    gl.deleteProgram(this.ssrProg);
+    gl.deleteProgram(this.sceneResolveProg);
 
     if (this.canvas.parentElement === this.container) {
       this.container.removeChild(this.canvas);
