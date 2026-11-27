@@ -1,5 +1,11 @@
 import './styles.css';
-import { SiliconAudio } from './audio/SiliconAudio';
+import {
+  BGM_LEVEL_OPTIONS,
+  BgmLevelId,
+  MUSIC_VIBES,
+  MusicVibeId,
+  SiliconAudio,
+} from './audio/SiliconAudio';
 import { DieInspectHit } from './engine/inspect';
 import { SiliconEngine } from './engine/SiliconEngine';
 import { BrowserTelemetrySource } from './sim/browserTelemetry';
@@ -52,6 +58,8 @@ const ICONS = {
   eye: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`,
   volumeOn: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`,
   volumeOff: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/></svg>`,
+  music: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`,
+  replay: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>`,
   close: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
   power: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/></svg>`,
 };
@@ -188,6 +196,9 @@ function mountApp(): void {
               ${ICONS.zap}<span id="btn-burst-lbl" class="btn-label">Burst</span>
             </button>
             <div class="capsule-divider"></div>
+            <button id="btn-vibe" class="glass-btn icon-only" title="Soundtrack Vibes (V)" aria-label="Soundtrack Vibes">
+              ${ICONS.music}
+            </button>
             <button id="btn-sound" class="glass-btn icon-only" title="Sound (M)" aria-label="Toggle Sound">
               ${ICONS.volumeOn}
             </button>
@@ -195,6 +206,43 @@ function mountApp(): void {
               ${ICONS.eyeOff}
             </button>
           </div>
+        </div>
+
+        <div id="sound-sheet" class="sound-sheet liquid-glass liquid-glass-sheet" style="display:none;">
+          <div class="sheet-header">
+            <span>SOUNDTRACK</span>
+            <span id="sound-vibe-badge">F DORIAN · 100 BPM</span>
+          </div>
+          <div id="vibe-list" class="vibe-list" role="radiogroup" aria-label="Soundtrack Vibe">
+            ${MUSIC_VIBES.map(
+              (v) => `
+                <button class="vibe-row" data-vibe="${v.id}" role="radio" aria-checked="false">
+                  <div class="vibe-row-top">
+                    <span class="vibe-row-name">${v.name}</span>
+                    <span class="vibe-dot" aria-hidden="true"></span>
+                  </div>
+                  <div class="vibe-row-sub">${v.tagline}</div>
+                </button>`
+            ).join('')}
+          </div>
+          <div class="sheet-controls">
+            <div class="sheet-control-row">
+              <div class="sheet-control-lbl">
+                <span>BACKGROUND LOOP</span>
+                <span id="bgm-level-hint" class="sheet-control-hint">Quiet</span>
+              </div>
+              <div id="bgm-level-seg" class="seg-group" role="tablist" aria-label="Background Music Loop Level">
+                ${BGM_LEVEL_OPTIONS.map(
+                  (opt) =>
+                    `<button class="seg-btn" data-bgm="${opt.id}" title="Background music loop: ${opt.label}">${opt.label}</button>`
+                ).join('')}
+              </div>
+            </div>
+          </div>
+          <button id="btn-replay-intro" class="sound-replay-btn" title="Watch & hear the Cold Boot intro with this vibe (R)">
+            ${ICONS.replay}
+            <span>Replay Cold Boot Intro</span>
+          </button>
         </div>
 
         <div id="activity-sheet" class="activity-sheet liquid-glass liquid-glass-sheet" style="display:none;">
@@ -341,8 +389,16 @@ function mountApp(): void {
   const btnActivity = document.getElementById('btn-activity')!;
   const btnBurst = document.getElementById('btn-burst')!;
   const btnBurstLbl = document.getElementById('btn-burst-lbl')!;
+  const btnVibe = document.getElementById('btn-vibe')!;
   const btnSound = document.getElementById('btn-sound')!;
   const btnPure = document.getElementById('btn-pure')!;
+
+  const soundSheet = document.getElementById('sound-sheet')!;
+  const soundVibeBadge = document.getElementById('sound-vibe-badge')!;
+  const bgmLevelHint = document.getElementById('bgm-level-hint')!;
+  const btnReplayIntro = document.getElementById('btn-replay-intro')!;
+  const vibeButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#vibe-list .vibe-row'));
+  const bgmLevelButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#bgm-level-seg .seg-btn'));
 
   const activitySheet = document.getElementById('activity-sheet')!;
   const sheetCoresEl = document.getElementById('sheet-cores')!;
@@ -378,6 +434,7 @@ function mountApp(): void {
   let activeInspect: DieInspectHit | null = null;
   let activeHover: DieInspectHit | null = null;
   let showActivity = false;
+  let showSoundSheet = false;
   let pureView = false;
   let bursting = false;
   let activeSource: 'live' | TraceCaptureId = 'live';
@@ -418,11 +475,13 @@ function mountApp(): void {
   let staticGlassElevated: GlassReg[] = [];
   let pushGlassToEngine: () => void = () => {};
   let refreshGlassLayout: () => void = () => {};
+  let refreshSoundSheetUi: () => void = () => {};
 
   const syncSoundButton = (active: boolean, muted: boolean) => {
     btnSound.innerHTML = muted ? ICONS.volumeOff : ICONS.volumeOn;
     btnSound.classList.toggle('active', active);
     btnSound.title = active ? 'Mute Sound (M)' : muted ? 'Unmute Sound (M)' : 'Enable Sound (M)';
+    refreshSoundSheetUi();
     refreshGlassLayout();
   };
 
@@ -809,11 +868,18 @@ function mountApp(): void {
       const prevId = activeInspect?.id ?? null;
       const nextId = hit?.id ?? null;
       activeInspect = hit;
-      // On narrow mobile screens, close Activity Sheet when opening an Inspect Card so sheets never collide
-      if (hit && showActivity && window.innerWidth <= 720) {
-        showActivity = false;
-        btnActivity.classList.remove('active');
-        activitySheet.style.display = 'none';
+      // On narrow mobile screens, close open right sheets when opening an Inspect Card so sheets never collide
+      if (hit && window.innerWidth <= 720) {
+        if (showActivity) {
+          showActivity = false;
+          btnActivity.classList.remove('active');
+          activitySheet.style.display = 'none';
+        }
+        if (showSoundSheet) {
+          showSoundSheet = false;
+          btnVibe.classList.remove('active');
+          soundSheet.style.display = 'none';
+        }
       }
       if (hit && activeHover && activeHover.id === hit.id) {
         hoverPill.classList.remove('visible');
@@ -907,6 +973,10 @@ function mountApp(): void {
         const sheet = rectToGlass(activitySheet, 26, 0.14, 3.0, 1, 1.0);
         if (sheet) base.push(sheet);
       }
+      if (showSoundSheet) {
+        const sheet = rectToGlass(soundSheet, 26, 0.14, 3.0, 1, 1.0);
+        if (sheet) base.push(sheet);
+      }
       if (activeInspect) {
         const card = rectToGlass(inspectCard, 26, 0.14, 3.0, 1, 1.0);
         if (card) base.push(card);
@@ -940,6 +1010,7 @@ function mountApp(): void {
     ro.observe(toolCapsuleEl);
     ro.observe(zoomRailEl);
     ro.observe(activitySheet);
+    ro.observe(soundSheet);
     ro.observe(inspectCard);
   }
   window.addEventListener('resize', syncViewportLayout);
@@ -1019,7 +1090,7 @@ function mountApp(): void {
     }
     const target = ev.target as HTMLElement | null;
     if (target && (target === btnSound || btnSound.contains(target))) return;
-    if (ev instanceof KeyboardEvent && (ev.key === 'm' || ev.key === 'M')) return;
+    if (ev instanceof KeyboardEvent && (ev.key === 'm' || ev.key === 'M' || ev.key === 'v' || ev.key === 'V')) return;
     audio.unlockFromGesture();
   };
   window.addEventListener('pointerdown', unlockAudioOnGesture, { capture: true, passive: true });
@@ -1156,8 +1227,34 @@ function mountApp(): void {
   };
 
   // Wire top-right tool capsule controls
+  const syncSoundSheetUi = () => {
+    const vibe = audio.getVibe();
+    const bgmLevel = audio.getBgmLevel();
+    soundVibeBadge.textContent = vibe.metaBadge;
+    const lvlOpt = BGM_LEVEL_OPTIONS.find((o) => o.id === bgmLevel);
+    bgmLevelHint.textContent =
+      bgmLevel === 'off' ? 'Off' : audio.isMuted() ? `${lvlOpt?.label ?? 'Quiet'} · Muted` : `Looping · ${lvlOpt?.label ?? 'Quiet'}`;
+
+    for (const btn of vibeButtons) {
+      const isAct = btn.dataset.vibe === vibe.id;
+      btn.classList.toggle('active', isAct);
+      btn.setAttribute('aria-checked', isAct ? 'true' : 'false');
+    }
+    for (const btn of bgmLevelButtons) {
+      btn.classList.toggle('active', btn.dataset.bgm === bgmLevel);
+    }
+    btnVibe.title = `Soundtrack: ${vibe.name} (V)`;
+  };
+  refreshSoundSheetUi = syncSoundSheetUi;
+  syncSoundSheetUi();
+
   btnActivity.addEventListener('click', () => {
     showActivity = !showActivity;
+    if (showActivity && showSoundSheet) {
+      showSoundSheet = false;
+      btnVibe.classList.remove('active');
+      soundSheet.style.display = 'none';
+    }
     if (showActivity && activeInspect && window.innerWidth <= 720) {
       suppressNextInspectCloseAudio = true;
       engine.clearInspect();
@@ -1169,8 +1266,59 @@ function mountApp(): void {
     syncGlassLayout();
   });
 
+  btnVibe.addEventListener('click', () => {
+    showSoundSheet = !showSoundSheet;
+    if (showSoundSheet && showActivity) {
+      showActivity = false;
+      btnActivity.classList.remove('active');
+      activitySheet.style.display = 'none';
+    }
+    if (showSoundSheet && activeInspect && window.innerWidth <= 720) {
+      suppressNextInspectCloseAudio = true;
+      engine.clearInspect();
+    }
+    btnVibe.classList.toggle('active', showSoundSheet);
+    soundSheet.style.display = showSoundSheet ? 'flex' : 'none';
+    if (showSoundSheet) syncSoundSheetUi();
+    audio.playUiTap(showSoundSheet);
+    syncGlassLayout();
+  });
+
+  for (const btn of vibeButtons) {
+    btn.addEventListener('click', () => {
+      const id = (btn.dataset.vibe ?? 'glass') as MusicVibeId;
+      audio.setVibe(id, true);
+      audio.playUiTap(true);
+      syncSoundSheetUi();
+    });
+  }
+
+  for (const btn of bgmLevelButtons) {
+    btn.addEventListener('click', () => {
+      const lvl = (btn.dataset.bgm ?? 'quiet') as BgmLevelId;
+      audio.setBgmLevel(lvl);
+      audio.playUiTap(lvl !== 'off');
+      syncSoundSheetUi();
+    });
+  }
+
+  btnReplayIntro.addEventListener('click', () => {
+    if (pureView) setPure(false);
+    showSoundSheet = false;
+    btnVibe.classList.remove('active');
+    soundSheet.style.display = 'none';
+    if (audio.isMuted()) {
+      audio.toggle();
+    }
+    syncSoundSheetUi();
+    syncGlassLayout();
+    introPhase = 'idle';
+    engine.startIntro();
+  });
+
   btnSound.addEventListener('click', () => {
     audio.toggle();
+    syncSoundSheetUi();
   });
 
   const setPure = (next: boolean) => {
@@ -1196,6 +1344,11 @@ function mountApp(): void {
       btnActivity.classList.remove('active');
       activitySheet.style.display = 'none';
     }
+    if (showSoundSheet) {
+      showSoundSheet = false;
+      btnVibe.classList.remove('active');
+      soundSheet.style.display = 'none';
+    }
     introPhase = 'idle';
     engine.startIntro();
   });
@@ -1204,6 +1357,10 @@ function mountApp(): void {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'm' || e.key === 'M') {
       audio.toggle();
+      syncSoundSheetUi();
+    } else if (e.key === 'v' || e.key === 'V') {
+      audio.cycleVibe();
+      syncSoundSheetUi();
     } else if (e.key === 'h' || e.key === 'H') {
       if (engine.isIntroActive) engine.skipIntro();
       setPure(!pureView);
@@ -1214,11 +1371,22 @@ function mountApp(): void {
         btnActivity.classList.remove('active');
         activitySheet.style.display = 'none';
       }
+      if (showSoundSheet) {
+        showSoundSheet = false;
+        btnVibe.classList.remove('active');
+        soundSheet.style.display = 'none';
+      }
       introPhase = 'idle';
       engine.startIntro();
     } else if (e.key === 'Escape') {
       if (engine.isIntroActive) engine.skipIntro();
       if (activeInspect) engine.clearInspect();
+      if (showSoundSheet) {
+        showSoundSheet = false;
+        btnVibe.classList.remove('active');
+        soundSheet.style.display = 'none';
+        syncGlassLayout();
+      }
     }
   });
 
@@ -1238,11 +1406,18 @@ function mountApp(): void {
     'pointerdown',
     () => {
       browserTelemetry.noteInteraction('inspect');
-      // On narrow mobile screens, tapping the canvas outside the Activity Sheet dismisses it cleanly
-      if (showActivity && window.innerWidth <= 720) {
-        showActivity = false;
-        btnActivity.classList.remove('active');
-        activitySheet.style.display = 'none';
+      // On narrow mobile screens, tapping the canvas outside an open sheet dismisses it cleanly
+      if (window.innerWidth <= 720 && (showActivity || showSoundSheet)) {
+        if (showActivity) {
+          showActivity = false;
+          btnActivity.classList.remove('active');
+          activitySheet.style.display = 'none';
+        }
+        if (showSoundSheet) {
+          showSoundSheet = false;
+          btnVibe.classList.remove('active');
+          soundSheet.style.display = 'none';
+        }
         syncGlassLayout();
       }
     },
