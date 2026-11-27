@@ -380,22 +380,23 @@ export function buildWorld0(spec: DieFloorplanSpec = DEFAULT_DIE_SPEC): WorldIns
  * WORLD 1 (FIXED BEOL TOP!): Global BEOL Power & Clock Distribution Mesh (M12–M16 · 1K× · 120 µm)
  *   - Physically ACCURATE stack order: heavy top-level aluminum/copper VDD & VSS power grids
  *     sit ON TOP of the intermediate routing canyons (World 2) and transistors (World 3/4)!
- *   - 13x13 grid cells (pitch = 1.52, span ±9.88) so it fills 100% of the viewport edge-to-edge
- *     when extruding out of whichever core/GPU/SLC block you zoom into!
+ *   - 15x15 grid cells (pitch = 1.52, span ±11.40) so it fills 100% of the viewport edge-to-edge
+ *     before rising into 3D relief out of World 0's matching procedural M12–M16 surface grid!
+ *   - Clean vertical layer clearances eliminate 24-bit depth-buffer Z-fighting during extrusion.
  */
 export function buildWorld1(): WorldInstances {
   const b = new InstanceBuilder();
 
   const pitch = WORLD1_PITCH; // 1.52
-  const R = 6; // 13x13 global power grid cells => ±9.88
-  const span = 9.88;
+  const R = 7; // 15x15 global power grid cells => ±11.40
+  const span = 11.40;
 
-  // Deep ILD oxide base well (stays intact underneath whichever cell opens into World 2)
-  b.addBox(0, -0.22, 0, span, 0.04, span, 0.004, 0);
-  // Lower inter-layer dielectric floor (top at y = -0.02)
-  b.addBox(0, -0.11, 0, span, 0.09, span, 0.005, 0);
+  // Deep ILD oxide base well (stays intact underneath whichever cell opens into World 2; top at -0.21)
+  b.addBox(0, -0.24, 0, span, 0.03, span, 0.004, 0);
+  // Lower inter-layer dielectric floor (bottom at -0.19, top at -0.05 -> clean clearance from base well & sub-tiles!)
+  b.addBox(0, -0.12, 0, span, 0.07, span, 0.005, 0);
 
-  // M12–M13 Sub-Global Copper Distribution Stripes inside each grid bay (y = +0.04..+0.09)
+  // M12–M13 Sub-Global Copper Distribution Stripes inside each grid bay (y = +0.05..+0.10)
   for (let tz = -R; tz <= R; tz++) {
     for (let tx = -R; tx <= R; tx++) {
       const cx = tx * pitch;
@@ -403,10 +404,10 @@ export function buildWorld1(): WorldInstances {
       const h = hash12(tx + 19.3, tz + 19.3);
       const dist2 = tx * tx + tz * tz;
 
-      // Translucent-dark low-k SiCOH dielectric sub-tile
-      b.addBox(cx, 0.015, cz, 0.63, 0.032, 0.63, 0.010, 4, 10, h, 0.65);
+      // Translucent-dark low-k SiCOH dielectric sub-tile (bottom at -0.02, top at +0.04)
+      b.addBox(cx, 0.01, cz, 0.63, 0.030, 0.63, 0.010, 4, 10, h, 0.65);
 
-      // Alternating orthogonal M12/M13 copper & tungsten clock/power trunks
+      // Alternating orthogonal M12/M13 copper & tungsten clock/power trunks (bottom at +0.051, top at +0.099)
       const horiz = (h * 7.3) % 1 > 0.45;
       const step = dist2 <= 9 ? 1 : dist2 <= 25 ? 2 : 3;
       for (let k = -5; k <= 5; k += step) {
@@ -415,9 +416,9 @@ export function buildWorld1(): WorldInstances {
         const mat = isVdd ? 3 : 2; // Alternating Copper VDD & Titanium-Silver VSS power stripes!
         const thick = 0.026 * (step === 1 ? 1.0 : step === 2 ? 1.45 : 2.0);
         if (horiz) {
-          b.addBox(cx, 0.072, cz + off, 0.59, 0.024, thick, 0.007, mat, 10, h, 0.55);
+          b.addBox(cx, 0.075, cz + off, 0.59, 0.024, thick, 0.007, mat, 10, h, 0.55);
         } else {
-          b.addBox(cx + off, 0.072, cz, thick, 0.024, 0.59, 0.007, mat, 10, h, 0.55);
+          b.addBox(cx + off, 0.075, cz, thick, 0.024, 0.59, 0.007, mat, 10, h, 0.55);
         }
       }
 
@@ -425,7 +426,7 @@ export function buildWorld1(): WorldInstances {
       if (dist2 <= 16) {
         for (const sx of [-1, 1]) {
           for (const sz of [-1, 1]) {
-            b.addCyl(cx + sx * 0.56, 0.095, cz + sz * 0.56, 0.034, 0.055, 0.008, 3);
+            b.addCyl(cx + sx * 0.56, 0.098, cz + sz * 0.56, 0.034, 0.052, 0.008, 3);
           }
         }
       }

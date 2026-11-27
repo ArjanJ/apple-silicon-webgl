@@ -34,24 +34,24 @@ interface ZoomStopMeta {
 }
 
 const ZOOM_STOPS: readonly ZoomStopMeta[] = [
-  { z: -1.0, label: 'Scale', size: '72 mm', mag: '1×', realm: 'macro' },
-  { z: 0.0, label: 'Die', size: '21 mm', mag: '10×', realm: 'macro' },
-  { z: 1.0, label: 'Power', size: '120 µm', mag: '1K×', realm: 'beol' },
-  { z: 2.0, label: 'Routing', size: '1.2 µm', mag: '100K×', realm: 'beol' },
-  { z: 3.0, label: 'Rows', size: '120 nm', mag: '1M×', realm: 'feol' },
-  { z: 4.0, label: 'Cell', size: '24 nm', mag: '5M×', realm: 'feol' },
-  { z: 5.0, label: 'Gate', size: '12 nm', mag: '25M×', realm: 'feol' },
-  { z: 6.0, label: 'Lattice', size: '0.54 nm', mag: '250M×', realm: 'quantum' },
-  { z: 7.0, label: 'Atom', size: '111 pm', mag: '1.2B×', realm: 'quantum' },
+  { z: -1.0, label: 'Package', size: '72 mm', mag: '1×', realm: 'macro' },
+  { z: 0.0, label: 'Die', size: '21 mm', mag: '4×', realm: 'macro' },
+  { z: 1.0, label: 'Grid', size: '120 µm', mag: '1K×', realm: 'beol' },
+  { z: 2.0, label: 'Routing', size: '3.0 µm', mag: '40K×', realm: 'beol' },
+  { z: 3.0, label: 'Logic', size: '600 nm', mag: '200K×', realm: 'feol' },
+  { z: 4.0, label: 'Cell', size: '120 nm', mag: '1M×', realm: 'feol' },
+  { z: 5.0, label: 'Gate', size: '12 nm', mag: '10M×', realm: 'feol' },
+  { z: 6.0, label: 'Lattice', size: '0.54 nm', mag: '220M×', realm: 'quantum' },
+  { z: 7.0, label: 'Atom', size: '111 pm', mag: '1.1B×', realm: 'quantum' },
   { z: 8.0, label: 'Nucleus', size: '3.1 fm', mag: '40T×', realm: 'quantum' },
-  { z: 9.0, label: 'Quarks', size: '0.84 fm', mag: '150T×', realm: 'quantum' },
+  { z: 9.0, label: 'Proton', size: '0.84 fm', mag: '150T×', realm: 'quantum' },
 ];
 
 const DEPTH_REALMS: readonly { id: RealmId; title: string; range: string }[] = [
   { id: 'macro', title: 'MACRO', range: 'mm' },
   { id: 'beol', title: 'INTERCONNECT', range: 'µm' },
   { id: 'feol', title: 'TRANSISTOR', range: 'nm' },
-  { id: 'quantum', title: 'QUANTUM', range: 'pm → fm' },
+  { id: 'quantum', title: 'ATOMIC & QUANTUM', range: 'Å → fm' },
 ];
 
 const VERNIER_MIN_Z = -2.4;
@@ -74,14 +74,14 @@ function realmForZoom(z: number): RealmId {
 
 const DIAL_TICKS = [
   { deg: -144, label: '1×' },
-  { deg: -115, label: '10×' },
+  { deg: -115, label: '4×' },
   { deg: -86, label: '1K×' },
-  { deg: -58, label: '100K×' },
-  { deg: -29, label: '1M×' },
-  { deg: 0, label: '5M×' },
-  { deg: 29, label: '25M×' },
-  { deg: 58, label: '250M×' },
-  { deg: 86, label: '1.2B×' },
+  { deg: -58, label: '40K×' },
+  { deg: -29, label: '200K×' },
+  { deg: 0, label: '1M×' },
+  { deg: 29, label: '10M×' },
+  { deg: 58, label: '220M×' },
+  { deg: 86, label: '1.1B×' },
   { deg: 115, label: '40T×' },
   { deg: 144, label: '150T×' },
 ];
@@ -435,7 +435,7 @@ function mountApp(): void {
               title="Open 1-tap Depth Map (G)"
             >
               <span class="vernier-realm-dot" aria-hidden="true"></span>
-              <span id="vernier-mag" class="vernier-mag">10×</span>
+              <span id="vernier-mag" class="vernier-mag">4×</span>
               <span class="vernier-sep" aria-hidden="true">·</span>
               <span id="vernier-size" class="vernier-size">21 mm</span>
               <span class="vernier-chev" aria-hidden="true">${ICONS.chevronUp}</span>

@@ -51,11 +51,19 @@ export interface BrowserFrameSignal {
   idlePaced?: boolean;
 }
 
+function formatAppleModel(raw: string): string {
+  return raw
+    .trim()
+    .split(/\s+/)
+    .map((part) => (/^[ma]\d+/i.test(part) ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1).toLowerCase()))
+    .join(' ');
+}
+
 function parseChipName(renderer: string | null): { chipName: string; gpuCores: number } {
   if (renderer) {
-    const appleMatch = renderer.match(/Apple\s+(M\d+(?:\s+(?:Pro|Max|Ultra))?)/i);
-    if (appleMatch) {
-      const name = `Apple ${appleMatch[1]}`;
+    const mMatch = renderer.match(/Apple\s+(M\d+(?:\s+(?:Pro|Max|Ultra))?)/i);
+    if (mMatch) {
+      const name = `Apple ${formatAppleModel(mMatch[1])}`;
       const lower = name.toLowerCase();
       const gpuCores = lower.includes('ultra')
         ? 64
@@ -67,29 +75,14 @@ function parseChipName(renderer: string | null): { chipName: string; gpuCores: n
       return { chipName: name, gpuCores };
     }
 
-    if (/Apple\s+GPU/i.test(renderer)) {
-      return { chipName: 'Apple Silicon', gpuCores: 16 };
-    }
-
-    // Strip ANGLE wrapper: "ANGLE (NVIDIA, NVIDIA GeForce RTX 4080 ..., OpenGL ...)"
-    const angleMatch = renderer.match(/ANGLE\s*\([^,]+,\s*([^,(]+)/i);
-    const cleaned = (angleMatch ? angleMatch[1] : renderer)
-      .replace(/\s+Direct3D.*$/i, '')
-      .replace(/\s+vs_\d+.*$/i, '')
-      .replace(/\s+OpenGL.*$/i, '')
-      .replace(/\(R\)|\(TM\)/gi, '')
-      .trim();
-
-    if (cleaned.length > 2 && cleaned.length <= 34) {
-      return { chipName: cleaned, gpuCores: 16 };
+    const aMatch = renderer.match(/Apple\s+(A\d+(?:\s+(?:Pro|Bionic|X|Z))?)/i);
+    if (aMatch) {
+      const name = `Apple ${formatAppleModel(aMatch[1])}`;
+      return { chipName: name, gpuCores: 6 };
     }
   }
 
-  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
-  if (/Mac OS X|Macintosh/i.test(ua)) {
-    return { chipName: 'Apple Silicon', gpuCores: 16 };
-  }
-  return { chipName: 'Silicon Die', gpuCores: 16 };
+  return { chipName: 'Apple Silicon', gpuCores: 16 };
 }
 
 function splitCoreClusters(totalCores: number): { pCoreCount: number; eCoreCount: number } {
@@ -194,7 +187,7 @@ export class BrowserTelemetrySource {
 
   /** Supplement WebGL renderer info with WebGPU adapter.info when available */
   private async probeWebGpuInfo(): Promise<void> {
-    if (this.chipName !== 'Silicon Die' && this.chipName !== 'Apple Silicon') return;
+    if (this.chipName !== 'Apple Silicon') return;
     const nav = navigator as NavigatorWithGpu;
     if (!nav.gpu?.requestAdapter) return;
     try {
@@ -202,18 +195,12 @@ export class BrowserTelemetrySource {
       const info = adapter?.info;
       if (!info) return;
       const desc = (info.description || info.device || '').trim();
-      const arch = (info.architecture || '').trim();
-      const vendor = (info.vendor || '').trim();
       if (desc && desc.length > 2) {
         const parsed = parseChipName(desc);
-        if (parsed.chipName !== 'Silicon Die') {
+        if (parsed.chipName !== 'Apple Silicon') {
           this.chipName = parsed.chipName;
           this.gpuCores = parsed.gpuCores;
-          return;
         }
-      }
-      if (/apple/i.test(vendor) && /metal-?3/i.test(arch) && this.chipName === 'Apple Silicon') {
-        this.chipName = 'Apple Silicon (Metal 3)';
       }
     } catch {
       // Ignore unsupported WebGPU environments

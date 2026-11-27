@@ -766,11 +766,11 @@ export class SiliconEngine {
         if (z < 0.74) return h;
         h.cx = a[0];
         h.cz = a[2];
-        h.hx = 0.62;
-        h.hz = 0.62;
+        h.hx = 0.70;
+        h.hz = 0.70;
         h.minY = -0.35;
         h.mode = 2.0;
-        h.open = this.smootherstep(0.74, 1.05, z);
+        h.open = this.smootherstep(0.74, 0.92, z);
         return h;
       case 1:
         if (z < 1.22) return h;
@@ -843,7 +843,7 @@ export class SiliconEngine {
   /** Minimum zoom before child stage `k` activates (aligned with parent smooth cutout ramp!) */
   private isStageRevealed(k: number, z: number): boolean {
     if (k === 0) return true;
-    if (k === 1) return z >= 0.44;
+    if (k === 1) return z >= 0.64;
     if (k === 2) return z >= 1.22;
     if (k === 3) return z >= 2.12;
     if (k === 4) return z >= 2.94;
@@ -855,13 +855,19 @@ export class SiliconEngine {
     return true;
   }
 
-  /** Smooth physical 3D relief extrusion factor (0 -> 1) so planar micro-layers rise seamlessly out of their parent */
+  /** Smooth physical 3D relief extrusion factor (floor >= 0.16..0.42 prevents 24-bit depth Z-fighting!) */
   private getStageExtrude(k: number, z: number): number {
-    if (k === 1) return this.smootherstep(0.44, 0.90, z);
-    if (k === 2) return this.smootherstep(1.22, 1.66, z);
-    if (k === 3) return this.smootherstep(2.12, 2.58, z);
-    if (k === 4) return this.smootherstep(2.94, 3.38, z);
+    if (k === 1) return 0.42 + 0.58 * this.smootherstep(0.64, 0.90, z);
+    if (k === 2) return 0.16 + 0.84 * this.smootherstep(1.22, 1.66, z);
+    if (k === 3) return 0.16 + 0.84 * this.smootherstep(2.12, 2.58, z);
+    if (k === 4) return 0.16 + 0.84 * this.smootherstep(2.94, 3.38, z);
     return 1.0;
+  }
+
+  /** Smooth vertical emergence offset for World 1 so its 3D rails rise seamlessly out of World 0's matching surface grid */
+  private getStageSinkY(k: number, z: number): number {
+    if (k === 1) return 0.32 * (1.0 - this.smootherstep(0.64, 0.78, z));
+    return 0.0;
   }
 
   /** Smooth 3D/quantum materialization factor (0 -> 1) so gates, crystals, orbitals, nuclei, and quarks never pop */
@@ -1175,6 +1181,7 @@ export class SiliconEngine {
       'uPlanarReflActive',
       'uClipPlane',
       'uCoinSpec',
+      'uDieGridOrigin',
       'uFocusXZ',
       'uFocusDist',
       'uDofStrength',
@@ -2545,11 +2552,12 @@ export class SiliconEngine {
   ): void {
     const gl = this.gl;
     const off = this.effOffsets[idx];
+    const sinkY = this.getStageSinkY(idx, this.zoom);
     const hole = this.getHoleConfig(idx);
     gl.uniform1f(locs.uWorldScale, scale);
     gl.uniform1f(locs.uYExtrude, this.getStageExtrude(idx, this.zoom));
     gl.uniform1f(locs.uStageReveal, this.getStageReveal(idx, this.zoom));
-    gl.uniform3f(locs.uStageOffset, off[0], off[1], off[2]);
+    gl.uniform3f(locs.uStageOffset, off[0], off[1] + sinkY, off[2]);
     gl.uniform1f(locs.uAtomRotY, idx === 7 && this.atomParity < 0 ? 1.0 : 0.0);
     gl.uniform4f(locs.uHoleBox, hole.cx, hole.cz, hole.hx, hole.hz);
     gl.uniform1f(locs.uHoleMinY, hole.minY);
@@ -2626,6 +2634,7 @@ export class SiliconEngine {
     gl.uniform1f(locs.uPlanarReflActive, 0.0);
     gl.uniform4f(locs.uClipPlane, -1000.0, 0.0, 0.0, 0.0);
     gl.uniform4f(locs.uCoinSpec, QUARTER_X, QUARTER_Z, QUARTER_RADIUS, QUARTER_HY);
+    gl.uniform2f(locs.uDieGridOrigin, this.anchors[0][0], this.anchors[0][2]);
     gl.uniform2f(locs.uFocusXZ, focusX, focusZ);
     gl.uniform1f(locs.uFocusDist, focusDist);
     gl.uniform1f(locs.uDofStrength, dofStrength);

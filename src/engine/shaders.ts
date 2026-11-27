@@ -474,6 +474,7 @@ uniform mat4 uReflViewProj;
 uniform float uPlanarReflActive;
 uniform vec4 uClipPlane; // (planeY, enabled, 0, 0)
 uniform vec4 uCoinSpec; // (cx, cz, radius, hy)
+uniform vec2 uDieGridOrigin; // World 0 anchor aligned to World 1 BEOL M12-M16 grid
 uniform vec2 uFocusXZ;
 uniform float uFocusDist;
 uniform float uDofStrength;
@@ -850,7 +851,7 @@ ${holeDiscardBlock}
         float envF = smoothstep(0.0, 0.08, fabP) * (1.0 - smoothstep(0.84, 1.0, fabP));
         fabWave = (lockCrest * 2.15 + lockTail * 0.55) * envF * uBootB.w;
       }
-      railEmissive = keynoteSignalColor(pkt) * pkt * crossFocus * faceWeight * amp * liveEnergy * 1.08 * fabGate;
+      railEmissive = keynoteSignalColor(pkt) * pkt * crossFocus * faceWeight * amp * liveEnergy * 1.08 * fabGate * (1.0 - smoothstep(0.36, 0.78, uZoom));
       if (fabWave > 0.001) {
         vec3 lockCol = keynoteSignalColor(clamp(fabWave * 0.72, 0.0, 1.0)) + vec3(0.42, 0.65, 0.85) * smoothstep(0.8, 1.8, fabWave);
         railEmissive += lockCol * fabWave * crossFocus * faceWeight * 1.25;
@@ -949,7 +950,7 @@ ${holeDiscardBlock}
   vec3 anisoDir = vec3(1.0, 0.0, 0.0);
 
   if (
-    uZoom < 0.98 &&
+    uZoom < 1.12 &&
     n.y > 0.82 &&
     ((matId > 0.5 && matId < 1.5) ||
       (matId > 3.5 && matId < 4.5 && (ch == 4 || ch == 6)) ||
@@ -970,9 +971,10 @@ ${holeDiscardBlock}
       vec2 atlasUv = (tileIdx + tileUv) * vec2(0.25, 0.50);
       dieFeat = texture(uDieLithoTex, atlasUv);
       vec4 dieN = texture(uDieNormTex, atlasUv);
-      vec2 dn = (dieN.rg * 2.0 - 1.0) * 0.58 * dieMask;
+      float macroReliefFade = 1.0 - smoothstep(0.36, 0.66, uZoom);
+      vec2 dn = (dieN.rg * 2.0 - 1.0) * 0.58 * dieMask * macroReliefFade;
       n = normalize(n + vec3(dn.x, 0.0, dn.y));
-      dieCavAO = mix(1.0, dieN.b, dieMask);
+      dieCavAO = mix(1.0, dieN.b, dieMask * macroReliefFade);
       dieRoughTex = dieN.a;
       hasDieAtlas = dieMask;
     }
@@ -1556,6 +1558,97 @@ ${holeDiscardBlock}
 
   // Machined micro-chamfer edge polish: crisper specular gleam specifically along machined bevels!
   rough = mix(rough, max(0.06, rough * 0.52), bevelMask * 0.76);
+
+  // Continuous Optical BEOL M12-M16 Power & Clock Mesh Emergence on World 0 Die (z: 0.18 -> 0.85):
+  // Physically resolves the top-level global power grid edge-to-edge across the entire bare silicon die
+  // at exact 1:16 pitch & phase alignment with World 1 so 3D rails rise seamlessly out of the die plane!
+  if (hasDieAtlas > 0.01 && uZoom > 0.18 && uZoom < 1.08 && uClipPlane.y < 0.5) {
+    float gridResolve = smoothstep(0.18, 0.68, uZoom) * hasDieAtlas;
+    float bayResolve = smoothstep(0.34, 0.68, uZoom) * hasDieAtlas;
+    bevelMask *= (1.0 - bayResolve);
+    vec2 gPos = (p.xz - uDieGridOrigin) * 16.0;
+    const float gPitch = 1.52;
+    vec2 fw = max(fwidth(gPos), vec2(0.004));
+
+    // Exact M15/M16 rail indices matching buildWorld1(): pos = (i - 0.5) * 1.52
+    vec2 railI = floor(gPos / gPitch + 1.0);
+    vec2 railCenter = (railI - 0.5) * gPitch;
+    vec2 dRailSigned = gPos - railCenter;
+    vec2 dRail = abs(dRailSigned);
+
+    // Anti-aliased X-running (constant Z, hz = 0.058) and Z-running (constant X, hx = 0.052) rails
+    float maskRailX = 1.0 - smoothstep(0.058 - fw.y * 0.65, 0.058 + fw.y * 0.90, dRail.y);
+    float maskRailZ = 1.0 - smoothstep(0.052 - fw.x * 0.65, 0.052 + fw.x * 0.90, dRail.x);
+    float dVia = length(dRail);
+    float viaFw = max(fw.x, fw.y);
+    float maskVia = 1.0 - smoothstep(0.088 - viaFw * 0.65, 0.088 + viaFw * 0.95, dVia);
+    float maskViaCap = 1.0 - smoothstep(0.042 - viaFw * 0.65, 0.042 + viaFw * 0.95, dVia);
+
+    // Alternating Silver (even i on X, odd i on Z) & Copper (odd i on X, even i on Z) global rails
+    float evenX = 1.0 - mod(abs(railI.y), 2.0);
+    float evenZ = 1.0 - mod(abs(railI.x), 2.0);
+    vec3 cuCol = vec3(0.64, 0.36, 0.21);
+    vec3 agCol = vec3(0.30, 0.34, 0.41);
+    vec3 colX = mix(cuCol, agCol, evenX);
+    vec3 colZ = mix(agCol, cuCol, evenZ);
+
+    // M12/M13 sub-global copper & silver distribution stripes inside each 1.52 x 1.52 bay
+    vec2 cellId = floor(gPos / gPitch + 0.5);
+    vec2 cellLoc = gPos - cellId * gPitch;
+    float hCell = hash12(cellId + 19.3);
+    bool horizSub = fract(hCell * 7.3) > 0.45;
+    float subCoord = horizSub ? cellLoc.y : cellLoc.x;
+    float subAlong = horizSub ? abs(cellLoc.x) : abs(cellLoc.y);
+    float subFw = horizSub ? fw.y : fw.x;
+    float inBay = (1.0 - smoothstep(0.58, 0.62, subAlong)) * (1.0 - smoothstep(0.54, 0.58, abs(subCoord)));
+    float subDist = abs(fract(subCoord / 0.105 + 0.5) - 0.5) * 0.105;
+    float subStripe = (1.0 - smoothstep(0.026 - subFw * 0.6, 0.026 + subFw * 0.95, subDist)) * inBay * smoothstep(0.28, 0.66, uZoom);
+    float subIsCu = 1.0 - mod(abs(floor(subCoord / 0.105 + 0.5)), 2.0);
+    vec3 subCol = mix(agCol * 0.86, cuCol * 0.88, subIsCu);
+
+    // Recessed low-k SiCOH dielectric bay floor & rail shadow groove
+    vec3 bayFloorCol = vec3(0.042, 0.052, 0.068);
+    vec3 gridCol = mix(bayFloorCol, subCol, subStripe * 0.85);
+    float bayDarken = bayResolve * (1.0 - max(max(maskRailX, maskRailZ), maskVia));
+    baseCol = mix(baseCol, gridCol, bayDarken * 0.88);
+    rough = mix(rough, mix(0.28, 0.18, subStripe), bayDarken * 0.80);
+    clearcoat = mix(clearcoat, 0.14, bayResolve * 0.85);
+
+    // Composite M15/M16 rails & circular via stacks on top (X-rail slightly above Z-rail matching World 1)
+    float railMask = max(max(maskRailX, maskRailZ), maskVia);
+    vec3 railCol = mix(colZ, colX, smoothstep(0.2, 0.8, maskRailX));
+    railCol = mix(railCol, agCol * 1.08, maskVia * 0.85);
+    railCol = mix(railCol, cuCol * 1.05, maskViaCap * 0.90);
+
+    float railBlend = railMask * gridResolve;
+    baseCol = mix(baseCol, railCol, railBlend * 0.96);
+    rough = mix(rough, 0.17, railBlend * 0.88);
+    metal = mix(metal, 0.96, railBlend);
+
+    // Analytical metallic bevel normal relief on emerging M15/M16 rails for crisp studio catchlights
+    float slopeX = clamp(dRailSigned.x / 0.052, -1.0, 1.0) * maskRailZ * (1.0 - maskRailX * 0.7);
+    float slopeZ = clamp(dRailSigned.y / 0.058, -1.0, 1.0) * maskRailX;
+    n = normalize(n + vec3(slopeX, 0.0, slopeZ) * (0.28 * gridResolve));
+    ndotv = max(dot(n, v), 0.0);
+
+    // Subtle cavity darkening hugging rail edges + gentle macro emissive attenuation as BEOL metal takes over
+    float railEdgeAO = 1.0 - 0.34 * bayResolve * (
+      (1.0 - smoothstep(0.058, 0.14, dRail.y)) * (1.0 - maskRailX) +
+      (1.0 - smoothstep(0.052, 0.13, dRail.x)) * (1.0 - maskRailZ)
+    );
+    matCavAO *= clamp(railEdgeAO, 0.55, 1.0);
+    emissive *= mix(1.0, 0.18, bayResolve);
+
+    // Matching subtle DC power sheen & resonant clock wavefronts on the emerging M15/M16 rails
+    float railGlowMix = gridResolve * smoothstep(0.32, 0.72, uZoom);
+    if (railGlowMix > 0.01 && railMask > 0.05) {
+      float clkWave = exp(-pow(fract((uPulsePhase * 2.25 - abs(gPos.x)) / 9.6) * 9.6 / 0.55, 2.0));
+      float isClockRail = maskRailX * evenX + maskRailZ * (1.0 - evenZ);
+      vec3 dcSheen = vec3(0.86, 0.44, 0.14) * (0.10 + 0.18 * max(uMacLoads.x, uMacLoads.z)) * (1.0 - clamp(isClockRail, 0.0, 1.0));
+      vec3 clkSheen = keynoteSignalColor(clkWave) * clkWave * 0.42 * clamp(isClockRail, 0.0, 1.0);
+      emissive += (dcSheen + clkSheen) * railGlowMix * railMask;
+    }
+  }
 
   if (uThermal > 0.5) {
     float heat = clamp(

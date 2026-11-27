@@ -2,17 +2,17 @@
  * Physically accurate logarithmic magnification, calibrated optical scale bar & landmark formatter
  * across zoom [-2.4..9.0]:
  *  -2.4 => 0.25x    · 26.0 cm   (Wide macro — pocket-size Apple Silicon & Quarter on studio mat)
- *  -1.0 => 1.0x     · 72 mm     (Scale — 1:1 Apple Silicon package next to a 24.26 mm US Quarter)
- *   0.0 => 10x      · 21.0 mm   (Die — live telemetry-accurate Apple Silicon floorplan)
- *   1.0 => 1.0K x   · 120 um    (Power — Top BEOL Global Metal M12–M16 VDD/VSS Power Grid)
- *   2.0 => 100K x   · 1.2 um    (Routing — Intermediate BEOL Copper Damascene M4–M9 & Vias)
- *   3.0 => 1.0M x   · 120 nm    (Rows — FEOL Standard-Cell Rows, VDD/VSS Rails, PMOS/NMOS)
- *   4.0 => 5.0M x   · 24 nm     (Cell — Pure Uniform GAA Nanosheet CMOS Standard Cell)
- *   5.0 => 25M x    · 12 nm     (Gate — 12 nm Gate · 5 nm GAA Ribbon · TiN/W · HfO2/SiO2 · SiN)
- *   6.0 => 250M x   · 0.54 nm   (Lattice — Undoped (100) Silicon Crystal · Amorphous SiO2/HfO2)
- *   7.0 => 1.2B x   · 111 pm    (Atom — Silicon-28 (14Si) · 1s2 2s2 2p6 3sp3 Wavefunctions)
+ *  -1.0 => 1.0x     · 72 mm     (Package — 1:1 Apple Silicon package next to a 24.26 mm US Quarter)
+ *   0.0 => 4x       · 21.0 mm   (Die — live telemetry-accurate Apple Silicon floorplan)
+ *   1.0 => 1.0K x   · 120 um    (Grid — Top BEOL Global Metal M12–M16 VDD/VSS Power & Clock Mesh)
+ *   2.0 => 40K x    · 3.0 um    (Routing — Intermediate BEOL Copper Damascene M4–M9 & Vias)
+ *   3.0 => 200K x   · 600 nm    (Logic — FEOL Standard-Cell Rows, VDD/VSS Rails, PMOS/NMOS)
+ *   4.0 => 1.0M x   · 120 nm    (Cell — Pure Uniform GAA Nanosheet CMOS Standard Cell)
+ *   5.0 => 10M x    · 12 nm     (Gate — 12 nm Gate · 5 nm GAA Ribbon · TiN/W · HfO2/SiO2 · SiN)
+ *   6.0 => 220M x   · 0.54 nm   (Lattice — Undoped (100) Silicon Crystal · Amorphous SiO2/HfO2)
+ *   7.0 => 1.1B x   · 111 pm    (Atom — Silicon-28 (14Si) · 1s2 2s2 2p6 3sp3 Wavefunctions)
  *   8.0 => 40T x    · 3.1 fm    (Nucleus — Oblate 28Si Nucleus · 14P + 14N · Pion Field)
- *   9.0 => 150T x   · 0.84 fm   (Quarks — Inside 1 Proton · uud Color-Charge Quarks · Gluons)
+ *   9.0 => 150T x   · 0.84 fm   (Proton — Single Proton · uud Color-Charge Quarks · Gluons)
  */
 
 function formatPhysicalLength(fm: number): string {
@@ -66,24 +66,24 @@ export function formatMagnification(uZoom: number): {
   const z = Math.max(-2.4, Math.min(9.0, uZoom));
   const magKnots = [
     1,
-    10,
+    4,
     1_000,
-    100_000,
+    40_000,
+    200_000,
     1_000_000,
-    5_000_000,
-    25_000_000,
-    250_000_000,
-    1_200_000_000,
+    10_000_000,
+    220_000_000,
+    1_100_000_000,
     40_000_000_000_000,
     150_000_000_000_000,
   ];
   const fmKnots = [
     72_000_000_000_000, // 72 mm (package + US Quarter)
     21_000_000_000_000, // 21.0 mm (M-Max silicon die)
-    120_000_000_000,    // 120 um (BEOL global power grid)
-    1_200_000_000,      // 1.2 um (BEOL copper damascene)
-    120_000_000,        // 120 nm (FEOL standard-cell rows)
-    24_000_000,         // 24 nm (GAA CMOS standard cell)
+    120_000_000_000,    // 120 um (BEOL global power & clock grid)
+    3_000_000_000,      // 3.0 um (BEOL copper damascene routing)
+    600_000_000,        // 600 nm (FEOL standard-cell logic rows)
+    120_000_000,        // 120 nm (GAA CMOS standard cell)
     12_000_000,         // 12 nm (actual physical gate length!)
     543_000,            // 0.543 nm (Si diamond-cubic unit cell)
     111_000,            // 111 pm (Si covalent radius)
@@ -134,9 +134,9 @@ export function formatMagnification(uZoom: number): {
   } else {
     const badges: { center: number; half: number; label: string }[] = [
       { center: 1.0, half: 0.36, label: '120 µm · BEOL Global Power & Clock Grid (M12–M16)' },
-      { center: 2.0, half: 0.36, label: '1.2 µm · Copper Damascene Routing (M4–M9) & Vias' },
-      { center: 3.0, half: 0.36, label: '120 nm · FEOL Standard-Cell Rows · VDD/VSS · PMOS/NMOS' },
-      { center: 4.0, half: 0.38, label: '24 nm · Uniform GAA Nanosheet Cell · TiN/W · SiN Spacers' },
+      { center: 2.0, half: 0.36, label: '3.0 µm · Copper Damascene Routing (M4–M9) & Vias' },
+      { center: 3.0, half: 0.36, label: '600 nm · FEOL Standard-Cell Logic Rows · VDD/VSS · PMOS/NMOS' },
+      { center: 4.0, half: 0.38, label: '120 nm · Uniform GAA Nanosheet Cell · TiN/W · SiN Spacers' },
       { center: 5.0, half: 0.38, label: '12 nm Gate · 5 nm GAA Ribbon · HfO₂/SiO₂ High-k · Undoped Si' },
       { center: 6.0, half: 0.38, label: '0.543 nm · (100) Silicon Crystal · Amorphous SiO₂/HfO₂ · Bloch Waves' },
       { center: 7.0, half: 0.32, label: '111 pm · Silicon-28 (¹⁴Si) · 1s² 2s² 2p⁶ 3sp³ Wavefunctions' },
