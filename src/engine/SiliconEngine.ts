@@ -72,6 +72,19 @@ import {
   WorldInstances,
 } from './worlds';
 
+interface DisjointTimerQueryExt {
+  TIME_ELAPSED_EXT: number;
+  GPU_DISJOINT_EXT: number;
+}
+
+export interface FrameActivitySample {
+  frameMs: number;
+  gpuFrameMs: number | null;
+  motion: number;
+  zoom: number;
+  idlePaced: boolean;
+}
+
 export interface IntroFrameState {
   active: boolean;
   progress: number;
@@ -420,6 +433,9 @@ export class SiliconEngine {
   private burstActive = false;
   private isIdlePaced = false;
   private emaFrameMs = 16.0;
+  private timerQueryExt: DisjointTimerQueryExt | null = null;
+  private pendingGpuQueries: WebGLQuery[] = [];
+  private emaGpuFrameMs: number | null = null;
   private disposed = false;
 
   constructor(container: HTMLElement, private hooks: EngineHooks) {
@@ -443,6 +459,7 @@ export class SiliconEngine {
     this.gl = gl;
 
     this.useFloatHdr = gl.getExtension('EXT_color_buffer_float') !== null;
+    this.timerQueryExt = gl.getExtension('EXT_disjoint_timer_query_webgl2') as DisjointTimerQueryExt | null;
     const maxSamples = (gl.getParameter(gl.MAX_SAMPLES) as number) || 0;
     this.msaaSamples = this.pickMsaaSamples(maxSamples);
 
@@ -1298,6 +1315,10 @@ export class SiliconEngine {
 
   private allocRenderTargets(w: number, h: number): void {
     const gl = this.gl;
+    for (const q of this.pendingGpuQueries) {
+      gl.deleteQuery(q);
+    }
+    this.pendingGpuQueries = [];
     this.destroyRenderTargets();
 
     let msaaOk = false;
@@ -1400,13 +1421,36 @@ export class SiliconEngine {
     return typeof fallback === 'string' && fallback.trim() ? fallback.trim() : null;
   }
 
-  public getFrameActivity(): { frameMs: number; motion: number; zoom: number; idlePaced: boolean } {
+  public getFrameActivity(): FrameActivitySample {
     return {
       frameMs: this.emaFrameMs,
+      gpuFrameMs: this.emaGpuFrameMs,
       motion: this.smoothMotion,
       zoom: this.zoom,
       idlePaced: this.isIdlePaced,
     };
+  }
+
+  private pollGpuTimerQueries(): void {
+    const ext = this.timerQueryExt;
+    if (!ext || this.pendingGpuQueries.length === 0) return;
+    const gl = this.gl;
+    const disjoint = Boolean(gl.getParameter(ext.GPU_DISJOINT_EXT));
+
+    while (this.pendingGpuQueries.length > 0) {
+      const q = this.pendingGpuQueries[0];
+      const available = Boolean(gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE));
+      if (!available && !disjoint) break;
+      this.pendingGpuQueries.shift();
+      if (available && !disjoint) {
+        const ns = Number(gl.getQueryParameter(q, gl.QUERY_RESULT));
+        const ms = ns / 1_000_000;
+        if (Number.isFinite(ms) && ms > 0.02 && ms < 250) {
+          this.emaGpuFrameMs = this.emaGpuFrameMs === null ? ms : this.emaGpuFrameMs * 0.84 + ms * 0.16;
+        }
+      }
+      gl.deleteQuery(q);
+    }
   }
 
   public clearInspect(): void {
@@ -3014,6 +3058,19 @@ export class SiliconEngine {
       0.92
     );
 
+    const gl = this.gl;
+
+    // Poll non-blocking hardware GPU timer queries (EXT_disjoint_timer_query_webgl2)
+    this.pollGpuTimerQueries();
+    let activeGpuQuery: WebGLQuery | null = null;
+    if (this.timerQueryExt && this.pendingGpuQueries.length < 3) {
+      const q = gl.createQuery();
+      if (q) {
+        gl.beginQuery(this.timerQueryExt.TIME_ELAPSED_EXT, q);
+        activeGpuQuery = q;
+      }
+    }
+
     // PASS 0 + 1: Unified Multi-Scale 3D Render (ZERO 2D fading!)
     this.renderUnifiedScene(
       this.activeStagesBuf,
@@ -3030,8 +3087,6 @@ export class SiliconEngine {
       dofStrength,
       fogDensity
     );
-
-    const gl = this.gl;
 
     // PASS 2: Fast 3-Level Dual-Kawase Bloom
     gl.disable(gl.DEPTH_TEST);
@@ -3108,6 +3163,11 @@ export class SiliconEngine {
     if (runGlass) {
       this.renderLiquidGlass(elapsedSec);
     }
+
+    if (activeGpuQuery && this.timerQueryExt) {
+      gl.endQuery(this.timerQueryExt.TIME_ELAPSED_EXT);
+      this.pendingGpuQueries.push(activeGpuQuery);
+    }
   };
 
   public dispose(): void {
@@ -3129,6 +3189,10 @@ export class SiliconEngine {
     this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
 
     const gl = this.gl;
+    for (const q of this.pendingGpuQueries) {
+      gl.deleteQuery(q);
+    }
+    this.pendingGpuQueries = [];
     this.destroyRenderTargets();
     gl.deleteFramebuffer(this.shadowFbo);
     gl.deleteTexture(this.shadowTex);

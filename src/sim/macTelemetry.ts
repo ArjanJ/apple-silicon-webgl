@@ -1,4 +1,4 @@
-export type TelemetrySource = 'iokit' | 'node' | 'browser';
+export type TelemetrySource = 'iokit' | 'node' | 'browser' | 'capture';
 
 export interface LiveMacTelemetry {
   chipName: string;
@@ -14,7 +14,7 @@ export interface LiveMacTelemetry {
   memTotalGB: number;
   memRatio: number;
   netKBps: number;
-  gpuEst: number; // Real IOKit GPU Device Utilization (0..1) or browser hybrid estimate
+  gpuEst: number; // Real IOKit GPU Device Utilization (0..1) or browser hardware-timed estimate
   gpuRenderer: number;
   gpuTiler: number;
   gpuMemGB: number;
@@ -25,6 +25,13 @@ export interface LiveMacTelemetry {
   live: boolean;
   source?: TelemetrySource;
   pressureState?: string | null;
+  gpuTimed?: boolean;
+  gpuFrameMs?: number | null;
+  workloadSummary?: string | null;
+  captureName?: string | null;
+  memBandwidthGBs?: number;
+  slcMB?: number;
+  aneTops?: string;
   timestamp: number;
 }
 
@@ -51,5 +58,8 @@ export const DEFAULT_TELEMETRY: LiveMacTelemetry = {
   topProcs: [{ name: 'Connecting to Mac...', cpu: 0 }],
   nativeTelemetry: false,
   live: false,
+  memBandwidthGBs: 400,
+  slcMB: 48,
+  aneTops: '11 TOPS',
   timestamp: Date.now(),
 };

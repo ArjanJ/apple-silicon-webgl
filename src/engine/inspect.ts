@@ -108,7 +108,7 @@ export function pickDieRegion(
       regionKind: 0,
       title: () => '16-Core Neural Engine',
       subtitle: () => 'Dedicated FP16 / INT8 Matrix Accelerator',
-      metric: (t) => `11+ TOPS Peak · Thermal ${t.thermalState}`,
+      metric: (t) => `${t.aneTops ?? '11+ TOPS'} Peak · Thermal ${t.thermalState}`,
       detail: () =>
         'Streams weights directly from Unified Memory over the coherent fabric for Core ML, Vision, and on-device inference.',
     };
@@ -123,7 +123,7 @@ export function pickDieRegion(
       regionKind: 1,
       title: () => 'System-Level Cache (SLC)',
       subtitle: () => '6T SRAM Coherent Interconnect Fabric',
-      metric: (t) => `48 MB Coherent SRAM · ${Math.round(((t.pCoreAvg + t.gpuEst) / 2) * 100)}% Traffic`,
+      metric: (t) => `${t.slcMB ?? 48} MB Coherent SRAM · ${Math.round(((t.pCoreAvg + t.gpuEst) / 2) * 100)}% Traffic`,
       detail: () =>
         'High-density 6T SRAM cache spine shared simultaneously by CPU, GPU, Neural Engine, and Media blocks to avoid memory copies.',
     };
@@ -140,7 +140,7 @@ export function pickDieRegion(
       regionKind: 1,
       title: (t) => `${t.memTotalGB} GB Unified Memory`,
       subtitle: () => '512-bit LPDDR5 On-Package DRAM (1T1C)',
-      metric: (t) => `${t.memUsedGB.toFixed(1)} / ${t.memTotalGB} GB Used · 400 GB/s Bus`,
+      metric: (t) => `${t.memUsedGB.toFixed(1)} / ${t.memTotalGB} GB Used · ${t.memBandwidthGBs ?? 400} GB/s Bus`,
       detail: () =>
         'Four LPDDR5 DRAM packages bonded directly beside the logic die on the organic interposer for zero-copy CPU/GPU unified address space.',
     };

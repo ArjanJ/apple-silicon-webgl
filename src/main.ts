@@ -3,8 +3,11 @@ import { SiliconAudio } from './audio/SiliconAudio';
 import { DieInspectHit } from './engine/inspect';
 import { SiliconEngine } from './engine/SiliconEngine';
 import { BrowserTelemetrySource } from './sim/browserTelemetry';
+import { BrowserWorkloadRunner, WORKLOAD_OPTIONS, WorkloadKind } from './sim/browserWorkloads';
+import { applyChipPreset, CHIP_PRESETS, ChipPresetId } from './sim/chipPresets';
 import { DEFAULT_TELEMETRY, LiveMacTelemetry } from './sim/macTelemetry';
 import { formatMagnification } from './sim/microJourney';
+import { RECORDED_TRACES, RecordedTracePlayer, TraceCaptureId } from './sim/recordedTraces';
 
 /**
  * Zero-Overhead Vanilla DOM Controller for Apple Silicon 3D Microscope.
@@ -113,7 +116,7 @@ function conciseHoverMetric(hit: DieInspectHit, t: LiveMacTelemetry): string {
   }
   if (hit.id === 'ecores') return `${Math.round(t.eCoreAvg * 100)}%`;
   if (hit.id === 'gpu') return `${Math.round(t.gpuEst * 100)}%`;
-  if (hit.id === 'slc') return '48 MB SRAM';
+  if (hit.id === 'slc') return `${t.slcMB ?? 48} MB SRAM`;
   if (hit.id === 'ane') return '16C Matrix';
   if (hit.id === 'media') return 'ProRes';
   if (hit.id === 'io-phy') return t.netKBps >= 1024 ? `${(t.netKBps / 1024).toFixed(1)} MB/s` : `${t.netKBps.toFixed(0)} KB/s`;
@@ -227,6 +230,49 @@ function mountApp(): void {
             </div>
           </div>
           <div id="proc-list" class="proc-list"></div>
+          <div class="sheet-controls">
+            <div class="sheet-control-row">
+              <div class="sheet-control-lbl">
+                <span>TELEMETRY</span>
+                <span id="source-hint" class="sheet-control-hint">Live Device</span>
+              </div>
+              <div id="source-seg" class="seg-group" role="tablist" aria-label="Telemetry Source">
+                <button class="seg-btn active" data-source="live" title="Live telemetry from this device">Live</button>
+                ${RECORDED_TRACES.map(
+                  (tr) =>
+                    `<button class="seg-btn" data-source="${tr.id}" title="Recorded real Apple M1 Max IOKit capture: ${tr.captureName}">${tr.shortLabel}</button>`
+                ).join('')}
+              </div>
+            </div>
+            <div class="sheet-control-row">
+              <div class="sheet-control-lbl">
+                <span>SILICON DIE</span>
+                <span id="chip-spec-hint" class="sheet-control-hint">Auto</span>
+              </div>
+              <div id="chip-seg" class="seg-group" role="tablist" aria-label="Apple Silicon Floorplan">
+                ${CHIP_PRESETS.map(
+                  (cp) =>
+                    `<button class="seg-btn ${cp.id === 'auto' ? 'active' : ''}" data-chip="${cp.id}" title="${
+                      cp.id === 'auto'
+                        ? 'Match detected hardware or active trace'
+                        : `${cp.chipName} · ${cp.pCoreCount}P+${cp.eCoreCount}E · ${cp.gpuCores}C GPU · ${cp.memTotalGB} GB`
+                    }">${cp.shortLabel}</button>`
+                ).join('')}
+              </div>
+            </div>
+            <div class="sheet-control-row">
+              <div class="sheet-control-lbl">
+                <span>BURST WORKLOAD</span>
+                <span id="workload-hint" class="sheet-control-hint">Ready</span>
+              </div>
+              <div id="workload-seg" class="seg-group" role="tablist" aria-label="Hardware Burst Workload">
+                ${WORKLOAD_OPTIONS.map(
+                  (wl) =>
+                    `<button class="seg-btn ${wl.id === 'compute' ? 'active' : ''}" data-workload="${wl.id}" title="${wl.title}">${wl.shortLabel}</button>`
+                ).join('')}
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- Interactive Die Block Inspector Card (Appears on Click) -->
@@ -240,7 +286,10 @@ function mountApp(): void {
           </div>
           <div id="inspect-metric" class="inspect-metric">—</div>
           <p id="inspect-detail" class="inspect-detail"></p>
-          <button id="inspect-dive" class="inspect-dive-btn">Dive Inside →</button>
+          <div class="inspect-actions">
+            <button id="inspect-dive" class="inspect-dive-btn">Dive Inside →</button>
+            <button id="inspect-wake" class="inspect-wake-btn" style="display:none;">${ICONS.zap}<span id="inspect-wake-lbl">Wake Core</span></button>
+          </div>
         </div>
 
         <div class="hud-bottom">
@@ -303,6 +352,12 @@ function mountApp(): void {
   const hwVramVal = document.getElementById('hw-vram-val')!;
   const hwTempVal = document.getElementById('hw-temp-val')!;
   const procListEl = document.getElementById('proc-list')!;
+  const sourceHintEl = document.getElementById('source-hint')!;
+  const chipSpecHintEl = document.getElementById('chip-spec-hint')!;
+  const workloadHintEl = document.getElementById('workload-hint')!;
+  const sourceButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#source-seg .seg-btn'));
+  const chipButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#chip-seg .seg-btn'));
+  const workloadButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#workload-seg .seg-btn'));
 
   const inspectCard = document.getElementById('inspect-card')!;
   const inspectTitle = document.getElementById('inspect-title')!;
@@ -311,6 +366,8 @@ function mountApp(): void {
   const inspectDetail = document.getElementById('inspect-detail')!;
   const inspectClose = document.getElementById('inspect-close')!;
   const inspectDive = document.getElementById('inspect-dive')!;
+  const inspectWake = document.getElementById('inspect-wake')!;
+  const inspectWakeLbl = document.getElementById('inspect-wake-lbl')!;
 
   let telemetry: LiveMacTelemetry = { ...DEFAULT_TELEMETRY };
   let activeInspect: DieInspectHit | null = null;
@@ -318,6 +375,11 @@ function mountApp(): void {
   let showActivity = false;
   let pureView = false;
   let bursting = false;
+  let activeSource: 'live' | TraceCaptureId = 'live';
+  let activeChipPreset: ChipPresetId = 'auto';
+  let selectedWorkload: WorkloadKind = 'compute';
+  let activePinnedPCore: number | null = null;
+  let lastRawSample: LiveMacTelemetry | null = null;
   let lastZoomRendered = -99;
   let lastActiveStop = 1;
   let lastFpsUpdate = 0;
@@ -411,6 +473,49 @@ function mountApp(): void {
   const r = 242;
   const circ = 2 * Math.PI * r;
 
+  const getInspectWakeAction = (
+    hit: DieInspectHit
+  ): { label: string; active: boolean; run: () => void } | null => {
+    if (hit.id.startsWith('pcore-')) {
+      const idx = Number(hit.id.slice(6)) || 0;
+      const isThisPinned = bursting && activePinnedPCore === idx;
+      return {
+        label: isThisPinned ? `Running P${idx}` : `Wake P${idx}`,
+        active: isThisPinned,
+        run: () => triggerPinnedCoreWorkload(idx),
+      };
+    }
+    if (hit.id === 'gpu') {
+      const isActive = bursting && selectedWorkload === 'gpu' && activePinnedPCore === null;
+      return {
+        label: isActive ? 'GPU Active' : 'Stress GPU',
+        active: isActive,
+        run: () => (isActive ? stopActiveWorkload() : triggerWorkload('gpu')),
+      };
+    }
+    if (hit.id === 'ane') {
+      const isActive = bursting && selectedWorkload === 'matrix' && activePinnedPCore === null;
+      return {
+        label: isActive ? 'Matrix Active' : 'Run Matrix',
+        active: isActive,
+        run: () => (isActive ? stopActiveWorkload() : triggerWorkload('matrix')),
+      };
+    }
+    if (hit.id.startsWith('ram-') || hit.id === 'slc') {
+      const isActive = bursting && selectedWorkload === 'memory' && activePinnedPCore === null;
+      return {
+        label: isActive ? 'Sweeping Bus' : 'Sweep Bus',
+        active: isActive,
+        run: () => (isActive ? stopActiveWorkload() : triggerWorkload('memory')),
+      };
+    }
+    return null;
+  };
+
+  let triggerWorkload: (kind: WorkloadKind) => void = () => {};
+  let triggerPinnedCoreWorkload: (coreIdx: number) => void = () => {};
+  let stopActiveWorkload: () => void = () => {};
+
   const renderInspectCard = (syncGlass = true) => {
     if (!activeInspect) {
       if (inspectCard.style.display !== 'none') {
@@ -427,7 +532,19 @@ function mountApp(): void {
     inspectDetail.textContent = activeInspect.detail(telemetry);
     const stopName = ZOOM_STOPS.find((s) => Math.abs(s.z - activeInspect!.diveZoom) < 0.01)?.label ?? 'Die';
     inspectDive.textContent = `Dive to ${stopName} →`;
-    if (syncGlass || wasHidden) {
+
+    const wakeAction = getInspectWakeAction(activeInspect);
+    const prevWakeVisible = inspectWake.style.display !== 'none';
+    if (wakeAction) {
+      inspectWake.style.display = 'inline-flex';
+      inspectWakeLbl.textContent = wakeAction.label;
+      inspectWake.classList.toggle('active', wakeAction.active);
+    } else {
+      inspectWake.style.display = 'none';
+      inspectWake.classList.remove('active');
+    }
+
+    if (syncGlass || wasHidden || prevWakeVisible !== Boolean(wakeAction)) {
       syncGlassLayout();
     }
   };
@@ -447,13 +564,17 @@ function mountApp(): void {
   };
 
   const telemetryModeBadge = () =>
-    telemetry.nativeTelemetry
-      ? 'IOKIT'
-      : telemetry.live
-        ? 'LIVE'
-        : telemetry.pressureState
-          ? 'PRESSURE'
-          : 'WEB SIM';
+    telemetry.source === 'capture'
+      ? 'CAPTURE'
+      : telemetry.nativeTelemetry
+        ? 'IOKIT'
+        : telemetry.live
+          ? 'LIVE'
+          : telemetry.gpuTimed
+            ? 'GPU TIMED'
+            : telemetry.pressureState
+              ? 'PRESSURE'
+              : 'WEB LIVE';
 
   let introActive = false;
   let awaitingPowerOn = false;
@@ -834,6 +955,11 @@ function mountApp(): void {
     audio.playDive(fromZ, z);
     engine.flyToZoom(z, targetXZ);
   });
+  inspectWake.addEventListener('click', () => {
+    if (!activeInspect) return;
+    const action = getInspectWakeAction(activeInspect);
+    action?.run();
+  });
 
   // Wire zoom rail clicks
   for (const btn of railButtons) {
@@ -847,6 +973,7 @@ function mountApp(): void {
 
   // Render Activity Sheet bars, micro-sparkline, real GPU/Thermal metrics & process list only when open
   let tickCols: { fill: HTMLDivElement; lbl: HTMLSpanElement }[] = [];
+  let lastTickECount = -1;
   const renderSparkline = () => {
     const w = 220;
     const h = 26;
@@ -863,6 +990,30 @@ function mountApp(): void {
     sparkReadoutEl.textContent = `${Math.round(telemetry.cpuTotal * 100)}% / ${Math.round(telemetry.gpuEst * 100)}%`;
   };
 
+  const syncControlHints = () => {
+    if (activeSource !== 'live') {
+      sourceHintEl.textContent = telemetry.captureName ?? 'IOKit Capture';
+    } else if (telemetry.nativeTelemetry) {
+      sourceHintEl.textContent = 'Mac IOKit Live';
+    } else if (telemetry.gpuTimed) {
+      sourceHintEl.textContent =
+        telemetry.gpuFrameMs !== null && telemetry.gpuFrameMs !== undefined
+          ? `GPU ${telemetry.gpuFrameMs.toFixed(1)} ms`
+          : 'GPU Timed';
+    } else {
+      sourceHintEl.textContent = 'Live Browser';
+    }
+
+    chipSpecHintEl.textContent =
+      activeChipPreset === 'auto'
+        ? `Auto · ${telemetry.pCoreCount}P+${telemetry.eCoreCount}E`
+        : `${telemetry.pCoreCount}P+${telemetry.eCoreCount}E · ${telemetry.gpuCores}C`;
+
+    workloadHintEl.textContent = telemetry.workloadSummary
+      ? telemetry.workloadSummary
+      : WORKLOAD_OPTIONS.find((w) => w.id === selectedWorkload)?.buttonLabel ?? 'Ready';
+  };
+
   const renderActivitySheet = () => {
     if (!showActivity) return;
     sheetCoresEl.textContent = `${telemetry.pCoreCount}P + ${telemetry.eCoreCount}E CORES`;
@@ -874,8 +1025,10 @@ function mountApp(): void {
     hwTempVal.textContent =
       telemetry.socTempC !== null ? `${telemetry.socTempC.toFixed(1)}°C` : telemetry.thermalState;
 
-    const loads = telemetry.coreLoads.slice(0, 12);
-    if (tickCols.length !== loads.length) {
+    const loads = telemetry.coreLoads.slice(0, 16);
+    tickMeterEl.classList.toggle('compact', loads.length > 10);
+    if (tickCols.length !== loads.length || lastTickECount !== telemetry.eCoreCount) {
+      lastTickECount = telemetry.eCoreCount;
       tickMeterEl.innerHTML = '';
       tickCols = loads.map((_, idx) => {
         const col = document.createElement('div');
@@ -903,6 +1056,7 @@ function mountApp(): void {
     }
 
     renderSparkline();
+    syncControlHints();
 
     const procs = telemetry.topProcs.slice(0, 3);
     procListEl.innerHTML = procs
@@ -977,44 +1131,162 @@ function mountApp(): void {
   });
 
   const browserTelemetry = new BrowserTelemetrySource(engine.getGpuRenderer());
+  const tracePlayer = new RecordedTracePlayer('build');
 
-  btnBurst.addEventListener('click', () => {
-    if (bursting) return;
-    bursting = true;
-    engine.setBurstActive(true);
-    browserTelemetry.setBurst(true);
-    audio.triggerBurst(3.5);
-    btnBurst.classList.add('active');
-    btnBurstLbl.textContent = 'Bursting';
-    syncGlassLayout();
+  // Hand-to-silicon causality: route live pointer/zoom/inspect activity into browser telemetry
+  gpuMount.addEventListener('wheel', () => browserTelemetry.noteInteraction('zoom'), { passive: true });
+  gpuMount.addEventListener(
+    'pointermove',
+    (ev) => {
+      if (ev.buttons !== 0) browserTelemetry.noteInteraction('pointer');
+    },
+    { passive: true }
+  );
+  gpuMount.addEventListener('pointerdown', () => browserTelemetry.noteInteraction('inspect'), { passive: true });
 
-    const workerCode = `
-      const end = Date.now() + 3400;
-      let acc = 0;
-      while (Date.now() < end) {
-        for (let i = 0; i < 200000; i++) acc += Math.sqrt(i * 1.13);
-      }
-      postMessage(acc);
-    `;
-    const blob = new Blob([workerCode], { type: 'application/javascript' });
-    const url = URL.createObjectURL(blob);
-    const workers: Worker[] = [];
-    const count = Math.min(8, Math.max(4, telemetry.pCoreCount || 6));
-    for (let i = 0; i < count; i++) workers.push(new Worker(url));
-
-    window.setTimeout(() => {
-      workers.forEach((w) => w.terminate());
-      URL.revokeObjectURL(url);
-      bursting = false;
-      engine.setBurstActive(false);
-      browserTelemetry.setBurst(false);
-      btnBurst.classList.remove('active');
+  const syncBurstButtonUi = () => {
+    btnBurst.classList.toggle('active', bursting);
+    if (!bursting) {
       btnBurstLbl.textContent = 'Burst';
-      syncGlassLayout();
-    }, 3600);
+    } else if (activePinnedPCore !== null) {
+      btnBurstLbl.textContent = `Core P${activePinnedPCore}`;
+    } else {
+      const opt = WORKLOAD_OPTIONS.find((w) => w.id === selectedWorkload);
+      btnBurstLbl.textContent = opt ? opt.buttonLabel : 'Bursting';
+    }
+    syncGlassLayout();
+  };
+
+  const syncSegmentedUi = () => {
+    for (const btn of sourceButtons) {
+      btn.classList.toggle('active', btn.dataset.source === activeSource);
+    }
+    for (const btn of chipButtons) {
+      btn.classList.toggle('active', btn.dataset.chip === activeChipPreset);
+    }
+    for (const btn of workloadButtons) {
+      btn.classList.toggle('active', btn.dataset.workload === selectedWorkload);
+    }
+  };
+
+  let refreshPollCadence: () => void = () => {};
+
+  const workloadRunner = new BrowserWorkloadRunner((active, _kind, pinnedPCore) => {
+    bursting = active;
+    activePinnedPCore = pinnedPCore;
+    engine.setBurstActive(active);
+    syncBurstButtonUi();
+    if (activeInspect) renderInspectCard(false);
+    refreshPollCadence();
   });
 
-  const applyTelemetry = (data: LiveMacTelemetry) => {
+  const setActiveSource = (next: 'live' | TraceCaptureId, silent = false) => {
+    if (activeSource === next) return;
+    activeSource = next;
+    if (next !== 'live') {
+      workloadRunner.stop();
+      tracePlayer.setTrace(next);
+    }
+    syncSegmentedUi();
+    if (!silent) audio.playUiTap(true);
+    refreshPollCadence();
+  };
+
+  stopActiveWorkload = () => {
+    workloadRunner.stop();
+    audio.playUiTap(false);
+  };
+
+  triggerWorkload = (kind: WorkloadKind) => {
+    selectedWorkload = kind;
+    syncSegmentedUi();
+    if (activeSource !== 'live') {
+      setActiveSource('live', true);
+    }
+    audio.triggerBurst(4.1);
+    workloadRunner.start(kind, telemetry.pCoreCount || 8, 4200);
+  };
+
+  triggerPinnedCoreWorkload = (coreIdx: number) => {
+    if (bursting && activePinnedPCore === coreIdx) {
+      workloadRunner.stop();
+      audio.playUiTap(false);
+      return;
+    }
+    if (activeSource !== 'live') {
+      setActiveSource('live', true);
+    }
+    audio.triggerBurst(3.7);
+    workloadRunner.startPinnedCore(coreIdx, 3800);
+  };
+
+  btnBurst.addEventListener('click', () => {
+    if (bursting) {
+      workloadRunner.stop();
+      audio.playUiTap(false);
+      return;
+    }
+    triggerWorkload(selectedWorkload);
+  });
+
+  for (const btn of sourceButtons) {
+    btn.addEventListener('click', () => {
+      const src = (btn.dataset.source ?? 'live') as 'live' | TraceCaptureId;
+      setActiveSource(src);
+    });
+  }
+
+  for (const btn of chipButtons) {
+    btn.addEventListener('click', () => {
+      const preset = (btn.dataset.chip ?? 'auto') as ChipPresetId;
+      if (preset === activeChipPreset) return;
+      activeChipPreset = preset;
+      syncSegmentedUi();
+      audio.playUiTap(true);
+      if (activeInspect && activeInspect.id.startsWith('pcore-')) {
+        engine.clearInspect();
+      }
+      if (lastRawSample) {
+        applyTelemetry(lastRawSample);
+      }
+    });
+  }
+
+  for (const btn of workloadButtons) {
+    btn.addEventListener('click', () => {
+      const wl = (btn.dataset.workload ?? 'compute') as WorkloadKind;
+      selectedWorkload = wl;
+      syncSegmentedUi();
+      if (bursting) {
+        triggerWorkload(wl);
+      } else {
+        audio.playUiTap(true);
+        syncControlHints();
+      }
+    });
+  }
+
+  const applyTelemetry = (raw: LiveMacTelemetry) => {
+    lastRawSample = raw;
+    let data = applyChipPreset(raw, activeChipPreset);
+    // Keep Click-a-Core pin locked to the exact clicked P-Core slot without mutating raw samples
+    if (bursting && activePinnedPCore !== null && activeSource === 'live') {
+      const wl = workloadRunner.getSnapshot();
+      const targetIdx = data.eCoreCount + activePinnedPCore;
+      if (wl.active && wl.kind === 'pin-core' && targetIdx < data.coreLoads.length) {
+        const loads = data.coreLoads.slice();
+        const pinVal = wl.workerLoads[0] ?? 0.94;
+        for (let p = 0; p < data.pCoreCount; p++) {
+          const i = data.eCoreCount + p;
+          if (i >= loads.length) break;
+          loads[i] = p === activePinnedPCore ? pinVal : Math.min(loads[i], 0.22);
+        }
+        const pSlice = loads.slice(data.eCoreCount);
+        const pCoreAvg = pSlice.reduce((a, b) => a + b, 0) / Math.max(1, pSlice.length);
+        const cpuTotal = loads.reduce((a, b) => a + b, 0) / Math.max(1, loads.length);
+        data = { ...data, coreLoads: loads, pCoreAvg, cpuTotal };
+      }
+    }
     telemetry = data;
     engine.setTelemetry(data);
 
@@ -1025,11 +1297,23 @@ function mountApp(): void {
 
     chipNameEl.textContent = data.chipName;
     introChipNameEl.textContent = data.chipName;
-    introEyebrowEl.textContent = data.live ? 'INSIDE YOUR MAC' : 'SILICON ARCHITECTURE';
+    introEyebrowEl.textContent =
+      data.source === 'capture'
+        ? 'IOKIT HARDWARE CAPTURE'
+        : data.live
+          ? 'INSIDE YOUR MAC'
+          : 'SILICON ARCHITECTURE';
+
     const cpuPct = Math.round(data.cpuTotal * 100);
     const gpuPct = Math.round(data.gpuEst * 100);
     const tempPart = data.socTempC !== null ? `${data.socTempC.toFixed(0)}°C · ` : '';
-    editorialMetaEl.textContent = `${tempPart}${cpuPct}% CPU · ${gpuPct}% GPU`;
+    const extraPart = data.workloadSummary
+      ? ` · ${data.workloadSummary}`
+      : data.source === 'capture' && data.captureName
+        ? ` · ${data.captureName.split('·').pop()?.trim() ?? 'Capture'}`
+        : '';
+    editorialMetaEl.textContent = `${tempPart}${cpuPct}% CPU · ${gpuPct}% GPU${extraPart}`;
+
     renderActivitySheet();
     if (activeInspect) renderInspectCard(false);
     if (activeHover && hoverPill.classList.contains('visible')) {
@@ -1037,7 +1321,8 @@ function mountApp(): void {
     }
   };
 
-  let useBrowserMode = false;
+  let localMacAvailable = false;
+  let localMacProbedFailed = false;
   let pollTimer: number | null = null;
   let activePollFn: (() => void) | null = null;
   let activePollMs = 1000;
@@ -1057,6 +1342,9 @@ function mountApp(): void {
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
+      if (workloadRunner.isActive()) {
+        workloadRunner.stop();
+      }
       if (pollTimer !== null) {
         window.clearInterval(pollTimer);
         pollTimer = null;
@@ -1066,24 +1354,29 @@ function mountApp(): void {
       pollTimer = window.setInterval(activePollFn, activePollMs);
     }
   });
-
-  const startBrowserTelemetry = () => {
-    if (useBrowserMode) return;
-    useBrowserMode = true;
-    startPollLoop(() => applyTelemetry(browserTelemetry.sample(engine.getFrameActivity())), 650);
-  };
+  window.addEventListener('pagehide', () => {
+    workloadRunner.dispose();
+    browserTelemetry.dispose();
+  });
 
   const isLocalHost =
     import.meta.env.DEV ||
     window.location.hostname === '127.0.0.1' ||
     window.location.hostname === 'localhost';
 
-  if (!isLocalHost) {
-    startBrowserTelemetry();
-  } else {
-    let liveFailures = 0;
-    const pollTelemetry = async () => {
-      if (document.hidden) return;
+  let liveFailures = 0;
+  const sampleLiveOrFallback = async () => {
+    if (document.hidden) return;
+
+    if (activeSource !== 'live') {
+      applyTelemetry(tracePlayer.sample());
+      return;
+    }
+
+    const wlSnap = workloadRunner.getSnapshot();
+    const useLocalApi = isLocalHost && !localMacProbedFailed;
+
+    if (useLocalApi) {
       try {
         const res = await fetch('/api/telemetry', { cache: 'no-store' });
         const ct = res.headers.get('content-type') || '';
@@ -1091,23 +1384,46 @@ function mountApp(): void {
           throw new Error('No local telemetry API');
         }
         const data = (await res.json()) as LiveMacTelemetry;
+        if (activeSource !== 'live') return;
         if (!data || !Array.isArray(data.coreLoads)) {
           throw new Error('Invalid telemetry payload');
         }
         liveFailures = 0;
+        localMacAvailable = true;
+        if (wlSnap.active && wlSnap.metricLabel) {
+          data.workloadSummary = wlSnap.metricLabel;
+        }
         applyTelemetry(data);
+        return;
       } catch {
+        if (activeSource !== 'live') return;
         liveFailures++;
-        if (liveFailures >= 1 && !telemetry.live) {
-          startBrowserTelemetry();
+        if (liveFailures >= 1 && !localMacAvailable) {
+          localMacProbedFailed = true;
+          refreshPollCadence();
+          return;
         }
       }
-    };
+    }
 
+    applyTelemetry(browserTelemetry.sample(engine.getFrameActivity(), wlSnap));
+  };
+
+  refreshPollCadence = () => {
+    const intervalMs =
+      activeSource !== 'live'
+        ? 550
+        : bursting
+          ? 320
+          : isLocalHost && !localMacProbedFailed
+            ? 1000
+            : 650;
     startPollLoop(() => {
-      void pollTelemetry();
-    }, 1000);
-  }
+      void sampleLiveOrFallback();
+    }, intervalMs);
+  };
+
+  refreshPollCadence();
 }
 
 mountApp();
