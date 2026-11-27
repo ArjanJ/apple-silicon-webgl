@@ -15,7 +15,14 @@
  *   - A harmonically matched scale table so hover taps, turret stops, and bursts stay in key
  */
 
-export type MusicVibeId = 'scifi' | 'synthwave' | 'darksynth' | 'spacesynth' | 'dreamwave' | 'cyberambient';
+export type MusicVibeId =
+  | 'singularity'
+  | 'scifi'
+  | 'synthwave'
+  | 'darksynth'
+  | 'spacesynth'
+  | 'dreamwave'
+  | 'cyberambient';
 
 export type BgmLevelId = 'off' | 'whisper' | 'quiet' | 'present';
 
@@ -84,6 +91,39 @@ export const BGM_LEVEL_OPTIONS: readonly {
 ];
 
 export const MUSIC_VIBES: readonly MusicVibeMeta[] = [
+  {
+    id: 'singularity',
+    name: 'Singularity Horizon',
+    genreTag: 'Grand Sci-Fi',
+    shortLabel: 'Singularity',
+    tagline: 'Cathedral pipe organ, CS-80 brass swells, relativistic clockwork & cosmic glass',
+    metaBadge: 'GRAND SCI-FI · D MIN → F MAJ · 104 BPM',
+    stepSec: 0.14423,
+    loopSteps: 128,
+    loopHandoffSec: 5.969,
+    handoffFadeSec: 0.22,
+    bgmFilterBaseHz: 5400,
+    bgmFilterSpanHz: 8200,
+    introCues: {
+      durationSec: 7.35,
+      heldStartSec: 0.78,
+      revealSec: 1.354,
+      pulseBeats: [2.508, 3.085, 3.662, 4.238],
+      riseSec: 2.508,
+      preDropSec: 4.527,
+      dropSec: 4.815,
+      bloomSec: 5.392,
+      lockSec: 5.969,
+      hudSec: 6.546,
+    },
+    turretScaleHz: [73.42, 110.0, 146.83, 164.81, 174.61, 220.0, 233.08, 261.63, 293.66, 55.0, 36.71],
+    pCoreScaleHz: [146.83, 164.81, 174.61, 196.0, 220.0, 233.08, 261.63, 293.66],
+    rootHz: 146.83,
+    fifthHz: 220.0,
+    octaveHz: 293.66,
+    subHz: 36.71,
+    burstNotes: [73.42, 73.42, 146.83, 73.42, 110.0, 73.42, 87.31, 110.0],
+  },
   {
     id: 'scifi',
     name: 'Hyperion Signal',
@@ -1016,6 +1056,9 @@ export function scheduleVibeIntro(
   scoreBus: AudioNode
 ): void {
   switch (vibeId) {
+    case 'singularity':
+      scheduleSingularityHorizonIntro(tk, t0, now, scoreBus);
+      break;
     case 'scifi':
       scheduleSciFiIntro(tk, t0, now, scoreBus);
       break;
@@ -1512,6 +1555,9 @@ export function scheduleVibeLoopStep(
   depthNorm: number
 ): void {
   switch (vibeId) {
+    case 'singularity':
+      stepSingularityHorizonLoop(tk, stepIdx, cycleIdx, time, stepSec, bgmDest, depthNorm);
+      break;
     case 'scifi':
       stepSciFiLoop(tk, stepIdx, cycleIdx, time, stepSec, bgmDest, depthNorm);
       break;
@@ -2035,5 +2081,475 @@ function stepCyberAmbientLoop(
       sendDelay: 0.68,
       vibrato: true,
     });
+  }
+}
+
+// ============================================================================
+// SINGULARITY HORIZON (Grand Sci-Fi · D Min -> F Maj · 104 BPM · 8-Bar Journey)
+// Interstellar × Blade Runner 2049: Cathedral pipe organ, CS-80 brass swells,
+// relativistic clockwork ticks, cosmic glass harmonica & seismic sub-pressure.
+// ============================================================================
+
+/** Yamaha CS-80 "Blade Runner 2049" analog brass monolith with nonlinear bloom & tape drift */
+function playCS80Monolith(
+  tk: SynthToolkit,
+  time: number,
+  notesHz: readonly number[],
+  durSec: number,
+  gain: number,
+  dest: AudioNode,
+  opts?: { atk?: number; peakHz?: number; depthNorm?: number }
+): void {
+  const { ctx } = tk;
+  const a = Math.min(opts?.atk ?? 0.6, durSec * 0.46);
+  const dNorm = opts?.depthNorm ?? 0.45;
+  const peakHz = (opts?.peakHz ?? 2200) + dNorm * 1350;
+
+  const hp = ctx.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.setValueAtTime(115, time);
+
+  const preEnv = ctx.createGain();
+  preEnv.gain.setValueAtTime(0.001, time);
+  preEnv.gain.linearRampToValueAtTime(0.55 + dNorm * 0.55, time + a);
+  preEnv.gain.setValueAtTime(0.48 + dNorm * 0.45, Math.max(time + a + 0.03, time + durSec * 0.7));
+  preEnv.gain.exponentialRampToValueAtTime(0.001, time + durSec);
+
+  const sh = ctx.createWaveShaper();
+  sh.curve = tk.warmDriveCurve;
+
+  const hornBody = ctx.createBiquadFilter();
+  hornBody.type = 'peaking';
+  hornBody.frequency.setValueAtTime(520, time);
+  hornBody.Q.setValueAtTime(1.1, time);
+  hornBody.gain.setValueAtTime(3.0, time);
+
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.Q.setValueAtTime(1.7, time);
+  lp.frequency.setValueAtTime(240, time);
+  lp.frequency.exponentialRampToValueAtTime(Math.max(320, peakHz), time + a + 0.22);
+  lp.frequency.exponentialRampToValueAtTime(240, time + durSec);
+
+  const postG = ctx.createGain();
+  postG.gain.setValueAtTime(gain, time);
+
+  hp.connect(preEnv);
+  preEnv.connect(sh);
+  sh.connect(hornBody);
+  hornBody.connect(lp);
+  lp.connect(postG);
+  postG.connect(dest);
+
+  // Slow organic Vangelis tape pitch-drift LFO
+  const drift = ctx.createOscillator();
+  drift.frequency.setValueAtTime(0.45, time);
+  const dg = ctx.createGain();
+  dg.gain.setValueAtTime(7.2, time);
+  drift.connect(dg);
+  drift.start(time);
+  drift.stop(time + durSec + 0.05);
+  tk.track(drift);
+
+  const per = 1 / Math.max(1, notesHz.length);
+  notesHz.forEach((hz, i) => {
+    const spread = notesHz.length > 1 ? ((i / (notesHz.length - 1)) * 2 - 1) * 0.72 : 0;
+    [-12, 0, 12].forEach((det, idx) => {
+      const st = idx * 0.016;
+      const o = ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(hz, time + st);
+      if (det !== 0) o.detune.setValueAtTime(det, time + st);
+      dg.connect(o.detune);
+
+      const vg = ctx.createGain();
+      vg.gain.setValueAtTime(per * 0.35, time + st);
+      const p = ctx.createStereoPanner();
+      p.pan.setValueAtTime(clamp(spread + det * 0.015, -0.82, 0.82), time + st);
+
+      o.connect(vg);
+      vg.connect(p);
+      p.connect(hp);
+      o.start(time + st);
+      o.stop(time + durSec + 0.05);
+      tk.track(o);
+    });
+  });
+}
+
+/** Interstellar cathedral pipe organ with wind-chest air breath & depth-reactive octave shimmer */
+function playCosmicOrgan(
+  tk: SynthToolkit,
+  time: number,
+  notesHz: readonly number[],
+  durSec: number,
+  gain: number,
+  dest: AudioNode,
+  opts?: { atk?: number; bright?: number; depthNorm?: number }
+): void {
+  const { ctx } = tk;
+  const atk = Math.min(opts?.atk ?? 0.16, durSec * 0.45);
+  const bright = opts?.bright ?? 0.8;
+  const dNorm = opts?.depthNorm ?? 0.45;
+
+  const hp = ctx.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.setValueAtTime(120, time);
+
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.setValueAtTime(1600 + bright * 2500 + dNorm * 1600, time);
+
+  const env = ctx.createGain();
+  env.gain.setValueAtTime(0.0001, time);
+  env.gain.linearRampToValueAtTime(gain, time + atk);
+  env.gain.setValueAtTime(gain * 0.94, Math.max(time + atk + 0.03, time + durSec - 0.18));
+  env.gain.exponentialRampToValueAtTime(0.0001, time + durSec);
+
+  hp.connect(lp);
+  lp.connect(env);
+  env.connect(dest);
+
+  // Subtle pipe wind-chest breath
+  const wSrc = ctx.createBufferSource();
+  wSrc.buffer = tk.brushedNoiseBuf;
+  wSrc.loop = true;
+  const wBP = ctx.createBiquadFilter();
+  wBP.type = 'bandpass';
+  wBP.frequency.setValueAtTime(1400, time);
+  wBP.Q.setValueAtTime(0.9, time);
+  const wG = ctx.createGain();
+  wG.gain.setValueAtTime(0.038, time);
+  wSrc.connect(wBP);
+  wBP.connect(wG);
+  wG.connect(lp);
+  wSrc.start(time, Math.random() * 0.6);
+  wSrc.stop(time + durSec + 0.04);
+  tk.track(wSrc);
+
+  const pipes: readonly [number, number][] = [
+    [0.5, 0.24],
+    [1, 0.5],
+    [2, 0.42],
+    [3, 0.22 * bright],
+    [4, 0.22 * bright],
+    [8, 0.08 * bright * dNorm],
+  ];
+  const per = 1 / Math.max(1, notesHz.length);
+  notesHz.forEach((hz, i) => {
+    const spread = notesHz.length > 1 ? ((i / (notesHz.length - 1)) * 2 - 1) * 0.72 : 0;
+    const p = ctx.createStereoPanner();
+    p.pan.setValueAtTime(spread, time);
+    p.connect(hp);
+    for (const [m, a] of pipes) {
+      if (hz * m > 10500 || a <= 0.001) continue;
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(hz * m, time);
+      o.detune.setValueAtTime((m - 1) * 2.1, time);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(per * a, time);
+      o.connect(g);
+      g.connect(p);
+      o.start(time);
+      o.stop(time + durSec + 0.04);
+      tk.track(o);
+    }
+  });
+}
+
+/** Bowed / plucked cosmic glass harmonica with celestial octave-up shimmer & delay send */
+function playCosmicGlass(
+  tk: SynthToolkit,
+  time: number,
+  freqHz: number,
+  durSec: number,
+  gain: number,
+  panVal: number,
+  dest: AudioNode,
+  opts?: { bowed?: boolean; sendDelay?: number; depthNorm?: number }
+): void {
+  const { ctx } = tk;
+  const bowed = opts?.bowed ?? false;
+  const dNorm = opts?.depthNorm ?? 0.45;
+
+  const p = ctx.createStereoPanner();
+  p.pan.setValueAtTime(clamp(panVal, -0.82, 0.82), time);
+  p.connect(dest);
+
+  const env = ctx.createGain();
+  const atk = bowed ? Math.min(0.28, durSec * 0.35) : 0.006;
+  env.gain.setValueAtTime(0.0001, time);
+  env.gain.linearRampToValueAtTime(gain, time + atk);
+  env.gain.exponentialRampToValueAtTime(0.0001, time + durSec);
+  env.connect(p);
+
+  const sendDelay = opts?.sendDelay ?? 0.68;
+  if (sendDelay > 0 && tk.delaySend) {
+    const ds = ctx.createGain();
+    ds.gain.setValueAtTime(sendDelay, time);
+    env.connect(ds);
+    ds.connect(tk.delaySend);
+  }
+
+  const car = ctx.createOscillator();
+  car.type = 'sine';
+  car.frequency.setValueAtTime(freqHz, time);
+
+  const mod = ctx.createOscillator();
+  mod.type = 'sine';
+  mod.frequency.setValueAtTime(freqHz * (bowed ? 2.0 : 3.0), time);
+
+  const mg = ctx.createGain();
+  mg.gain.setValueAtTime(freqHz * (bowed ? 0.32 : 0.6 + dNorm * 0.55), time);
+  mg.gain.exponentialRampToValueAtTime(0.01, time + Math.min(durSec * 0.55, 0.45));
+
+  mod.connect(mg);
+  mg.connect(car.frequency);
+  car.connect(env);
+
+  if (freqHz * 2 < 9500) {
+    const sh = ctx.createOscillator();
+    sh.type = 'sine';
+    sh.frequency.setValueAtTime(freqHz * 2, time);
+    const sg = ctx.createGain();
+    sg.gain.setValueAtTime(0.16 + dNorm * 0.14, time);
+    sh.connect(sg);
+    sg.connect(env);
+    sh.start(time);
+    sh.stop(time + durSec + 0.03);
+    tk.track(sh);
+  }
+
+  car.start(time);
+  mod.start(time);
+  car.stop(time + durSec + 0.03);
+  mod.stop(time + durSec + 0.03);
+  tk.track(car);
+  tk.track(mod);
+}
+
+/** Relativistic Interstellar ("Mountains") precision clockwork tick */
+function playQuantumClock(
+  tk: SynthToolkit,
+  time: number,
+  accent: boolean,
+  panVal: number,
+  dest: AudioNode,
+  depthNorm = 0.45
+): void {
+  const { ctx } = tk;
+  const p = ctx.createStereoPanner();
+  p.pan.setValueAtTime(clamp(panVal, -0.72, 0.72), time);
+  p.connect(dest);
+
+  const s = ctx.createBufferSource();
+  s.buffer = tk.crispNoiseBuf;
+  const offset = Math.random() * Math.max(0.01, tk.crispNoiseBuf.duration - 0.05);
+
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.setValueAtTime(accent ? 4400 : 6200, time);
+  bp.Q.setValueAtTime(4.8, time);
+
+  const lvl = (accent ? 0.11 : 0.058) * (0.72 + depthNorm * 0.35);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, time);
+  g.gain.linearRampToValueAtTime(lvl, time + 0.0012);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + (accent ? 0.03 : 0.015));
+
+  s.connect(bp);
+  bp.connect(g);
+  g.connect(p);
+  s.start(time, offset, 0.04);
+  tk.track(s);
+
+  if (accent) {
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(2800, time);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.0001, time);
+    og.gain.linearRampToValueAtTime(lvl * 0.24, time + 0.001);
+    og.gain.exponentialRampToValueAtTime(0.0001, time + 0.022);
+    o.connect(og);
+    og.connect(p);
+    o.start(time);
+    o.stop(time + 0.03);
+    tk.track(o);
+  }
+}
+
+/** SINGULARITY HORIZON COLD BOOT INTRO (D Min -> F Maj · 104 BPM · drop 4.815s -> lock 5.969s) */
+function scheduleSingularityHorizonIntro(tk: SynthToolkit, t0: number, now: number, scoreBus: AudioNode): void {
+  const step = 0.14423;
+  const beat = step * 4; // 0.57692s
+  const b0 = 0.2;
+
+  // Act 0-1 (0.20 - 2.508s): Deep D cathedral pipe-organ breath + shimmering cosmic glass beacons
+  if (t0 + 2.52 > now) {
+    const sT = Math.max(now, t0 + b0);
+    playCosmicOrgan(tk, sT, [73.42, 146.83, 220.0], Math.max(0.2, t0 + 2.52 - sT), 0.19, scoreBus, {
+      atk: 1.0,
+      bright: 0.45,
+      depthNorm: 0.35,
+    });
+    const pings = [587.33, 880.0, 659.25, 1046.5];
+    for (let i = 0; i < 4; i++) {
+      const cue = b0 + i * beat;
+      if (t0 + cue >= now - 0.02) {
+        playCosmicGlass(tk, Math.max(now, t0 + cue), pings[i], 1.8, 0.095, i % 2 === 0 ? -0.45 : 0.45, scoreBus, {
+          sendDelay: 0.68,
+          depthNorm: 0.45,
+        });
+      }
+    }
+  }
+
+  // Act 2 (2.508 - 4.527s): Relativistic Interstellar clockwork + rising glass arpeggio + sub heartbeat
+  const riseStart = 2.508;
+  const arp = [293.66, 349.23, 440.0, 523.25, 440.0, 349.23, 293.66, 440.0, 523.25, 587.33, 659.25, 783.99, 880.0, 1046.5];
+  for (let i = 0; i < 14; i++) {
+    const cue = riseStart + i * step;
+    if (t0 + cue + 0.12 <= now) continue;
+    const ct = Math.max(now, t0 + cue);
+    const prog = i / 13;
+    playCosmicGlass(tk, ct, arp[i], step * 3.0, 0.075 + prog * 0.055, ((i % 4) - 1.5) * 0.3, scoreBus, {
+      sendDelay: 0.62,
+      depthNorm: 0.35 + prog * 0.55,
+    });
+    playQuantumClock(tk, ct, i % 4 === 0, i % 2 === 0 ? -0.28 : 0.28, scoreBus, 0.4 + prog * 0.45);
+    if (i % 4 === 0) {
+      playSoftSub(tk, ct, i < 8 ? 73.42 : 58.27, 0.52, 0.26 + prog * 0.11, scoreBus, 142);
+    }
+  }
+  if (t0 + 4.54 > now) {
+    const sT = Math.max(now, t0 + riseStart);
+    playAirSwell(tk, sT, Math.max(0.2, t0 + 4.54 - sT), 280, 3400, 0.072, scoreBus);
+  }
+
+  // Act 3 (4.815s = MAJOR IGNITION DROP): Seismic D1 impact + full cathedral pipe organ + CS-80 brass monolith!
+  const drop = 4.815;
+  if (t0 + 7.35 > now) {
+    const tRes = Math.max(now, t0 + drop);
+    const dur = Math.max(0.5, t0 + 7.35 - tRes);
+    if (t0 + drop >= now - 0.03) {
+      playCinemaImpact(tk, tRes, 122, 36.71, 2.7, 0.5, scoreBus);
+      playCosmicGlass(tk, tRes, 1174.66, 2.2, 0.12, -0.35, scoreBus, { bowed: true, sendDelay: 0.72, depthNorm: 0.85 });
+      playCosmicGlass(tk, tRes + 0.06, 880.0, 2.1, 0.1, 0.35, scoreBus, { bowed: true, sendDelay: 0.72, depthNorm: 0.8 });
+    }
+    playCosmicOrgan(tk, tRes, [73.42, 146.83, 220.0, 261.63, 329.63], dur, 0.28, scoreBus, {
+      atk: 0.12,
+      bright: 0.94,
+      depthNorm: 0.85,
+    });
+    playCS80Monolith(tk, tRes, [73.42, 146.83, 220.0, 293.66, 349.23], dur, 0.26, scoreBus, {
+      atk: 0.16,
+      peakHz: 2650,
+      depthNorm: 0.85,
+    });
+  }
+
+  // Act 4 (5.392s = BLOOM BEAT): Deep gravity echo + harmonic shimmer into 5.969s Bar 0 handoff!
+  const bloom = 5.392;
+  if (t0 + bloom >= now - 0.02) {
+    const ct = Math.max(now, t0 + bloom);
+    playSoftSub(tk, ct, 73.42, 0.55, 0.28, scoreBus, 128);
+    playQuantumClock(tk, ct, true, 0, scoreBus, 0.85);
+    playCosmicGlass(tk, ct + step * 2, 1046.5, 1.3, 0.095, 0.32, scoreBus, { sendDelay: 0.7, depthNorm: 0.8 });
+  }
+}
+
+/** SINGULARITY HORIZON 8-BAR INFINITE JOURNEY LOOP (Dm9 -> Bbmaj7 -> Fmaj9 -> Csus4 -> Gm9 -> Dm/F -> Ebmaj7#11 -> A7sus4) */
+function stepSingularityHorizonLoop(
+  tk: SynthToolkit,
+  step: number,
+  cycle: number,
+  time: number,
+  stepSec: number,
+  dest: AudioNode,
+  depthNorm: number
+): void {
+  const bar = Math.floor(step / 16); // 0..7
+  const inBar = step % 16;
+  const barDur = stepSec * 16;
+  const peak = cycle % 2 === 1 || depthNorm > 0.58;
+
+  const roots = [36.71, 58.27, 43.65, 65.41, 49.0, 43.65, 38.89, 55.0];
+  const chords: readonly (readonly number[])[] = [
+    [73.42, 146.83, 220.0, 261.63, 329.63], // Dm9
+    [58.27, 116.54, 174.61, 220.0, 293.66], // Bbmaj7
+    [87.31, 174.61, 220.0, 261.63, 329.63], // Fmaj9 (cosmic lift!)
+    [65.41, 130.81, 196.0, 261.63, 293.66], // Csus4
+    [98.0, 146.83, 174.61, 233.08, 293.66], // Gm9
+    [87.31, 146.83, 220.0, 261.63, 349.23], // Dm/F
+    [77.78, 155.56, 196.0, 220.0, 293.66], // Ebmaj7#11 (deep space awe!)
+    [55.0, 110.0, 164.81, 220.0, 293.66], // A7sus4
+  ];
+
+  // Sweeping cosmic air swell before Bar 0 and Bar 4
+  if ((bar === 3 || bar === 7) && inBar === 8) {
+    playAirSwell(tk, time, stepSec * 8, 280, 3400, 0.06, dest);
+  }
+
+  // 1) Colossal Cathedral Pipe Organ + Blade Runner CS-80 Brass Monolith
+  if (inBar === 0) {
+    playCosmicOrgan(tk, time, chords[bar], barDur * 1.16, peak ? 0.24 : 0.19, dest, {
+      atk: 0.2,
+      bright: peak ? 0.9 : 0.62,
+      depthNorm,
+    });
+    playCS80Monolith(tk, time, chords[bar].slice(0, 4), barDur * 1.14, peak ? 0.23 : 0.17, dest, {
+      atk: 0.65,
+      peakHz: peak ? 2450 : 1600,
+      depthNorm,
+    });
+  }
+
+  // 2) Interstellar pulsing cosmic glass arpeggio
+  const arps: readonly (readonly number[])[] = [
+    [293.66, 349.23, 440.0, 523.25, 440.0, 349.23, 293.66, 440.0],
+    [233.08, 293.66, 349.23, 440.0, 349.23, 293.66, 233.08, 349.23],
+    [261.63, 349.23, 440.0, 523.25, 440.0, 349.23, 261.63, 392.0],
+    [261.63, 293.66, 392.0, 523.25, 392.0, 293.66, 261.63, 329.63],
+    [293.66, 349.23, 466.16, 587.33, 466.16, 349.23, 293.66, 440.0],
+    [261.63, 349.23, 440.0, 587.33, 440.0, 349.23, 261.63, 440.0],
+    [233.08, 311.13, 392.0, 440.0, 392.0, 311.13, 233.08, 466.16],
+    [220.0, 293.66, 329.63, 440.0, 329.63, 293.66, 220.0, 349.23],
+  ];
+  if (inBar % 2 === 0) {
+    playCosmicGlass(tk, time, arps[bar][inBar / 2], stepSec * 3.8, inBar % 4 === 0 ? 0.115 : 0.075, Math.sin(step * 0.5) * 0.48, dest, {
+      sendDelay: 0.64,
+      depthNorm,
+    });
+  }
+
+  // 3) Bowed high cosmic glass melody on peak cycles / deep quantum zoom
+  if (peak && (inBar === 0 || inBar === 8)) {
+    const mel: readonly (readonly [number, number])[] = [
+      [880.0, 659.25],
+      [698.46, 587.33],
+      [783.99, 1046.5],
+      [783.99, 659.25],
+      [932.33, 698.46],
+      [880.0, 698.46],
+      [932.33, 622.25],
+      [880.0, 659.25],
+    ];
+    playCosmicGlass(tk, time, mel[bar][inBar === 0 ? 0 : 1], stepSec * 7.5, 0.11, inBar === 0 ? -0.38 : 0.38, dest, {
+      bowed: true,
+      sendDelay: 0.74,
+      depthNorm,
+    });
+  }
+
+  // 4) Relativistic clockwork engine + seismic sub-pressure heartbeat
+  if (inBar % 2 === 0) {
+    playQuantumClock(tk, time, inBar % 4 === 0, inBar % 4 === 0 ? -0.22 : 0.3, dest, depthNorm);
+  }
+  if (inBar === 0) {
+    playCinemaImpact(tk, time, 114, roots[bar], 2.2, 0.42, dest);
+  } else if (inBar === 6 || inBar === 10) {
+    playSoftSub(tk, time, roots[bar] * (roots[bar] < 45 ? 2 : 1), stepSec * 4.5, 0.27, dest);
   }
 }

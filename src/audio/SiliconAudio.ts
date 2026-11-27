@@ -42,7 +42,7 @@ export type AudioIntroPhase =
   | 'settle'
   | 'done';
 
-const STORAGE_VIBE_KEY = 'silicon-microscope-vibe-v6';
+const STORAGE_VIBE_KEY = 'silicon-microscope-vibe-v7';
 const STORAGE_BGM_KEY = 'silicon-microscope-bgm-level';
 
 function loadStoredVibe(): MusicVibeId {
@@ -54,7 +54,7 @@ function loadStoredVibe(): MusicVibeId {
   } catch {
     // ignore storage errors
   }
-  return 'dreamwave';
+  return 'singularity';
 }
 
 function loadStoredBgmLevel(): BgmLevelId {

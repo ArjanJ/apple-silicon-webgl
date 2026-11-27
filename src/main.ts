@@ -370,7 +370,7 @@ function mountApp(): void {
         <div id="sound-sheet" class="sound-sheet liquid-glass liquid-glass-sheet" style="display:none;">
           <div class="sheet-header">
             <span>SOUNDTRACK</span>
-            <span id="sound-vibe-badge">DREAMWAVE · D♯ MIN · 96 BPM</span>
+            <span id="sound-vibe-badge">GRAND SCI-FI · D MIN → F MAJ · 104 BPM</span>
           </div>
           <div id="vibe-list" class="vibe-list" role="radiogroup" aria-label="Soundtrack Vibe">
             ${MUSIC_VIBES.map(
@@ -2447,7 +2447,7 @@ function mountApp(): void {
 
   for (const btn of vibeButtons) {
     btn.addEventListener('click', () => {
-      const id = (btn.dataset.vibe ?? 'dreamwave') as MusicVibeId;
+      const id = (btn.dataset.vibe ?? 'singularity') as MusicVibeId;
       const meta = audio.setVibe(id, true);
       engine.setIntroCues(meta.introCues);
       audio.playUiTap(true);
