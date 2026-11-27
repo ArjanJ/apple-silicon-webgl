@@ -130,6 +130,11 @@ function mountApp(): void {
   const root = document.getElementById('root');
   if (!root) return;
 
+  const isTouchDevice =
+    (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) ||
+    'ontouchstart' in window;
+  const isMacPlatform = /Mac|Macintosh/i.test(navigator.platform || navigator.userAgent);
+
   root.innerHTML = `
     <div class="apple-stage">
       <div id="gpu-mount" class="raymarch-mount"></div>
@@ -145,14 +150,14 @@ function mountApp(): void {
 
       <!-- "First Light" Mysterious Whisper Title (Emerges out of darkness, dissolves before full reveal) -->
       <div id="intro-title" class="intro-title" aria-hidden="true">
-        <div id="intro-eyebrow" class="intro-eyebrow">INSIDE YOUR MAC</div>
+        <div id="intro-eyebrow" class="intro-eyebrow">${isMacPlatform ? 'INSIDE YOUR MAC' : 'SILICON ARCHITECTURE'}</div>
         <div id="intro-chip-name" class="intro-chip-name">Apple Silicon</div>
         <div id="intro-boot-cue" class="intro-boot-cue">
           <div class="boot-pill">
             <span class="boot-pill-icon">${ICONS.power}</span>
             <span class="boot-pill-label">Power On</span>
           </div>
-          <div class="boot-subhint">Click anywhere or press any key</div>
+          <div class="boot-subhint">${isTouchDevice ? 'Tap anywhere to begin' : 'Click anywhere or press any key'}</div>
         </div>
       </div>
 
@@ -163,7 +168,7 @@ function mountApp(): void {
         <span id="hover-val" class="hover-val"></span>
       </div>
 
-      <button id="restore-hud-btn" class="restore-hud-btn liquid-glass" title="Show Interface (H)" style="display:none;">
+      <button id="restore-hud-btn" class="restore-hud-btn liquid-glass" title="Show Interface (H)" aria-label="Show Interface" style="display:none;">
         ${ICONS.eye}
         <span>Show UI</span>
       </button>
@@ -176,17 +181,17 @@ function mountApp(): void {
           </div>
 
           <div class="tool-capsule liquid-glass">
-            <button id="btn-activity" class="glass-btn" title="Inspect per-core CPU, GPU, and die thermal telemetry">
-              ${ICONS.activity}<span>Activity</span>
+            <button id="btn-activity" class="glass-btn" title="Inspect per-core CPU, GPU, and die thermal telemetry" aria-label="Activity Telemetry">
+              ${ICONS.activity}<span class="btn-label">Activity</span>
             </button>
-            <button id="btn-burst" class="glass-btn" title="Run a 3.5-second multi-core Web Worker burst">
-              ${ICONS.zap}<span id="btn-burst-lbl">Burst</span>
+            <button id="btn-burst" class="glass-btn" title="Run a 3.5-second multi-core Web Worker burst" aria-label="Hardware Burst">
+              ${ICONS.zap}<span id="btn-burst-lbl" class="btn-label">Burst</span>
             </button>
             <div class="capsule-divider"></div>
-            <button id="btn-sound" class="glass-btn icon-only" title="Sound (M)">
+            <button id="btn-sound" class="glass-btn icon-only" title="Sound (M)" aria-label="Toggle Sound">
               ${ICONS.volumeOn}
             </button>
-            <button id="btn-pure" class="glass-btn icon-only" title="Pure View — Hide UI (H)">
+            <button id="btn-pure" class="glass-btn icon-only" title="Pure View — Hide UI (H)" aria-label="Pure View">
               ${ICONS.eyeOff}
             </button>
           </div>
@@ -390,10 +395,13 @@ function mountApp(): void {
   const cpuHistory: number[] = Array(SPARK_MAX).fill(0.16);
   const gpuHistory: number[] = Array(SPARK_MAX).fill(0.18);
 
-  // Cached button layout geometry for zero-reflow continuously gliding rail indicator
+  // Cached button layout geometry for zero-reflow continuously gliding (and mobile-scrollable) rail indicator
   let railMetrics: { x: number; w: number }[] = [];
-  let railViewportRect = { left: 0, top: 0 };
+  let railViewportRect = { left: 0, top: 0, right: 0 };
+  let railIndicatorHeight = 36;
   let railIndicatorBox = { cx: 0, cy: 0, hw: 0, hh: 18 };
+  let railUserScrolling = false;
+  let railScrollIdleTimer: number | null = null;
 
   type GlassReg = {
     cx: number;
@@ -421,10 +429,24 @@ function mountApp(): void {
   const audio = new SiliconAudio(syncSoundButton);
   let suppressNextInspectCloseAudio = false;
 
+  const centerRailStop = (idx: number, smooth = true) => {
+    if (zoomRailEl.scrollWidth <= zoomRailEl.clientWidth + 2) return;
+    const m = railMetrics[idx];
+    if (!m) return;
+    const targetLeft = m.x + m.w * 0.5 - zoomRailEl.clientWidth * 0.5;
+    const maxScroll = Math.max(0, zoomRailEl.scrollWidth - zoomRailEl.clientWidth);
+    const clamped = Math.max(0, Math.min(maxScroll, targetLeft));
+    zoomRailEl.scrollTo({ left: clamped, behavior: smooth ? 'smooth' : 'auto' });
+  };
+
   const measureRail = () => {
     railMetrics = railButtons.map((btn) => ({ x: btn.offsetLeft, w: btn.offsetWidth }));
     const rr = zoomRailEl.getBoundingClientRect();
-    railViewportRect = { left: rr.left, top: rr.top };
+    railViewportRect = { left: rr.left, top: rr.top, right: rr.right };
+    railIndicatorHeight = railIndicator.offsetHeight || 36;
+    if (!railUserScrolling) {
+      centerRailStop(lastActiveStop, false);
+    }
     updateRailIndicator(lastZoomRendered === -99 ? 0 : lastZoomRendered);
   };
 
@@ -440,14 +462,55 @@ function mountApp(): void {
     const w = m0.w + (m1.w - m0.w) * f;
     railIndicator.style.transform = `translate3d(${x.toFixed(1)}px, 0, 0)`;
     railIndicator.style.width = `${w.toFixed(1)}px`;
-    railIndicatorBox = {
-      cx: railViewportRect.left + x + w * 0.5,
-      cy: railViewportRect.top + 4 + 18,
-      hw: w * 0.5,
-      hh: 18,
-    };
+
+    const scrollLeft = zoomRailEl.scrollLeft;
+    const rawLeft = railViewportRect.left + x - scrollLeft;
+    const rawRight = rawLeft + w;
+    const clipLeft = railViewportRect.left + 4;
+    const clipRight = railViewportRect.right - 4;
+    const visLeft = Math.max(clipLeft, rawLeft);
+    const visRight = Math.min(clipRight, rawRight);
+    const visW = Math.max(0, visRight - visLeft);
+    const hh = railIndicatorHeight * 0.5;
+    railIndicatorBox =
+      visW > 4
+        ? {
+            cx: (visLeft + visRight) * 0.5,
+            cy: railViewportRect.top + 4 + hh,
+            hw: visW * 0.5,
+            hh,
+          }
+        : { cx: 0, cy: 0, hw: 0, hh };
     pushGlassToEngine();
   };
+
+  zoomRailEl.addEventListener(
+    'scroll',
+    () => {
+      updateRailIndicator(lastZoomRendered === -99 ? 0 : lastZoomRendered);
+    },
+    { passive: true }
+  );
+  zoomRailEl.addEventListener(
+    'pointerdown',
+    () => {
+      railUserScrolling = true;
+      if (railScrollIdleTimer !== null) {
+        window.clearTimeout(railScrollIdleTimer);
+        railScrollIdleTimer = null;
+      }
+    },
+    { passive: true }
+  );
+  const endRailScrollInteraction = () => {
+    if (railScrollIdleTimer !== null) window.clearTimeout(railScrollIdleTimer);
+    railScrollIdleTimer = window.setTimeout(() => {
+      railUserScrolling = false;
+      railScrollIdleTimer = null;
+    }, 650);
+  };
+  zoomRailEl.addEventListener('pointerup', endRailScrollInteraction, { passive: true });
+  zoomRailEl.addEventListener('pointercancel', endRailScrollInteraction, { passive: true });
 
   // Breathing reticle engagement controller (whisper-quiet at rest, crisp during zoom/drag/dive)
   let reticleEngaged = false;
@@ -737,12 +800,21 @@ function mountApp(): void {
         railButtons[lastActiveStop]?.classList.remove('active');
         railButtons[stopIdx]?.classList.add('active');
         lastActiveStop = stopIdx;
+        if (!railUserScrolling) {
+          centerRailStop(stopIdx, true);
+        }
       }
     },
     onInspect: (hit) => {
       const prevId = activeInspect?.id ?? null;
       const nextId = hit?.id ?? null;
       activeInspect = hit;
+      // On narrow mobile screens, close Activity Sheet when opening an Inspect Card so sheets never collide
+      if (hit && showActivity && window.innerWidth <= 720) {
+        showActivity = false;
+        btnActivity.classList.remove('active');
+        activitySheet.style.display = 'none';
+      }
       if (hit && activeHover && activeHover.id === hit.id) {
         hoverPill.classList.remove('visible');
       }
@@ -804,7 +876,7 @@ function mountApp(): void {
         cy: railIndicatorBox.cy,
         hw: railIndicatorBox.hw,
         hh: railIndicatorBox.hh,
-        radius: 18,
+        radius: Math.min(18, railIndicatorBox.hh),
         bevel: 0.28,
         frost: 0.0,
         style: 2,
@@ -852,37 +924,38 @@ function mountApp(): void {
     staticGlassBase = base;
     staticGlassElevated = elevated;
     const rr = zoomRailEl.getBoundingClientRect();
-    railViewportRect = { left: rr.left, top: rr.top };
+    railViewportRect = { left: rr.left, top: rr.top, right: rr.right };
     pushGlassToEngine();
   };
   refreshGlassLayout = syncGlassLayout;
 
-  // Re-sync automatically whenever text width or viewport changes
+  const syncViewportLayout = () => {
+    measureRail();
+    syncGlassLayout();
+  };
+
+  // Re-sync automatically whenever text width, orientation, or mobile visualViewport changes
   if (typeof ResizeObserver !== 'undefined') {
-    const ro = new ResizeObserver(() => {
-      measureRail();
-      syncGlassLayout();
-    });
+    const ro = new ResizeObserver(syncViewportLayout);
     ro.observe(toolCapsuleEl);
     ro.observe(zoomRailEl);
     ro.observe(activitySheet);
     ro.observe(inspectCard);
   }
-  window.addEventListener('resize', () => {
-    measureRail();
-    syncGlassLayout();
+  window.addEventListener('resize', syncViewportLayout);
+  window.visualViewport?.addEventListener('resize', syncViewportLayout);
+  window.addEventListener('orientationchange', () => {
+    syncViewportLayout();
+    window.setTimeout(syncViewportLayout, 140);
   });
   if (document.fonts && document.fonts.ready) {
-    void document.fonts.ready.then(() => {
-      measureRail();
-      syncGlassLayout();
-    });
+    void document.fonts.ready.then(syncViewportLayout);
   }
-  measureRail();
-  syncGlassLayout();
+  syncViewportLayout();
 
-  // Global pointer tracking for dynamic specular rim highlights on curved Liquid Glass edges
+  // Global pointer tracking for dynamic specular rim highlights on curved Liquid Glass edges (desktop pointers only)
   window.addEventListener('pointermove', (ev) => {
+    if (ev.pointerType === 'touch') return;
     engine.setGlassPointer(ev.clientX, ev.clientY, true);
   });
   window.addEventListener('pointerleave', () => {
@@ -891,10 +964,12 @@ function mountApp(): void {
 
   // Autoplay-adaptive Cold Boot launch:
   //   - If browser allows unmuted autoplay, starts immediately from 0.0s with full audio
-  //   - If browser blocks autoplay (e.g. aside browser), holds on the title card until first click/key
+  //   - If browser blocks autoplay (e.g. mobile / aside browser), holds on the title card until first tap/click/key
   //     so the entire Cold Boot light + music sequence plays in perfect sync!
+  let powerOnGuardUntil = 0;
   const launchHeldPowerOn = () => {
     if (!awaitingPowerOn) return;
+    powerOnGuardUntil = performance.now() + 420;
     setAwaitingPowerOn(false);
     introPhase = 'idle';
     audio.unlockFromGesture();
@@ -918,6 +993,7 @@ function mountApp(): void {
   }
 
   // Unlock procedural Web Audio smoothly on the first user interaction (unless explicitly muted)
+  // Guard prevents paired touchstart -> pointerdown -> click from immediately skipping the Cold Boot intro on mobile!
   const unlockAudioOnGesture = (ev: Event) => {
     if (awaitingPowerOn) {
       if (ev instanceof KeyboardEvent) {
@@ -934,6 +1010,13 @@ function mountApp(): void {
       launchHeldPowerOn();
       return;
     }
+    if (performance.now() < powerOnGuardUntil) {
+      if (ev.type === 'pointerdown' || ev.type === 'touchstart') {
+        ev.stopPropagation();
+      }
+      audio.unlockFromGesture();
+      return;
+    }
     const target = ev.target as HTMLElement | null;
     if (target && (target === btnSound || btnSound.contains(target))) return;
     if (ev instanceof KeyboardEvent && (ev.key === 'm' || ev.key === 'M')) return;
@@ -941,6 +1024,8 @@ function mountApp(): void {
   };
   window.addEventListener('pointerdown', unlockAudioOnGesture, { capture: true, passive: true });
   window.addEventListener('touchstart', unlockAudioOnGesture, { capture: true, passive: true });
+  window.addEventListener('touchend', unlockAudioOnGesture, { capture: true, passive: true });
+  window.addEventListener('click', unlockAudioOnGesture, { capture: true });
   window.addEventListener('keydown', unlockAudioOnGesture, { capture: true });
 
   inspectClose.addEventListener('click', () => engine.clearInspect());
@@ -964,8 +1049,11 @@ function mountApp(): void {
   // Wire zoom rail clicks
   for (const btn of railButtons) {
     btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.idx ?? 1);
       const z = Number(btn.dataset.z ?? 0);
       const fromZ = lastZoomRendered === -99 ? 0 : lastZoomRendered;
+      railUserScrolling = false;
+      centerRailStop(idx, true);
       audio.playDive(fromZ, z);
       engine.flyToZoom(z);
     });
@@ -1070,6 +1158,10 @@ function mountApp(): void {
   // Wire top-right tool capsule controls
   btnActivity.addEventListener('click', () => {
     showActivity = !showActivity;
+    if (showActivity && activeInspect && window.innerWidth <= 720) {
+      suppressNextInspectCloseAudio = true;
+      engine.clearInspect();
+    }
     btnActivity.classList.toggle('active', showActivity);
     activitySheet.style.display = showActivity ? 'flex' : 'none';
     if (showActivity) renderActivitySheet();
@@ -1142,7 +1234,20 @@ function mountApp(): void {
     },
     { passive: true }
   );
-  gpuMount.addEventListener('pointerdown', () => browserTelemetry.noteInteraction('inspect'), { passive: true });
+  gpuMount.addEventListener(
+    'pointerdown',
+    () => {
+      browserTelemetry.noteInteraction('inspect');
+      // On narrow mobile screens, tapping the canvas outside the Activity Sheet dismisses it cleanly
+      if (showActivity && window.innerWidth <= 720) {
+        showActivity = false;
+        btnActivity.classList.remove('active');
+        activitySheet.style.display = 'none';
+        syncGlassLayout();
+      }
+    },
+    { passive: true }
+  );
 
   const syncBurstButtonUi = () => {
     btnBurst.classList.toggle('active', bursting);

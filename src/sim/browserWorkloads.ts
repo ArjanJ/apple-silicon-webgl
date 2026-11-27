@@ -193,6 +193,11 @@ export class BrowserWorkloadRunner {
   private gpuStressLevel = 0;
   private gpuGflops = 0;
 
+  private isMobileDevice =
+    typeof window !== 'undefined' &&
+    ((typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) ||
+      /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent));
+
   private onStateChange?: (active: boolean, kind: WorkloadKind | 'pin-core' | null, pinnedPCore: number | null) => void;
 
   constructor(
@@ -221,12 +226,15 @@ export class BrowserWorkloadRunner {
     }
 
     const hwThreads = typeof navigator !== 'undefined' && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 8;
-    const workerCount =
-      kind === 'memory'
+    const workerCount = this.isMobileDevice
+      ? kind === 'memory'
+        ? Math.max(1, Math.min(2, hwThreads))
+        : Math.max(2, Math.min(6, hwThreads))
+      : kind === 'memory'
         ? Math.max(2, Math.min(4, hwThreads))
         : Math.max(4, Math.min(12, Math.max(threadHint, hwThreads)));
 
-    const mbPerWorker = 16;
+    const mbPerWorker = this.isMobileDevice ? 8 : 16;
     const script =
       kind === 'matrix'
         ? buildMatrixWorkerScript(durationMs - 150)
@@ -295,9 +303,10 @@ export class BrowserWorkloadRunner {
 
   private ensureGpuStressContext(): boolean {
     if (this.gpuGl && this.gpuProg && this.gpuVao) return true;
+    const size = this.isMobileDevice ? 256 : 512;
     const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 512;
+    canvas.width = size;
+    canvas.height = size;
     const gl = canvas.getContext('webgl2', {
       antialias: false,
       depth: false,
@@ -356,9 +365,9 @@ export class BrowserWorkloadRunner {
     const prog = this.gpuProg;
     const vao = this.gpuVao;
     const seedLoc = this.gpuSeedLoc;
-    // 512*512 pixels * 64 loop iters * ~16 FLOPs/iter * 4 passes per rAF tick
-    const PASSES_PER_FRAME = 4;
-    const FLOPS_PER_FRAME = 512 * 512 * 64 * 16 * PASSES_PER_FRAME;
+    const size = this.gpuCanvas?.width ?? 512;
+    const PASSES_PER_FRAME = this.isMobileDevice ? 2 : 4;
+    const FLOPS_PER_FRAME = size * size * 64 * 16 * PASSES_PER_FRAME;
     let lastTick = performance.now();
 
     const step = (now: number) => {
@@ -369,7 +378,7 @@ export class BrowserWorkloadRunner {
       const dtSec = Math.max(0.008, (now - lastTick) / 1000);
       lastTick = now;
 
-      gl.viewport(0, 0, 512, 512);
+      gl.viewport(0, 0, size, size);
       gl.useProgram(prog);
       gl.bindVertexArray(vao);
       for (let p = 0; p < PASSES_PER_FRAME; p++) {

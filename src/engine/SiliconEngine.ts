@@ -149,8 +149,10 @@ interface HoleConfig {
   atomR: number;
 }
 
-const SHADOW_SIZE = 1536;
-const MAX_RENDER_PIXELS = 3_900_000; // Retina-sharp ~1.5x–2.0x DPR without 8M–15M px 5K fillrate overload
+const SHADOW_SIZE_DESKTOP = 1536;
+const SHADOW_SIZE_MOBILE = 1024;
+const MAX_RENDER_PIXELS_DESKTOP = 3_900_000; // Retina-sharp ~1.5x–2.0x DPR without 8M–15M px 5K fillrate overload
+const MAX_RENDER_PIXELS_MOBILE = 1_350_000;  // Crisp Retina mobile budget (~1.75x DPR) without overheating mobile GPUs
 const IDLE_HOLD_MS = 1600;
 const COOLDOWN_END_MS = 2800;
 const COOLDOWN_FRAME_MS = 16.5; // Smooth 60 Hz bridge before stepping to calm 30 Hz idle
@@ -215,6 +217,8 @@ export class SiliconEngine {
 
   private useFloatHdr = false;
   private msaaSamples = 0;
+  private isMobile = false;
+  private shadowSize = SHADOW_SIZE_DESKTOP;
 
   private shadowProg: WebGLProgram;
   private shadowCutoutProg: WebGLProgram;
@@ -418,11 +422,17 @@ export class SiliconEngine {
   public thermal = false;
   public autoOrbit = false;
 
-  // Interaction, visibility & ProMotion-style adaptive frame pacing
+  // Interaction, multi-touch pinch/pan, visibility & ProMotion-style adaptive frame pacing
   private dragging = false;
-  private dragMode: 'orbit' | 'pan' = 'orbit';
+  private dragMode: 'orbit' | 'pan' | 'pinch' = 'orbit';
+  private activePointers = new Map<number, { x: number; y: number }>();
+  private gestureHadMultiTouch = false;
+  private prevPinchDist = 0;
+  private prevPinchMidX = 0;
+  private prevPinchMidY = 0;
   private lastX = 0;
   private lastY = 0;
+  private contextLost = false;
   private rafId = 0;
   private startTime = performance.now();
   private lastFrame = performance.now();
@@ -440,10 +450,17 @@ export class SiliconEngine {
 
   constructor(container: HTMLElement, private hooks: EngineHooks) {
     this.container = container;
+    this.isMobile =
+      typeof window !== 'undefined' &&
+      ((typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) ||
+        /iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent));
+    this.shadowSize = this.isMobile ? SHADOW_SIZE_MOBILE : SHADOW_SIZE_DESKTOP;
+
     this.canvas = document.createElement('canvas');
     this.canvas.style.width = '100%';
     this.canvas.style.height = '100%';
     this.canvas.style.display = 'block';
+    this.canvas.style.touchAction = 'none';
     container.appendChild(this.canvas);
 
     const gl = this.canvas.getContext('webgl2', {
@@ -458,7 +475,9 @@ export class SiliconEngine {
     }
     this.gl = gl;
 
-    this.useFloatHdr = gl.getExtension('EXT_color_buffer_float') !== null;
+    this.useFloatHdr =
+      gl.getExtension('EXT_color_buffer_float') !== null ||
+      gl.getExtension('EXT_color_buffer_half_float') !== null;
     this.timerQueryExt = gl.getExtension('EXT_disjoint_timer_query_webgl2') as DisjointTimerQueryExt | null;
     const maxSamples = (gl.getParameter(gl.MAX_SAMPLES) as number) || 0;
     this.msaaSamples = this.pickMsaaSamples(maxSamples);
@@ -549,15 +568,15 @@ export class SiliconEngine {
     this.anchors[4] = [0, 0, WORLD4_GATE_Z];
     this.recomputeEffOffsets();
 
-    // Setup 2048px Hardware-PCF shadow map
+    // Setup Hardware-PCF shadow map (1536px desktop, 1024px mobile)
     this.shadowTex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
     gl.texImage2D(
       gl.TEXTURE_2D,
       0,
       gl.DEPTH_COMPONENT24,
-      SHADOW_SIZE,
-      SHADOW_SIZE,
+      this.shadowSize,
+      this.shadowSize,
       0,
       gl.DEPTH_COMPONENT,
       gl.UNSIGNED_INT,
@@ -1285,6 +1304,12 @@ export class SiliconEngine {
     if (attachDepth) {
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, attachDepth);
     }
+    if (this.useFloatHdr && !forceLdr && gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      // Graceful fallback for mobile GPUs that report float extension without full RGBA16F FBO support
+      this.useFloatHdr = false;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return { fbo, tex, w: width, h: height };
   }
@@ -1788,9 +1813,11 @@ export class SiliconEngine {
   private resize = (): void => {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
-    const nativeDpr = Math.min(window.devicePixelRatio || 1, 2.0);
-    // Cap total pixel count so 16" MBP & 5K displays stay Retina-crisp (~1.45x–2.0x DPR) without 8M–15M px GPU saturation
-    const maxDprForBudget = Math.sqrt(MAX_RENDER_PIXELS / Math.max(1, w * h));
+    const maxDpr = this.isMobile ? 1.75 : 2.0;
+    const maxPixels = this.isMobile ? MAX_RENDER_PIXELS_MOBILE : MAX_RENDER_PIXELS_DESKTOP;
+    const nativeDpr = Math.min(window.devicePixelRatio || 1, maxDpr);
+    // Cap total pixel count so Retina/5K and mobile displays stay razor-sharp without GPU fillrate overload
+    const maxDprForBudget = Math.sqrt(maxPixels / Math.max(1, w * h));
     const dpr = Math.max(1.0, Math.min(nativeDpr, maxDprForBudget));
     this.cssW = w;
     this.cssH = h;
@@ -1805,7 +1832,9 @@ export class SiliconEngine {
       width: rect.width || w,
       height: rect.height || h,
     };
-    this.allocRenderTargets(this.canvasW, this.canvasH);
+    if (!this.contextLost) {
+      this.allocRenderTargets(this.canvasW, this.canvasH);
+    }
     this.shadowDirty = true;
     this.markActivity();
   };
@@ -1897,6 +1926,57 @@ export class SiliconEngine {
     e.preventDefault();
   };
 
+  private onSafariGesture = (e: Event): void => {
+    e.preventDefault();
+  };
+
+  private onContextLost = (e: Event): void => {
+    e.preventDefault();
+    this.contextLost = true;
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+  };
+
+  private onContextRestored = (): void => {
+    this.contextLost = false;
+    window.location.reload();
+  };
+
+  private applyStagePan(dx: number, dy: number): void {
+    // Pan across the active scale stage in view-aligned XZ directions!
+    const k = clamp(Math.round(this.zoom), 0, 6);
+    const sk = Math.max(0.05, this.stageScales[k]);
+    const panSpeed = 0.0075 / sk;
+    const cosY = Math.cos(this.yaw);
+    const sinY = Math.sin(this.yaw);
+    // Right vector = (cosY, -sinY), Forward vector = (-sinY, -cosY)
+    const moveX = (-dx * cosY + dy * sinY) * panSpeed;
+    const moveZ = (dx * sinY + dy * cosY) * panSpeed;
+
+    if (k === 0) {
+      this.targetAnchor0[0] = clamp(this.targetAnchor0[0] + moveX, -WORLD0_DIE_CLAMP_X, WORLD0_DIE_CLAMP_X);
+      this.targetAnchor0[1] = clamp(this.targetAnchor0[1] + moveZ, -WORLD0_DIE_CLAMP_Z, WORLD0_DIE_CLAMP_Z);
+    } else if (k === 6) {
+      const cur = this.anchors[6];
+      this.setStageAnchorSnapped(6, cur[0] + moveX * 1.6, cur[1] - dy * panSpeed * 1.4, cur[2] + moveZ * 1.6, true);
+    } else {
+      const cur = this.anchors[k];
+      this.setStageAnchorSnapped(k, cur[0] + moveX * 2.2, 0, cur[2] + moveZ * 2.2, true);
+    }
+  }
+
+  private seedPinchState(): void {
+    const it = this.activePointers.values();
+    const p0 = it.next().value as { x: number; y: number } | undefined;
+    const p1 = it.next().value as { x: number; y: number } | undefined;
+    if (!p0 || !p1) return;
+    this.prevPinchDist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+    this.prevPinchMidX = (p0.x + p1.x) * 0.5;
+    this.prevPinchMidY = (p0.y + p1.y) * 0.5;
+  }
+
   private onPointerDown = (e: PointerEvent): void => {
     if (this.introAwaitingBoot) return;
     if (this.flightActive) {
@@ -1916,19 +1996,36 @@ export class SiliconEngine {
       width: rect.width || this.cssW,
       height: rect.height || this.cssH,
     };
+
+    this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try {
+      this.canvas.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore on platforms without capture support
+    }
+
+    if (this.activePointers.size >= 2) {
+      this.gestureHadMultiTouch = true;
+      this.dragging = true;
+      this.dragMode = 'pinch';
+      this.seedPinchState();
+      return;
+    }
+
+    this.gestureHadMultiTouch = false;
     this.dragging = true;
-    // Right-drag or Shift+drag pans the microscope stage laterally; normal left-drag orbits in 3D!
+    // Right-drag or Shift+drag pans the microscope stage laterally; normal left-drag / 1-finger drag orbits in 3D!
     this.dragMode = e.button === 2 || e.shiftKey ? 'pan' : 'orbit';
     this.lastX = e.clientX;
     this.lastY = e.clientY;
     this.downX = e.clientX;
     this.downY = e.clientY;
     this.canvas.style.cursor = this.dragMode === 'pan' ? 'move' : 'grabbing';
-    this.canvas.setPointerCapture(e.pointerId);
   };
 
   private onPointerMove = (e: PointerEvent): void => {
     if (!this.dragging) {
+      if (e.pointerType === 'touch') return;
       if (!this.tourActive && !this.introActive && this.zoom < 0.85) {
         const pt = this.unprojectDiePoint(e.clientX, e.clientY);
         const hit = pt ? pickDieRegion(pt[0], pt[1], this.dieSpec) : null;
@@ -1948,33 +2045,53 @@ export class SiliconEngine {
       }
       return;
     }
+
+    if (this.activePointers.has(e.pointerId)) {
+      this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
     this.markActivity();
+
+    if (this.dragMode === 'pinch') {
+      if (this.activePointers.size >= 2) {
+        const it = this.activePointers.values();
+        const p0 = it.next().value as { x: number; y: number };
+        const p1 = it.next().value as { x: number; y: number };
+        const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        const midX = (p0.x + p1.x) * 0.5;
+        const midY = (p0.y + p1.y) * 0.5;
+
+        if (this.prevPinchDist > 8 && dist > 8) {
+          const ratio = clamp(dist / this.prevPinchDist, 0.72, 1.38);
+          const zoomDelta = Math.log(ratio) * 2.15;
+          this.targetZoom = clamp(this.targetZoom + zoomDelta, MIN_ZOOM, MAX_ZOOM);
+          this.zoomRate = 12.0;
+        }
+
+        const panDx = midX - this.prevPinchMidX;
+        const panDy = midY - this.prevPinchMidY;
+        if (Math.abs(panDx) > 0.1 || Math.abs(panDy) > 0.1) {
+          this.applyStagePan(panDx, panDy);
+        }
+
+        this.prevPinchDist = dist;
+        this.prevPinchMidX = midX;
+        this.prevPinchMidY = midY;
+      }
+      return;
+    }
+
+    if (this.activePointers.size === 1 && !this.activePointers.has(e.pointerId)) {
+      return;
+    }
+
     const dx = e.clientX - this.lastX;
     const dy = e.clientY - this.lastY;
     this.lastX = e.clientX;
     this.lastY = e.clientY;
 
     if (this.dragMode === 'pan') {
-      // Pan across the active scale stage in view-aligned XZ directions!
-      const k = clamp(Math.round(this.zoom), 0, 6);
-      const sk = Math.max(0.05, this.stageScales[k]);
-      const panSpeed = 0.0075 / sk;
-      const cosY = Math.cos(this.yaw);
-      const sinY = Math.sin(this.yaw);
-      // Right vector = (cosY, -sinY), Forward vector = (-sinY, -cosY)
-      const moveX = (-dx * cosY + dy * sinY) * panSpeed;
-      const moveZ = (dx * sinY + dy * cosY) * panSpeed;
-
-      if (k === 0) {
-        this.targetAnchor0[0] = clamp(this.targetAnchor0[0] + moveX, -WORLD0_DIE_CLAMP_X, WORLD0_DIE_CLAMP_X);
-        this.targetAnchor0[1] = clamp(this.targetAnchor0[1] + moveZ, -WORLD0_DIE_CLAMP_Z, WORLD0_DIE_CLAMP_Z);
-      } else if (k === 6) {
-        const cur = this.anchors[6];
-        this.setStageAnchorSnapped(6, cur[0] + moveX * 1.6, cur[1] - dy * panSpeed * 1.4, cur[2] + moveZ * 1.6, true);
-      } else {
-        const cur = this.anchors[k];
-        this.setStageAnchorSnapped(k, cur[0] + moveX * 2.2, 0, cur[2] + moveZ * 2.2, true);
-      }
+      this.applyStagePan(dx, dy);
       return;
     }
 
@@ -1984,18 +2101,36 @@ export class SiliconEngine {
   };
 
   private onPointerUp = (e: PointerEvent): void => {
-    const moved = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
-    const wasOrbit = this.dragMode === 'orbit';
-    this.dragging = false;
-    this.dragMode = 'orbit';
-    this.canvas.style.cursor = 'grab';
+    this.activePointers.delete(e.pointerId);
     try {
       this.canvas.releasePointerCapture(e.pointerId);
     } catch {
       // ignore
     }
 
-    if (wasOrbit && e.button === 0 && moved < 5 && this.zoom < 0.85) {
+    if (this.activePointers.size >= 2) {
+      this.seedPinchState();
+      return;
+    }
+
+    if (this.activePointers.size === 1) {
+      // Seamlessly hand back to 1-finger orbit from remaining finger with zero camera jump
+      const remaining = this.activePointers.values().next().value as { x: number; y: number };
+      this.dragMode = 'orbit';
+      this.lastX = remaining.x;
+      this.lastY = remaining.y;
+      return;
+    }
+
+    const moved = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
+    const wasOrbit = this.dragMode === 'orbit' && !this.gestureHadMultiTouch;
+    const tapThreshold = e.pointerType === 'touch' ? 14 : 5;
+    this.dragging = false;
+    this.dragMode = 'orbit';
+    this.gestureHadMultiTouch = false;
+    this.canvas.style.cursor = 'grab';
+
+    if (wasOrbit && e.button === 0 && moved < tapThreshold && this.zoom < 0.85) {
       const pt = this.unprojectDiePoint(e.clientX, e.clientY);
       const hit = pt ? pickDieRegion(pt[0], pt[1], this.dieSpec) : null;
       if (hit) {
@@ -2017,15 +2152,28 @@ export class SiliconEngine {
   };
 
   private onPointerCancel = (e: PointerEvent): void => {
-    this.dragging = false;
-    this.dragMode = 'orbit';
-    this.canvas.style.cursor = 'grab';
-    this.clearHover();
+    this.activePointers.delete(e.pointerId);
     try {
       this.canvas.releasePointerCapture(e.pointerId);
     } catch {
       // ignore
     }
+    if (this.activePointers.size >= 2) {
+      this.seedPinchState();
+      return;
+    }
+    if (this.activePointers.size === 1) {
+      const remaining = this.activePointers.values().next().value as { x: number; y: number };
+      this.dragMode = 'orbit';
+      this.lastX = remaining.x;
+      this.lastY = remaining.y;
+      return;
+    }
+    this.dragging = false;
+    this.dragMode = 'orbit';
+    this.gestureHadMultiTouch = false;
+    this.canvas.style.cursor = 'grab';
+    this.clearHover();
   };
 
   private onVisibilityChange = (): void => {
@@ -2056,10 +2204,16 @@ export class SiliconEngine {
 
   private bindEvents(): void {
     window.addEventListener('resize', this.resize);
+    window.addEventListener('orientationchange', this.resize);
+    window.visualViewport?.addEventListener('resize', this.resize);
     window.addEventListener('focus', this.onWindowFocus);
     window.addEventListener('blur', this.onWindowBlur);
     document.addEventListener('visibilitychange', this.onVisibilityChange);
     this.canvas.addEventListener('contextmenu', this.onContextMenu);
+    this.canvas.addEventListener('gesturestart', this.onSafariGesture, { passive: false });
+    this.canvas.addEventListener('gesturechange', this.onSafariGesture, { passive: false });
+    this.canvas.addEventListener('webglcontextlost', this.onContextLost);
+    this.canvas.addEventListener('webglcontextrestored', this.onContextRestored);
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
@@ -2183,7 +2337,7 @@ export class SiliconEngine {
     gl.uniform1f(locs.uPulsePhase, this.pulsePhase);
     gl.uniform1f(locs.uSocTemp, this.smoothTemp);
     gl.uniform1i(locs.uShadowMap, 0);
-    gl.uniform1f(locs.uShadowTexel, 1.0 / SHADOW_SIZE);
+    gl.uniform1f(locs.uShadowTexel, 1.0 / this.shadowSize);
     gl.uniform1i(locs.uCoinTex, 1);
     gl.uniform1i(locs.uCoinNormTex, 2);
     gl.uniform1i(locs.uMatTex, 3);
@@ -2253,7 +2407,7 @@ export class SiliconEngine {
       this.lastShadowSmoothP = this.smoothP;
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo);
-      gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+      gl.viewport(0, 0, this.shadowSize, this.shadowSize);
       gl.clear(gl.DEPTH_BUFFER_BIT);
       gl.enable(gl.DEPTH_TEST);
       gl.depthMask(true);
@@ -2646,7 +2800,7 @@ export class SiliconEngine {
   }
 
   private loop = (): void => {
-    if (this.disposed || this.pageHidden) {
+    if (this.disposed || this.pageHidden || this.contextLost) {
       this.rafId = 0;
       return;
     }
@@ -3012,12 +3166,24 @@ export class SiliconEngine {
     const lookZ = -this.effOffsets[0][2] * (1.0 - diveFocus) + this.smoothCamShiftZ + heroLookZ;
 
     const aspectBoost = Math.max(1.0, 1.62 / Math.max(0.85, aspect));
+    // Portrait & narrow-viewport framing boost (1.0 on desktop/landscape >= 1.18 aspect; pulls back cleanly on phones!)
+    const portraitRatio = Math.max(0.0, 1.18 / Math.max(0.44, aspect) - 1.0);
+    const portraitDieBoost = Math.min(2.15, 1.0 + portraitRatio * 0.72);
+    const portraitDeepBoost = Math.min(1.62, 1.0 + portraitRatio * 0.38);
+    const portraitScaleBoost = Math.min(1.65, 1.0 + portraitRatio * 0.42);
     const subatomicBackoff = this.smoothstep(7.6, 8.2, this.zoom);
     const heroDist = 11.2;
+    const zoomBlend = this.smoothstep(0.0, 0.95, this.zoom);
+    const portraitZoomFactor = portraitDieBoost + (portraitDeepBoost - portraitDieBoost) * zoomBlend;
     const dist =
       this.zoom < 0
-        ? heroDist * Math.pow(2.55, outT) * (1.0 + 0.25 * macroOut) * (1.0 + (aspectBoost - 1.0) * Math.min(1.0, outT))
-        : (heroDist + (5.4 - heroDist) * this.smoothstep(0.0, 0.95, this.zoom) + subatomicBackoff * 1.15) *
+        ? heroDist *
+          Math.pow(2.55, outT) *
+          (1.0 + 0.25 * macroOut) *
+          (1.0 + (aspectBoost - 1.0) * Math.min(1.0, outT)) *
+          (portraitDieBoost + (portraitScaleBoost - portraitDieBoost) * Math.min(1.0, outT))
+        : (heroDist + (5.4 - heroDist) * zoomBlend + subatomicBackoff * 1.15) *
+          portraitZoomFactor *
           (1.0 + (aspectBoost - 1.0) * subatomicBackoff * 0.35);
     const cp = Math.cos(this.pitch);
     const camX = lookX + Math.sin(this.yaw) * cp * dist;
@@ -3026,7 +3192,7 @@ export class SiliconEngine {
 
     const fovY = 2.0 * Math.atan(0.5 / 1.68);
     const nearClip = Math.max(0.10, dist * 0.015);
-    const farClip = Math.max(85.0, dist * 3.2);
+    const farClip = Math.max(110.0, dist * 3.5);
     mat4Perspective(this.projMat, fovY, aspect, nearClip, farClip);
     mat4LookAt(this.viewMat, camX, camY, camZ, lookX, lookY, lookZ, 0, 1, 0);
     mat4Multiply(this.viewProjMat, this.projMat, this.viewMat);
@@ -3177,10 +3343,16 @@ export class SiliconEngine {
       this.rafId = 0;
     }
     window.removeEventListener('resize', this.resize);
+    window.removeEventListener('orientationchange', this.resize);
+    window.visualViewport?.removeEventListener('resize', this.resize);
     window.removeEventListener('focus', this.onWindowFocus);
     window.removeEventListener('blur', this.onWindowBlur);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.canvas.removeEventListener('contextmenu', this.onContextMenu);
+    this.canvas.removeEventListener('gesturestart', this.onSafariGesture);
+    this.canvas.removeEventListener('gesturechange', this.onSafariGesture);
+    this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
+    this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.canvas.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
